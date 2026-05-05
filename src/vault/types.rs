@@ -15,6 +15,11 @@ pub struct TokenResponse {
     pub access_token: String,
     /// Refresh token for re-authentication when the access token expires.
     pub refresh_token: Option<String>,
+    /// Token lifetime in seconds returned by the identity endpoint.
+    /// Vaultwarden typically returns 3600 (1 hour). Used to compute the
+    /// expiry instant for proactive token refresh.
+    #[serde(default)]
+    pub expires_in: u64,
     /// Encrypted symmetric key returned by the identity endpoint.
     #[serde(rename = "Key")]
     pub key: String,

@@ -122,6 +122,34 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
 
+    // Issue (iter-15): Running vault-proxy as root (uid 0) is unnecessary and
+    // violates least privilege. vault-proxy is a credential broker — if it runs
+    // as root and is compromised, the attacker gains root. All it needs is read
+    // access to --config-dir and the ability to bind a TCP port above 1024
+    // (default 3201), neither of which requires root.
+    //
+    // We warn (not refuse) to avoid breaking Docker containers that are launched
+    // as root by default (e.g. `docker run --rm ghcr.io/.../vaultproxy`). A
+    // hard refusal would require ALL Docker users to set `--user` before they
+    // can even run --setup, which is a poor first-run experience. The warning
+    // is prominent enough that operators who care will act on it.
+    //
+    // Operators who truly need root (e.g. TPM /dev/tpm0 access on some distros
+    // without udev rules) can suppress the warning by passing `--allow-root`.
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } == 0 {
+        let allow_root = std::env::args().any(|a| a == "--allow-root");
+        if !allow_root {
+            tracing::warn!(
+                "SECURITY: vault-proxy is running as root (uid 0). This is unnecessary — \
+                 vault-proxy only needs read access to --config-dir and the ability to bind \
+                 to its listen port. Running as root means a compromise of this process \
+                 grants full system access. Use a dedicated non-root user (e.g. `--user vaultproxy` \
+                 in Docker). Pass --allow-root to suppress this warning if root is intentional."
+            );
+        }
+    }
+
     // Issue (iter-10): Create --config-dir if it does not exist.
     // Previously, a non-existent config_dir caused `safe_write_config()` to
     // fail with an obscure OS error ("open tmp file /nonexistent/keystore.json.tmp.NNN:
@@ -591,6 +619,30 @@ async fn start_server(
         tracing::info!("registered {} services from {:?}: {:?}", svc_count, services_path, registry.list());
     }
 
+    // Issue (iter-15): Startup configuration summary — log all key settings so
+    // operators can confirm that configuration was read correctly without having
+    // to dig through individual startup messages scattered across the log.
+    //
+    // Printed once, right after the registry is loaded (so svc_count is final)
+    // and before the heavy lifting of building HTTP clients and spawning tasks.
+    // The format is human-readable in structured logs (each field on its own
+    // key=value pair so Loki/Splunk can index them).
+    {
+        let cloud_sync_enabled = cloud_sync_arc.is_some();
+        let tpm_active = crate::keystore::has_tpm_key(config_dir);
+        tracing::info!(
+            listen            = %args.listen,
+            services          = svc_count,
+            vault_folder      = %args.vault_folder,
+            config_dir        = %config_dir,
+            tpm_active,
+            cloud_sync        = cloud_sync_enabled,
+            dashboard_listen  = %args.dashboard_listen,
+            proxy_timeout_s   = args.proxy_timeout,
+            "vault-proxy startup configuration summary"
+        );
+    }
+
     // Generate ephemeral mTLS certificates.
     //
     // Issue-6 (iter-5): These certs are regenerated on every startup — they are
@@ -751,6 +803,7 @@ async fn start_server(
         notifier,
         handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         vault_folder: args.vault_folder.clone(),
+        last_resync_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     });
 
     // Build router with rate limiting on sensitive endpoints.

@@ -90,6 +90,18 @@ pub struct VaultManager {
     vaultwarden_url: String,
     access_token: RwLock<String>,
     refresh_token: RwLock<Option<String>>,
+    /// Approximate instant at which the current access token expires.
+    ///
+    /// Set from `TokenResponse.expires_in` at construction time and updated
+    /// after every successful token refresh. Used by `maybe_proactive_refresh`
+    /// to trigger a proactive refresh when the token is within 5 minutes of
+    /// expiry — avoiding the reactive 401 path that adds ~200 ms latency on
+    /// the first request after expiry.
+    ///
+    /// The value is `None` if `expires_in` was 0 / missing in the token
+    /// response (older Vaultwarden versions that don't send `expires_in`);
+    /// in that case proactive refresh is simply disabled.
+    token_expires_at: RwLock<Option<std::time::Instant>>,
     /// Serialises concurrent calls to `reauth()`. Without this mutex, two
     /// concurrent 401 responses race to refresh the *same* (now-revoked)
     /// refresh token. Vaultwarden accepts only the first refresh; the second
@@ -224,10 +236,25 @@ impl VaultManager {
             decrypt_symmetric_key(&token_resp.key, master_key.as_bytes())
                 .context("failed to decrypt vault symmetric key")?;
 
+        // Compute the token expiry instant from expires_in (seconds).
+        // Vaultwarden typically returns 3600. A value of 0 means the field was
+        // absent or zero — proactive refresh is disabled in that case.
+        let token_expires_at = if token_resp.expires_in > 0 {
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(token_resp.expires_in))
+        } else {
+            None
+        };
+        tracing::debug!(
+            expires_in = token_resp.expires_in,
+            "access token acquired; proactive refresh {}",
+            if token_expires_at.is_some() { "enabled" } else { "disabled (no expires_in)" }
+        );
+
         let manager = VaultManager {
             vaultwarden_url: base_url,
             access_token: RwLock::new(token_resp.access_token),
             refresh_token: RwLock::new(token_resp.refresh_token),
+            token_expires_at: RwLock::new(token_expires_at),
             reauth_mutex: Mutex::new(()),
             enc_key,
             mac_key,
@@ -280,6 +307,9 @@ impl VaultManager {
         struct RefreshResp {
             access_token: String,
             refresh_token: Option<String>,
+            /// Token lifetime in seconds — used to update the expiry tracker.
+            #[serde(default)]
+            expires_in: u64,
         }
 
         let resp = self
@@ -304,15 +334,63 @@ impl VaultManager {
         if let Some(new_rt) = data.refresh_token {
             *self.refresh_token.write().await = Some(new_rt);
         }
+        // Update the expiry tracker so proactive refresh uses the new window.
+        if data.expires_in > 0 {
+            *self.token_expires_at.write().await =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(data.expires_in));
+        }
         tracing::info!("re-authenticated to Vaultwarden via refresh token");
         Ok(())
     }
 
+    /// Proactively refresh the access token if it is within 5 minutes of
+    /// expiry. This eliminates the reactive 401 → refresh → retry path that
+    /// adds ~200 ms latency on the first request after the token expires.
+    ///
+    /// Calling this method is cheap when the token is not near expiry — it
+    /// reads `token_expires_at` under a read lock and returns immediately.
+    /// When a refresh is needed it calls `reauth()`, which serialises concurrent
+    /// callers via `reauth_mutex` so only one refresh happens per expiry window.
+    ///
+    /// # When to call
+    ///
+    /// Call this at the start of `authed_request` (before using the token).
+    /// It is a no-op when `token_expires_at` is `None` (older Vaultwarden that
+    /// does not return `expires_in` in the token response).
+    async fn maybe_proactive_refresh(&self) {
+        const PROACTIVE_REFRESH_SECS: u64 = 300; // 5 minutes before expiry
+
+        let expires_at = *self.token_expires_at.read().await;
+        let Some(exp) = expires_at else { return };
+
+        let now = std::time::Instant::now();
+        if exp > now && exp.duration_since(now).as_secs() > PROACTIVE_REFRESH_SECS {
+            // Token is not near expiry — nothing to do.
+            return;
+        }
+
+        tracing::info!(
+            "access token expires in <{}s — proactively refreshing before next request",
+            PROACTIVE_REFRESH_SECS
+        );
+        if let Err(e) = self.reauth().await {
+            // Non-fatal: the next request will trigger a reactive 401 refresh.
+            tracing::warn!("proactive token refresh failed (will retry on 401): {:#}", e);
+        }
+    }
+
     /// Send a request with the current access token. On 401, refresh and retry once.
+    ///
+    /// Calls `maybe_proactive_refresh` first so tokens near expiry are renewed
+    /// before the request is sent — eliminating the reactive 401 → refresh →
+    /// retry round-trip that adds ~200 ms latency.
     async fn authed_request(
         &self,
         build: impl Fn(&str) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
+        // Proactively refresh if the token is within 5 minutes of expiry.
+        self.maybe_proactive_refresh().await;
+
         let token = self.access_token.read().await.clone();
         let raw = build(&token).send().await.context("request failed")?;
 

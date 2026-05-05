@@ -3079,6 +3079,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "hmac",
+ "libc",
  "memsec",
  "pbkdf2",
  "rand 0.8.5",

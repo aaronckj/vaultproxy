@@ -35,6 +35,13 @@ struct ServiceConfig {
     login_include_username: bool,
     #[serde(default)]
     insecure_tls: bool,
+    /// Optional path to a PEM-encoded CA certificate bundle to use when
+    /// connecting to this service. Intended for services signed by a private
+    /// / internal CA where `insecure_tls = true` is too broad. If both
+    /// `ca_cert` and `insecure_tls` are set, `insecure_tls` wins (no cert
+    /// verification at all). A missing or unreadable file is a startup error
+    /// for the affected service (the service is skipped with an error log).
+    ca_cert: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -117,6 +124,11 @@ pub struct ServiceEntry {
     /// iter-29 added this — previously iter-1's TLS-strict `state.http`
     /// silently broke OPNsense (502 "error sending request").
     pub insecure_tls: bool,
+    /// Optional path to a PEM CA certificate bundle for this service. When set,
+    /// a per-service reqwest client is built that trusts this CA in addition to
+    /// the system root store — the correct option for internal-CA-signed services
+    /// where `insecure_tls = true` would disable all TLS verification.
+    pub ca_cert_path: Option<String>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -233,6 +245,7 @@ impl ServiceRegistry {
                         vault_item: "Connecterr - Home Assistant".to_string(),
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -259,6 +272,7 @@ impl ServiceRegistry {
                         secret_field: "secret".to_string(),
                     },
                     insecure_tls: true,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -286,6 +300,7 @@ impl ServiceRegistry {
                         login_include_username: true,
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -312,6 +327,7 @@ impl ServiceRegistry {
                         login_path: "/api/auth/login".to_string(),
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -339,6 +355,7 @@ impl ServiceRegistry {
                         login_include_username: false,
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -394,6 +411,7 @@ impl ServiceRegistry {
                         vault_item: format!("{} - Home Assistant", vault_prefix),
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -414,6 +432,7 @@ impl ServiceRegistry {
                         secret_field: "secret".to_string(),
                     },
                     insecure_tls: true,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -435,6 +454,7 @@ impl ServiceRegistry {
                         login_include_username: true,
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -454,6 +474,7 @@ impl ServiceRegistry {
                         login_path: "/api/auth/login".to_string(),
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -475,6 +496,7 @@ impl ServiceRegistry {
                         login_include_username: false,
                     },
                     insecure_tls: false,
+                    ca_cert_path: None,
                 });
             }
         }
@@ -835,6 +857,46 @@ impl ServiceRegistry {
                 }
             };
 
+            // Issue (iter-15): Validate ca_cert path if provided. Read it now
+            // so a missing or unreadable file fails at startup rather than at
+            // the first proxy call (which may be hours later in production).
+            // We also warn if BOTH ca_cert and insecure_tls are set — in that
+            // case insecure_tls wins (disables all verification), making ca_cert
+            // pointless; the operator probably meant one or the other.
+            let ca_cert_path: Option<String> = match svc.ca_cert {
+                Some(ref path) if !path.is_empty() => {
+                    if svc.insecure_tls {
+                        tracing::warn!(
+                            "service '{}': both ca_cert and insecure_tls = true are set. \
+                             insecure_tls disables ALL certificate verification, making ca_cert \
+                             redundant. Remove ca_cert if you want no verification, or remove \
+                             insecure_tls to use the CA cert instead.",
+                            svc.name
+                        );
+                        None // insecure_tls wins; don't store ca_cert_path
+                    } else {
+                        // Verify the file exists and is readable at startup.
+                        match std::fs::read(path) {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "service '{}': using custom CA certificate from '{}'",
+                                    svc.name, path
+                                );
+                                Some(path.clone())
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "service '{}': ca_cert '{}' is not readable: {} — skipping service",
+                                    svc.name, path, e
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                }
+                _ => None,
+            };
+
             // Issue-3 (iter-5): Warn prominently when a service is registered
             // with insecure_tls = true. Silently accepting invalid certs means
             // the proxy will not detect MITM attacks or certificate substitution
@@ -858,6 +920,7 @@ impl ServiceRegistry {
                 base_url,
                 auth,
                 insecure_tls: svc.insecure_tls,
+                ca_cert_path,
             });
         }
 
@@ -916,6 +979,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
                 vault_item: format!("{} - Plex", vault_prefix),
             },
             insecure_tls: false,
+            ca_cert_path: None,
         }),
         "sonarr" => Some(ServiceEntry {
             name,
@@ -925,6 +989,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
                 vault_item: format!("{} - Sonarr", vault_prefix),
             },
             insecure_tls: false,
+            ca_cert_path: None,
         }),
         "radarr" => Some(ServiceEntry {
             name,
@@ -934,6 +999,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
                 vault_item: format!("{} - Radarr", vault_prefix),
             },
             insecure_tls: false,
+            ca_cert_path: None,
         }),
         "overseerr" => Some(ServiceEntry {
             name,
@@ -943,6 +1009,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
                 vault_item: format!("{} - Overseerr", vault_prefix),
             },
             insecure_tls: false,
+            ca_cert_path: None,
         }),
         "tautulli" => Some(ServiceEntry {
             name,
@@ -952,6 +1019,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
                 vault_item: format!("{} - Tautulli", vault_prefix),
             },
             insecure_tls: false,
+            ca_cert_path: None,
         }),
         _ => {
             tracing::warn!(svc_type, "unknown media service type — skipping");

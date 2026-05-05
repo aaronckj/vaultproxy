@@ -1616,16 +1616,65 @@ pub async fn check_permission(
 /// to 60 times per minute, causing ~60 full-vault fetches against the local
 /// Vaultwarden instance.
 ///
-/// TODO(public-release): Add a per-endpoint cooldown (e.g. minimum 30 s
-/// between resync calls) to prevent an MCP client from using this as a
-/// denial-of-service amplifier against a shared Vaultwarden instance.
-pub async fn vault_resync(State(state): State<Arc<AppState>>) -> Json<Value> {
+/// Per-endpoint cooldown for `/vault/resync`: minimum 30 seconds between calls.
+/// Each full sync takes ~200 ms on a 900-item vault and holds the items write
+/// lock for that duration. Allowing 60 calls/minute (global rate limit) would
+/// mean ~60 full-vault fetches per minute — a denial-of-service amplifier
+/// against a shared Vaultwarden instance.
+///
+/// The cooldown uses `AppState.last_resync_unix` (an `AtomicU64` storing seconds
+/// since the Unix epoch). On cooldown violation we return a 429 with a JSON body
+/// that includes `retry_after_s` so callers can back off correctly.
+const RESYNC_COOLDOWN_SECS: u64 = 30;
+
+pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::StatusCode, Json<Value>) {
+    use std::sync::atomic::Ordering;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Get the current Unix timestamp (saturate to 0 on clock error — that just
+    // means the cooldown is bypassed once, which is benign).
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let last = state.last_resync_unix.load(Ordering::Relaxed);
+    if last > 0 {
+        let elapsed = now.saturating_sub(last);
+        if elapsed < RESYNC_COOLDOWN_SECS {
+            let retry_after = RESYNC_COOLDOWN_SECS - elapsed;
+            tracing::warn!(
+                elapsed_s = elapsed,
+                retry_after_s = retry_after,
+                "vault_resync: cooldown active, rejecting request"
+            );
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "ok": false,
+                    "error": "resync cooldown active — try again shortly",
+                    "retry_after_s": retry_after,
+                })),
+            );
+        }
+    }
+
+    // Update the last-resync timestamp before the sync so concurrent callers
+    // also see the cooldown (prevents a small race window where two requests
+    // both pass the check before either updates the timestamp).
+    state.last_resync_unix.store(now, Ordering::Relaxed);
+
     match state.vault.sync().await {
         Ok(()) => {
             let items = state.vault.list_items().await;
-            Json(json!({"ok": true, "items": items.len()}))
+            (axum::http::StatusCode::OK, Json(json!({"ok": true, "items": items.len()})))
         }
-        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
+        Err(e) => {
+            // On error, reset the timestamp so operators can immediately retry
+            // after fixing the underlying issue (e.g. Vaultwarden unreachable).
+            state.last_resync_unix.store(0, Ordering::Relaxed);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()})))
+        }
     }
 }
 

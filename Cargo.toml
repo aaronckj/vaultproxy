@@ -66,6 +66,7 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 async-trait = "0.1"
 toml = "0.8"
 shell-words = "1"
+libc = "0.2"
 
 [features]
 # `default` = no optional features. This is the recommended build for Docker/server

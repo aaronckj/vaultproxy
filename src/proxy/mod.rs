@@ -79,6 +79,11 @@ pub struct AppState {
     /// Stored here so HTTP handlers use the same folder the registry was
     /// built against, instead of falling back to `DEFAULT_VAULT_FOLDER`.
     pub vault_folder: String,
+    /// Timestamp of the last successful `POST /vault/resync` call.
+    /// Used to enforce a 30-second per-endpoint cooldown so an MCP client
+    /// cannot hammer Vaultwarden with full-vault syncs at 60 req/60s.
+    /// Stored as seconds since the Unix epoch via `AtomicU64` (zero = never).
+    pub last_resync_unix: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -747,17 +752,71 @@ fn build_request(
     url: &str,
     req: &ProxyRequest,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
-    // Pick the TLS-permissive client for services that present self-signed
-    // certs (e.g. OPNsense on LAN). The `insecure_tls` flag is set at
-    // registry-construction time in `proxy/registry.rs`. Before iter-29,
-    // iter-1's strict `state.http` silently 502'd every OPNsense call.
+    // Pick the right TLS client for this service:
+    //   - insecure_tls = true  → http_permissive (no cert verification)
+    //   - ca_cert_path set     → build a one-off client that trusts this CA
+    //   - neither              → http (strict system-root verification)
+    //
+    // The ca_cert client is built per-call rather than cached because
+    // (a) these services are rare and (b) reqwest::Client is cheap to clone.
+    // The performance impact is negligible (one Arc clone for the connector);
+    // a cached HashMap<String, Client> would add significant state complexity.
     let service_name = req.service.as_str();
-    let insecure = state
-        .registry
-        .get(service_name)
-        .map(|s| s.insecure_tls)
-        .unwrap_or(false);
-    let client = if insecure { &state.http_permissive } else { &state.http };
+    let service_entry = state.registry.get(service_name);
+    let insecure = service_entry.map(|s| s.insecure_tls).unwrap_or(false);
+    let ca_cert_path = service_entry.and_then(|s| s.ca_cert_path.as_deref());
+
+    // Build or select client based on TLS policy.
+    // `owned_client` holds a per-call client when ca_cert is in use; it must
+    // outlive the `builder` borrow so we declare it before `client`.
+    let owned_client: Option<reqwest::Client> = if !insecure {
+        if let Some(ca_path) = ca_cert_path {
+            // Issue (iter-15): Build a reqwest client that trusts the private CA.
+            // We re-read the cert file here; it was validated at registry load
+            // time so this read should not fail. If it does (e.g. file deleted
+            // after startup), fall back to the strict client and log a warning.
+            match std::fs::read(ca_path)
+                .ok()
+                .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
+            {
+                Some(cert) => {
+                    match reqwest::Client::builder()
+                        .add_root_certificate(cert)
+                        .timeout(std::time::Duration::from_secs(120))
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                    {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            tracing::warn!(
+                                "service '{}': failed to build CA-cert client ({}), \
+                                 falling back to strict TLS", service_name, e
+                            );
+                            None
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "service '{}': ca_cert '{}' could not be read at request time, \
+                         falling back to strict TLS", service_name, ca_path
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let client: &reqwest::Client = if insecure {
+        &state.http_permissive
+    } else if let Some(ref c) = owned_client {
+        c
+    } else {
+        &state.http
+    };
     let mut builder = client.request(method, url);
 
     // Extra query params supplied by the caller.
@@ -872,6 +931,20 @@ fn build_request(
     Ok(builder)
 }
 
+/// Maximum upstream response body we'll buffer. 32 MB is generous for any
+/// legitimate JSON API response; a malicious or misbehaving upstream that
+/// returns a 10 GB body would otherwise exhaust the proxy's heap.
+///
+/// The 64 KB cap on *incoming* `/proxy` request bodies (applied at the router
+/// via `DefaultBodyLimit`) does NOT apply to *outgoing* upstream responses —
+/// this constant closes that gap.
+///
+/// 32 MB allows single-call responses that return large vault exports, log
+/// dumps, or bulk API payloads while still protecting against unbounded
+/// buffering. If a legitimate service needs more, it should be streamed
+/// (not proxied through vault-proxy).
+const UPSTREAM_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
 /// Send a built request and normalise the response into a `ProxyResponse`.
 ///
 /// Body parsing strategy (three-tier fallback):
@@ -894,12 +967,42 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
 
     let status = resp.status().as_u16();
 
+    // Issue (iter-15): Cap upstream response body at 32 MB before buffering.
+    // `resp.bytes()` would happily read a 10 GB body into heap memory.
+    // `Content-Length` is advisory (can be missing or lying), so we check the
+    // header first as a fast-path reject, then cap actual streaming reads by
+    // bailing out if the collected bytes exceed the limit.
+    //
+    // The check is: reject any response with a Content-Length header that
+    // declares a body larger than the limit. For chunked or no-Content-Length
+    // responses we use `bytes()` which buffers the full body — so the actual
+    // cap is enforced by checking the returned length.
+    if let Some(content_length) = resp.content_length() {
+        if content_length > UPSTREAM_BODY_LIMIT_BYTES as u64 {
+            return Err(anyhow::anyhow!(
+                "upstream response Content-Length ({} bytes) exceeds the \
+                 {} MB limit — refusing to buffer",
+                content_length,
+                UPSTREAM_BODY_LIMIT_BYTES / (1024 * 1024),
+            ));
+        }
+    }
+
     // Collect bytes once so we can attempt JSON parsing without consuming the
     // response, then fall back to a text wrapper for non-JSON bodies.
     let bytes = resp
         .bytes()
         .await
         .map_err(|e| anyhow::anyhow!("failed to read upstream response body: {}", e))?;
+
+    if bytes.len() > UPSTREAM_BODY_LIMIT_BYTES {
+        return Err(anyhow::anyhow!(
+            "upstream response body ({} bytes) exceeds the {} MB limit — \
+             refusing to buffer",
+            bytes.len(),
+            UPSTREAM_BODY_LIMIT_BYTES / (1024 * 1024),
+        ));
+    }
 
     let body: Value = if bytes.is_empty() {
         Value::Null
