@@ -519,6 +519,18 @@ impl ServiceRegistry {
     /// Parse errors also return an empty registry with an error log, giving
     /// operators a chance to fix the TOML without taking down an already-running
     /// proxy (e.g. during a hot-reload). Both cases emit a visible log entry.
+    ///
+    /// # Service count limit
+    ///
+    /// There is no hard upper bound on the number of `[[service]]` entries.
+    /// Each entry becomes one `HashMap` entry in the registry and one vault
+    /// item lookup at credential-use time (not at startup). A very large file
+    /// (e.g. 10 000 services) imposes no startup cost beyond parsing, but
+    /// would make the `service_tokens` cache unbounded and log output very
+    /// noisy. A warning is emitted above 256 services as an operator hint.
+    ///
+    /// TODO: Consider adding a hard cap (e.g. 1024) guarded by an override env
+    /// var for operators who genuinely need large registries.
     pub fn from_toml_file(path: &Path) -> Self {
         let mut registry = Self::new();
 
@@ -743,6 +755,21 @@ impl ServiceRegistry {
                 auth,
                 insecure_tls: svc.insecure_tls,
             });
+        }
+
+        // Warn on unusually large registries. The registry HashMap and the
+        // session_tokens cache both scale with the number of services; past
+        // 256 entries the operator should verify they haven't accidentally
+        // included a generated or duplicated services.toml.
+        const SERVICE_COUNT_WARN_THRESHOLD: usize = 256;
+        if registry.entries.len() > SERVICE_COUNT_WARN_THRESHOLD {
+            tracing::warn!(
+                "services.toml registered {} services (threshold {}). \
+                 Verify this is intentional — large registries increase memory use and \
+                 credential-lookup noise. Consider splitting into multiple vault-proxy instances.",
+                registry.entries.len(),
+                SERVICE_COUNT_WARN_THRESHOLD,
+            );
         }
 
         registry

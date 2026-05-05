@@ -524,6 +524,14 @@ async fn apply_auth_and_send(
 /// and also bounds the window for a stolen-token replay.
 const SESSION_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// Maximum number of entries in the session token cache. Each entry is keyed
+/// by `vault_item` name, so under normal operation the map is bounded by the
+/// number of `AuthPattern::Session` services in services.toml. The cap
+/// prevents unbounded growth if services are repeatedly registered and
+/// de-registered (e.g. via a crafted services.toml reload loop), or if a
+/// future code path adds entries without a corresponding eviction.
+const SESSION_TOKEN_CACHE_MAX: usize = 512;
+
 /// Fetch a session token from the cache, falling back to a fresh login on
 /// miss, stale entry, or `force_refresh`. Writes the result back into the
 /// cache on successful login.
@@ -545,11 +553,29 @@ async fn get_or_refresh_session_token(
     }
 
     let fresh = session_login(state, vault_item, login_path, token_field, login_include_username).await?;
-    state
-        .session_tokens
-        .write()
-        .await
-        .insert(vault_item.to_string(), (fresh.clone(), Instant::now()));
+    {
+        let mut cache = state.session_tokens.write().await;
+        // Enforce cap: if the cache is at the limit, evict the oldest entry
+        // before inserting the new one. This prevents unbounded growth in the
+        // unlikely event of many distinct vault_item keys accumulating (e.g. a
+        // services.toml with hundreds of session services, or a misbehaving
+        // caller cycling through vault item names).
+        if cache.len() >= SESSION_TOKEN_CACHE_MAX && !cache.contains_key(vault_item) {
+            // Find the entry with the oldest acquisition time and remove it.
+            let oldest_key = cache
+                .iter()
+                .min_by_key(|(_, (_, acquired))| *acquired)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest_key {
+                cache.remove(&key);
+                tracing::warn!(
+                    "session token cache reached {} entries — evicted oldest entry to make room",
+                    SESSION_TOKEN_CACHE_MAX
+                );
+            }
+        }
+        cache.insert(vault_item.to_string(), (fresh.clone(), Instant::now()));
+    }
     Ok(fresh)
 }
 
@@ -744,8 +770,44 @@ fn build_request(
     }
 
     // Extra headers supplied by the caller.
+    //
+    // Issue-X (iter-7): Block auth-override headers. vault-proxy injects auth
+    // headers (Authorization, X-Api-Key, X-Plex-Token, etc.) AFTER this
+    // build_request call, by chaining on the returned RequestBuilder. reqwest
+    // does NOT deduplicate headers — if the caller also injects Authorization
+    // here, the upstream receives BOTH headers. Most HTTP servers pick the first
+    // occurrence, so the caller's header wins — the vault credential is ignored
+    // and the caller has effectively bypassed vault-proxy's credential isolation.
+    //
+    // Guard: reject any caller-supplied header whose canonical lowercase name is
+    // on the blocked list. `Host` is also blocked: injecting a mismatched Host
+    // can bypass virtual-host routing on the upstream (e.g. a Caddy or nginx
+    // proxy that routes based on Host would forward to the wrong backend).
+    //
+    // This list is intentionally conservative: callers can still set custom
+    // application headers (X-My-Header, Content-Type overrides, etc.) that are
+    // not auth-adjacent. If a service requires a custom auth header that happens
+    // to collide with this list, it should be modelled as a new AuthPattern
+    // rather than passing credentials through the open `headers` field.
+    const BLOCKED_HEADERS: &[&str] = &[
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-plex-token",
+        "x-csrf-token",
+        "cookie",
+        "host",
+    ];
     if let Some(headers) = &req.headers {
         for (k, v) in headers {
+            let k_lower = k.to_lowercase();
+            if BLOCKED_HEADERS.iter().any(|blocked| k_lower == *blocked) {
+                return Err(anyhow::anyhow!(
+                    "header '{}' is not allowed in proxy requests — auth headers are injected \
+                     by vault-proxy from the vault; passing them directly could bypass credential isolation",
+                    k
+                ));
+            }
             if let Some(v_str) = v.as_str() {
                 builder = builder.header(k, v_str);
             }

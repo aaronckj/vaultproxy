@@ -645,12 +645,17 @@ pub async fn test_credential(
     use reqwest::Client;
     use zeroize::Zeroizing;
 
-    // Disallow obviously-invalid URLs early so the caller gets a clean 400
-    // rather than a reqwest DNS error mid-flight.
-    if !(req.url.starts_with("http://") || req.url.starts_with("https://")) {
+    // Validate the URL against the full SSRF policy — not just a scheme check.
+    // The original check only blocked non-http(s) schemes but allowed requests
+    // to 169.254.169.254 (AWS IMDS), fe80::/10 link-local addresses, and other
+    // cloud-metadata endpoints. Since this endpoint makes an outbound request
+    // with real vault credentials, a caller could use it as an SSRF gadget to
+    // probe internal services or exfiltrate credentials to an attacker-controlled
+    // host without ever touching the proxy's own service registry.
+    if !is_allowed_outbound_url(&req.url) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "url must begin with http:// or https://" })),
+            Json(json!({ "error": "url must be http(s) and resolve to a non-metadata, non-link-local host" })),
         );
     }
 

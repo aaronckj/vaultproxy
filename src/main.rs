@@ -144,7 +144,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // CLI setup mode (headless/Docker) — interactive wizard, then start server
+    // CLI setup mode (headless/Docker) — interactive wizard, then start server.
+    //
+    // NOTE: `--setup` and `--launch <server>` are NOT mutually exclusive.
+    // If both flags are present, the wizard runs first, then `start_server()`
+    // immediately calls `launcher::launch()` and execs the MCP server — the
+    // proxy never actually starts accepting connections. This is intentional
+    // for "setup + run" one-shot containers.
+    //
+    // NOTE (iter-7): After `--setup` completes, the process calls `start_server()`
+    // and begins proxying on the configured address. It does NOT exit. The wizard
+    // prints "Remove --setup from your start command and restart to begin proxying"
+    // as a reminder, but the proxy is already functional without a restart.
+    // On the next restart WITH --setup still present, the overwrite-confirmation
+    // guard (added in iter-3) prevents accidental keystore destruction.
+    // This design means `--setup` is idempotent-safe: first run configures and
+    // starts; subsequent runs with --setup require explicit confirmation before
+    // overwriting.
     if args.setup {
         // Guard against silent overwrite of an existing, working keystore.
         // An operator who accidentally passes --setup on a running deployment

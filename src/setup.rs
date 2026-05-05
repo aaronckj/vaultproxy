@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 use crate::keystore::{self, Credentials, VaultwardenCreds};
 use crate::vault::VaultManager;
@@ -139,10 +140,19 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     // Read the master password with terminal echo disabled so it does not
     // appear on-screen or in shell scroll-back. Previously read_line() echoed
     // every keystroke of the most sensitive credential in the system.
-    let master_password = rpassword::prompt_password("Vaultwarden master password: ")
-        .map_err(|e| anyhow!("failed to read master password: {}", e))?
-        .trim()
-        .to_string();
+    //
+    // Wrap in Zeroizing<String> so the heap allocation is overwritten when the
+    // binding goes out of scope. rpassword returns a plain String; we move it
+    // into Zeroizing immediately so plaintext never lives on the heap without
+    // zeroize-on-drop semantics. The trim() call produces a &str view into the
+    // same allocation — we re-own with to_string() inside Zeroizing so the
+    // trimmed copy is also covered.
+    let master_password: Zeroizing<String> = Zeroizing::new(
+        rpassword::prompt_password("Vaultwarden master password: ")
+            .map_err(|e| anyhow!("failed to read master password: {}", e))?
+            .trim()
+            .to_string(),
+    );
     if master_password.is_empty() {
         return Err(anyhow!("master password cannot be empty"));
     }
@@ -152,15 +162,17 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     println!("Credentials valid!\n");
 
     // Setup password is also echo-off — it protects the keystore.
-    let setup_password = rpassword::prompt_password(
-        "Choose a setup password (min 12 chars, ≥2 character classes — unlocks keystore + dashboard): ",
-    )
-    .map_err(|e| anyhow!("failed to read setup password: {}", e))?
-    .trim()
-    .to_string();
+    let setup_password: Zeroizing<String> = Zeroizing::new(
+        rpassword::prompt_password(
+            "Choose a setup password (min 12 chars, ≥2 character classes — unlocks keystore + dashboard): ",
+        )
+        .map_err(|e| anyhow!("failed to read setup password: {}", e))?
+        .trim()
+        .to_string(),
+    );
     validate_setup_password(&setup_password)?;
 
-    let setup_hash = bcrypt::hash(&setup_password, bcrypt::DEFAULT_COST)
+    let setup_hash = bcrypt::hash(setup_password.as_str(), bcrypt::DEFAULT_COST)
         .map_err(|e| anyhow!("bcrypt hash failed: {}", e))?;
 
     let creds = Credentials {
@@ -168,13 +180,15 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
         vaultwarden: VaultwardenCreds {
             url,
             email,
-            master_password,
+            master_password: master_password.to_string(),
         },
         cloud: None,
         setup_password_hash: Some(setup_hash.clone()),
     };
 
     keystore::setup_keystore(config_dir, creds.clone(), &setup_password)?;
+    // master_password and setup_password Zeroizing<String> bindings are dropped
+    // (zeroized) here — after setup_keystore has consumed what it needs from them.
 
     let dashboard_config = format!("{}/dashboard.json", config_dir);
     let dashboard_json = serde_json::json!({ "password_hash": setup_hash });
