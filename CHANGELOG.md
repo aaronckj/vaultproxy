@@ -3,6 +3,37 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] — iteration-21 audit fixes
+
+### Security fixes (iteration 21)
+
+- **API security response headers (iter-21)**: `GET /vault/*` and `POST /proxy`
+  responses now include `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  and `Referrer-Policy: no-referrer`. Previously only the dashboard router applied
+  these; the main API port returned bare responses, leaving browser-based clients
+  vulnerable to MIME sniffing and framing attacks.
+
+- **Control character injection in `upsert_connecterr_secrets` (iter-21)**: Item
+  names containing newlines (`\n`, `\r`), null bytes (`\0`), tabs, or any other
+  ASCII control character are now rejected with a 400 error. A crafted name with
+  an embedded `\n` could corrupt Vaultwarden storage or inject fake log lines into
+  structured output. `validate_item_name` now rejects all characters in the range
+  U+0000–U+001F and U+007F.
+
+### UX improvements (iteration 21)
+
+- **`GET /vault/folders?include_all=true` (iter-21)**: `list_folders` now accepts
+  an `include_all=true` query parameter that returns all vault folders. The default
+  (no parameter) continues to return only `vault_folder`-scoped entries. The full
+  listing is needed by `POST /vault/items/move` callers that want to specify a
+  destination `folder_id` outside the proxy's own folder — without it, the
+  `folder_id` path of `move_item` was unusable for cross-folder moves.
+
+- **`services.toml` missing error message (iter-21)**: The startup warning when
+  `services.toml` is absent now distinguishes "file not found" (first-run) from
+  permission/I/O errors, and includes the correct Docker Compose mount path
+  (`./config/services.toml`) in the first-run message.
+
 ## [Unreleased] — security hardening (iterations 1–20)
 
 The v0.1.0 release tag reflects the initial public scaffold. Since that
@@ -11,7 +42,7 @@ audit passes totalling 160+ individual fixes. The items below are
 representative; they are NOT all included in the v0.1.0 release artifact.
 
 Users building from source or pulling a `latest` image get all fixes.
-Users on the v0.1.0 tagged release should upgrade to v0.1.1 (or later).
+Users on the v0.1.0 tagged release should upgrade to v0.1.2 (or later).
 
 ### Security fixes (iterations 17–20) — vault_folder scope hardening
 

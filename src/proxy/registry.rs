@@ -582,7 +582,33 @@ impl ServiceRegistry {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("services.toml not found at {:?}: {} — starting with empty registry", path, e);
+                // Issue (iter-21): Distinguish "file does not exist" (first-run)
+                // from other I/O errors (permissions, corrupted FS) so operators
+                // get an actionable message in each case.
+                //
+                // First-run: services.toml has not yet been created. The operator
+                // needs to copy services.example.toml from the repo into the config
+                // directory before any /proxy calls will work. The Docker Compose
+                // mount is `./config:/config`, so the destination is /config/services.toml.
+                //
+                // Other error: the file exists but can't be read — permission or FS
+                // issue that needs operator attention before services will work.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        "services.toml not found at {:?} — starting with empty registry. \
+                         First run? Copy services.example.toml to {:?} and add [[service]] \
+                         blocks for each downstream API you want vault-proxy to proxy. \
+                         In Docker Compose the config mount is ./config:/config, so the \
+                         file belongs at ./config/services.toml on the host.",
+                        path, path
+                    );
+                } else {
+                    tracing::warn!(
+                        "could not read services.toml at {:?}: {} — starting with empty registry. \
+                         Check file permissions (needs read access for the vault-proxy user).",
+                        path, e
+                    );
+                }
                 return registry;
             }
         };

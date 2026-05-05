@@ -29,6 +29,27 @@ fn validate_item_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("name is empty".into());
     }
+    // Issue (iter-21): Reject names containing newlines, null bytes, or other
+    // ASCII control characters. A name with an embedded `\n` or `\r` could:
+    //   1. Corrupt Vaultwarden's internal storage if the cipher name is stored
+    //      in a format that treats newlines as delimiters (TOML, env files, etc.).
+    //   2. Pollute structured log output — a crafted name like "foo\nERROR bar"
+    //      could inject a fake log line into tracing output.
+    //   3. Confuse any downstream code that splits on newlines to enumerate items.
+    //
+    // We also reject null bytes (\0) because they terminate C-style strings and
+    // can confuse SQLite or OS-level file name comparisons.
+    //
+    // The check covers all ASCII control characters (0x00–0x1F, including \t,
+    // \n, \r) and DEL (0x7F). Printable ASCII and valid UTF-8 multi-byte
+    // sequences are allowed.
+    if name.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
+        return Err(format!(
+            "name '{}' contains a control character (newline, null, tab, etc.) — \
+             item names must contain only printable characters",
+            name.escape_debug()
+        ));
+    }
     if name.split('/').any(|seg| seg.is_empty()) {
         return Err(format!("name '{}' has empty path segment", name));
     }
@@ -393,9 +414,27 @@ pub async fn list_duplicates(
 /// them, but personal folders are no longer surfaced.
 ///
 /// If the vault_folder is not found (fresh vault), an empty list is returned.
+///
+/// # `?include_all=true` — destination listing for `move_item` (iter-21)
+///
+/// `POST /vault/items/move` accepts a `folder_id` field so the caller can
+/// target an already-existing folder by its UUID. After the iter-20 scope
+/// restriction, the only way to discover folder IDs from other folders was
+/// out-of-band (Vaultwarden UI, external API call). That makes the `folder_id`
+/// path of `move_item` effectively unusable for cross-folder moves.
+///
+/// The `?include_all=true` query parameter restores the pre-iter-20 full
+/// listing ONLY for use as a destination picker. It is intentionally separate
+/// from the default path so callers must opt in. Audit logging is applied.
+///
+/// This is NOT a security regression: folder names are already visible to
+/// the vault owner in Vaultwarden; any authenticated local caller (same threat
+/// model as the rest of the API) can enumerate them.
 pub async fn list_folders(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<Vec<FolderInfo>> {
+    let include_all = params.get("include_all").map(|v| v == "true").unwrap_or(false);
     let tracked: std::collections::HashSet<String> = if let Some(ref sm) = state.cloud_sync {
         sm.map
             .read()
@@ -408,9 +447,22 @@ pub async fn list_folders(
         std::collections::HashSet::new()
     };
     let all = state.vault.list_folders_with_counts(&tracked).await;
-    // Filter to only entries whose name matches vault_folder. This still exposes
-    // duplicate vault_folder entries (same name, different id) so operators can
-    // identify and consolidate migration artefacts.
+
+    if include_all {
+        // Return all folders — used by callers that need to resolve destination
+        // folder IDs for `POST /vault/items/move`. Audit so operators can see
+        // when the full listing is requested.
+        tracing::info!(
+            "list_folders: include_all=true requested — returning all {} folder(s) \
+             for destination resolution (move_item use case)",
+            all.len()
+        );
+        return Json(all);
+    }
+
+    // Default: filter to only entries whose name matches vault_folder. This still
+    // exposes duplicate vault_folder entries (same name, different id) so operators
+    // can identify and consolidate migration artefacts.
     let scoped: Vec<FolderInfo> = all
         .into_iter()
         .filter(|f| f.name == state.vault_folder.as_str())
@@ -2573,6 +2625,33 @@ mod upsert_tests {
         assert!(validate_item_name("a//b").is_err());
         assert!(validate_item_name("ssh/kali").is_ok());
         assert!(validate_item_name("media/plex").is_ok());
+    }
+
+    /// Issue (iter-21): Names with embedded control characters must be rejected.
+    ///
+    /// A name containing `\n` or `\r` could:
+    ///   - corrupt Vaultwarden storage if names are stored line-by-line
+    ///   - inject fake log lines into structured logging output
+    ///   - confuse downstream code that splits on newlines
+    ///
+    /// A name containing `\0` (null byte) terminates C-style strings and
+    /// can confuse SQLite or OS-level filename comparisons.
+    #[test]
+    fn control_characters_in_name_are_rejected() {
+        // Newline (LF)
+        assert!(validate_item_name("ssh/kali\n").is_err(), "LF must be rejected");
+        // Carriage return (CR)
+        assert!(validate_item_name("ssh/kali\r").is_err(), "CR must be rejected");
+        // Null byte
+        assert!(validate_item_name("ssh/kali\x00").is_err(), "null byte must be rejected");
+        // Tab
+        assert!(validate_item_name("ssh/\tkali").is_err(), "tab must be rejected");
+        // Embedded newline mid-name
+        assert!(validate_item_name("ssh\nkali").is_err(), "embedded LF must be rejected");
+        // DEL (0x7F)
+        assert!(validate_item_name("ssh/kali\x7f").is_err(), "DEL must be rejected");
+        // Valid names with non-ASCII printable UTF-8 characters are allowed
+        assert!(validate_item_name("ssh/kali-üñicode").is_ok(), "UTF-8 printable must pass");
     }
 
     /// Exercises the 400 path of `upsert_connecterr_secrets` without a live

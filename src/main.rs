@@ -973,6 +973,18 @@ async fn start_server(
             security::rate_limit::rate_limit_middleware,
         ))
         .layer(axum::middleware::from_fn(dns_rebinding_guard))
+        // Issue (iter-21): Add security response headers to all API endpoints.
+        // The dashboard router already applies these via its own `security_headers`
+        // middleware (dashboard/mod.rs). The main API router (serving /proxy and
+        // /vault/*) lacked equivalent headers — browser-based dashboard callers
+        // making cross-origin requests to the API port were unprotected against
+        // MIME sniffing, framing, and referrer leakage. Apply the same three
+        // defensive headers here.
+        //
+        // Note: HSTS is intentionally omitted — the sidecar binds to plain HTTP
+        // on 127.0.0.1:3201 (no TLS on the API port). HSTS is only meaningful
+        // for HTTPS contexts.
+        .layer(axum::middleware::from_fn(api_security_headers))
         .with_state(state.clone());
 
     // Construct credential_audit orchestrator + router and merge into app.
@@ -1514,6 +1526,34 @@ async fn browser_abort(
     };
     *browser.current_job.write().await = None;
     AxumJson(serde_json::json!({"status": "aborted"}))
+}
+
+/// Adds security response headers to all main API (non-dashboard) responses.
+///
+/// Issue (iter-21): The `/proxy` and `/vault/*` endpoints previously returned
+/// bare responses with no defensive headers. Browser-based dashboard clients
+/// that call back to the API port are protected against:
+///
+/// - **MIME sniffing** (`X-Content-Type-Options: nosniff`): prevents IE/Chrome
+///   from re-interpreting a JSON response as an executable type.
+/// - **Framing** (`X-Frame-Options: DENY`): prevents the API responses from
+///   being embedded in an attacker's `<iframe>`.
+/// - **Referrer leakage** (`Referrer-Policy: no-referrer`): suppresses the
+///   `Referer` header on requests originating from this context, preventing
+///   any vault item names or paths from leaking to upstream services.
+///
+/// These headers are set on all API responses (success and error) so that
+/// framing and MIME-type attacks are blocked regardless of status code.
+async fn api_security_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+    headers.insert("X-Frame-Options", "DENY".parse().unwrap());
+    headers.insert("Referrer-Policy", "no-referrer".parse().unwrap());
+    response
 }
 
 /// DNS rebinding guard — rejects requests where the Host header is not
