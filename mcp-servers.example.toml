@@ -1,4 +1,4 @@
-# mcp-vault-proxy MCP server launcher configuration
+# vaultproxy MCP server launcher configuration
 # Copy to your --config-dir as mcp-servers.toml.
 #
 # Use `vault-proxy --launch <name>` to start a server with credentials injected.

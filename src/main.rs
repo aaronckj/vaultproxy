@@ -34,7 +34,7 @@ use vault::handlers;
 // -------------------------------------------------------------------------- //
 
 #[derive(Parser, Clone)]
-#[command(name = "mcp-vault-proxy", about = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets")]
+#[command(name = "vaultproxy", about = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets")]
 struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:3201")]
@@ -375,8 +375,8 @@ async fn start_server(
                         ("scope", "api offline_access"),
                         ("client_id", "cli"),
                         ("deviceType", "14"),
-                        ("deviceIdentifier", "mcp-vault-proxy"),
-                        ("deviceName", "mcp-vault-proxy"),
+                        ("deviceIdentifier", "vaultproxy"),
+                        ("deviceName", "vaultproxy"),
                     ])
                     .send()
                     .await;

@@ -2,7 +2,7 @@
 
 ## Threat model
 
-`mcp-vault-proxy` sits between your MCP servers and your downstream services. Its job is to hold credentials so your MCP servers don't have to.
+`vaultproxy` sits between your MCP servers and your downstream services. Its job is to hold credentials so your MCP servers don't have to.
 
 **What it protects against:**
 - Credentials in env vars or `.env` files readable by any same-user process

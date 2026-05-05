@@ -1,13 +1,13 @@
-# mcp-vault-proxy
+# vaultproxy
 
 A secure credential sidecar for [MCP](https://modelcontextprotocol.io) servers.
 
-Most MCP servers store credentials in env vars or `.env` files — readable by any process running as the same user, present in shell history, and scattered across every server you run. `mcp-vault-proxy` solves this: it reads credentials from your self-hosted [Vaultwarden](https://github.com/dani-garcia/vaultwarden) instance, injects the right auth header for each downstream service, and **never exposes plaintext secrets to the MCP layer**.
+Most MCP servers store credentials in env vars or `.env` files — readable by any process running as the same user, present in shell history, and scattered across every server you run. `vaultproxy` solves this: it reads credentials from your self-hosted [Vaultwarden](https://github.com/dani-garcia/vaultwarden) instance, injects the right auth header for each downstream service, and **never exposes plaintext secrets to the MCP layer**.
 
 ## How it works
 
 ```
-Claude Code → MCP Server → mcp-vault-proxy (127.0.0.1:3201) → Your Service
+Claude Code → MCP Server → vaultproxy (127.0.0.1:3201) → Your Service
                                      ↑
                                Vaultwarden (credentials stay here)
 ```
@@ -107,8 +107,8 @@ The `vault_item` string in `services.toml` is just a reference — credentials n
 
 ```yaml
 services:
-  mcp-vault-proxy:
-    image: ghcr.io/aaronckj/mcp-vault-proxy:latest
+  vaultproxy:
+    image: ghcr.io/aaronckj/vaultproxy:latest
     restart: unless-stopped
     network_mode: host
     volumes:
@@ -197,7 +197,7 @@ The `service` name must match a registered service in your Vaultwarden folder. T
 
 ## Why not just use env vars?
 
-Env vars are readable by any process running as the same OS user, show up in `ps auxe`, persist in shell history, and end up copy-pasted across multiple `.env` files. `mcp-vault-proxy` keeps credentials in a single encrypted keystore backed by Vaultwarden — one source of truth, never in plaintext outside the proxy process.
+Env vars are readable by any process running as the same OS user, show up in `ps auxe`, persist in shell history, and end up copy-pasted across multiple `.env` files. `vaultproxy` keeps credentials in a single encrypted keystore backed by Vaultwarden — one source of truth, never in plaintext outside the proxy process.
 
 ## License
 

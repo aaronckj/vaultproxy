@@ -1498,59 +1498,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcp-vault-proxy"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "anyhow",
- "argon2",
- "async-trait",
- "axum",
- "axum-server",
- "base64 0.22.1",
- "bcrypt",
- "cbc",
- "chrono",
- "clap",
- "dashmap",
- "futures-util",
- "hmac",
- "memsec",
- "pbkdf2",
- "rand 0.8.5",
- "rcgen",
- "reqwest",
- "rpassword",
- "rsa",
- "rusqlite",
- "rustls",
- "rustls-pemfile",
- "secrecy",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "shell-words",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-tungstenite",
- "toml",
- "totp-rs",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "tss-esapi",
- "url",
- "uuid",
- "wiremock",
- "zeroize",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3112,6 +3059,59 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "vaultproxy"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "async-trait",
+ "axum",
+ "axum-server",
+ "base64 0.22.1",
+ "bcrypt",
+ "cbc",
+ "chrono",
+ "clap",
+ "dashmap",
+ "futures-util",
+ "hmac",
+ "memsec",
+ "pbkdf2",
+ "rand 0.8.5",
+ "rcgen",
+ "reqwest",
+ "rpassword",
+ "rsa",
+ "rusqlite",
+ "rustls",
+ "rustls-pemfile",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "shell-words",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "toml",
+ "totp-rs",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "tss-esapi",
+ "url",
+ "uuid",
+ "wiremock",
+ "zeroize",
+]
 
 [[package]]
 name = "vcpkg"

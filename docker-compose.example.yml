@@ -1,4 +1,4 @@
-# mcp-vault-proxy — example Docker Compose deployment
+# vaultproxy — example Docker Compose deployment
 #
 # FIRST RUN:
 #   1. Uncomment the `command:` line below
@@ -9,8 +9,8 @@
 # The encrypted keystore is stored in ./config/ — back it up.
 
 services:
-  mcp-vault-proxy:
-    image: ghcr.io/aaronckj/mcp-vault-proxy:latest
+  vaultproxy:
+    image: ghcr.io/aaronckj/vaultproxy:latest
     restart: unless-stopped
     network_mode: host          # Required: proxy must bind to 127.0.0.1:3201
     volumes:

@@ -162,8 +162,8 @@ impl VaultManager {
             ("scope", "api offline_access"),
             ("client_id", "web"),
             ("deviceType", "10"),
-            ("deviceIdentifier", "mcp-vault-proxy"),
-            ("deviceName", "mcp-vault-proxy"),
+            ("deviceIdentifier", "vaultproxy"),
+            ("deviceName", "vaultproxy"),
         ];
 
         let token_resp: TokenResponse = http

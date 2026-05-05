@@ -1,4 +1,4 @@
-# mcp-vault-proxy service configuration
+# vaultproxy service configuration
 # Copy to your --config-dir as services.toml and edit to match your setup.
 # Each [[service]] block registers one service with the proxy.
 # The `name` field is what you pass as "service" in POST /proxy requests.

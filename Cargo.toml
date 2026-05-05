@@ -1,11 +1,11 @@
 [package]
-name = "mcp-vault-proxy"
+name = "vaultproxy"
 version = "0.1.0"
 edition = "2021"
 description = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents"
 license = "MIT"
-repository = "https://github.com/aaronckj/mcp-vault-proxy"
-homepage = "https://github.com/aaronckj/mcp-vault-proxy"
+repository = "https://github.com/aaronckj/vaultproxy"
+homepage = "https://github.com/aaronckj/vaultproxy"
 keywords = ["mcp", "vaultwarden", "credentials", "security", "proxy"]
 categories = ["authentication", "network-programming"]
 
