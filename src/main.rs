@@ -3,6 +3,7 @@ mod keystore;
 mod setup;
 mod browser;
 mod credential_audit;
+#[cfg(feature = "dashboard")]
 mod dashboard;
 mod notify;
 mod policy;
@@ -47,7 +48,7 @@ struct Args {
     config_dir: String,
 
     /// Address for the dashboard web UI.
-    #[arg(long, default_value = "0.0.0.0:3202", env = "DASHBOARD_LISTEN")]
+    #[arg(long, default_value = "127.0.0.1:3202", env = "DASHBOARD_LISTEN")]
     dashboard_listen: SocketAddr,
 
     /// Bitwarden cloud account email (enables cloud sync when set).
@@ -159,13 +160,24 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start dashboard-only mode (setup or locked) and wait for user action
-    start_dashboard_only(args, &config_dir).await
+    #[cfg(feature = "dashboard")]
+    return start_dashboard_only(args, &config_dir).await;
+
+    #[cfg(not(feature = "dashboard"))]
+    {
+        tracing::error!(
+            "Keystore is locked or not configured. Run with --setup to configure headlessly, \
+             or rebuild with --features dashboard to enable the web UI."
+        );
+        std::process::exit(1);
+    }
 }
 
 /// Start the dashboard in setup/locked mode without a VaultManager.
 /// The dashboard serves /setup or /unlock pages. Once the user completes
 /// setup or unlock via the web UI, the process needs to be restarted to
 /// fully initialize (or we poll until credentials appear).
+#[cfg(feature = "dashboard")]
 async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()> {
     // Generate ephemeral mTLS certificates for HTTPS
     let certs = tpm::generate_mtls_certs()
@@ -428,6 +440,7 @@ async fn start_server(
     tracing::info!("generating ephemeral mTLS certificates");
     let certs = tpm::generate_mtls_certs()
         .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    #[cfg(feature = "dashboard")]
     let dashboard_certs = certs.clone();
 
     // Build two HTTP clients:
@@ -784,6 +797,7 @@ async fn start_server(
     }
 
     // Spawn dashboard on a separate port (HTTPS with ephemeral certs).
+    #[cfg(feature = "dashboard")]
     {
         let dash_state = dashboard::DashboardState {
             app: Some(state.clone()),
