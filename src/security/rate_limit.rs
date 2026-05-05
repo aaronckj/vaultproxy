@@ -138,15 +138,21 @@ const RATE_LIMITED_PATHS: &[&str] = &[
     "/sync/init",
 ];
 
-/// Per-route tighter limits for destructive operations (iter-37).
+/// Per-route tighter limits for destructive operations (iter-37/38).
 ///
 /// These routes delete or irreversibly modify vault data. 10 req/60 s is
 /// generous enough for legitimate automation (a script rotating 5 passwords
 /// generates 10 calls: 5 update + 5 confirm) while blocking runaway loops
-/// that could wipe the vault folder in seconds.
+/// that could wipe or corrupt the vault folder in seconds.
+///
+/// iter-38: `/vault/items/update` added — it can overwrite passwords just as
+/// destructively as a delete; omitting it from the tight map left it at the
+/// default 60 req/60s, which would allow bulk-overwriting 60 items per minute
+/// without any tighter guard.
 fn per_route_limits() -> HashMap<&'static str, u64> {
     let mut m = HashMap::new();
     m.insert("/vault/items/delete", 10u64);
+    m.insert("/vault/items/update", 10u64);
     m.insert("/vault/folders/delete", 10u64);
     m
 }
@@ -290,5 +296,24 @@ mod tests {
             assert!(limiter.check("/vault/folders/delete", "127.0.0.1").await);
         }
         assert!(!limiter.check("/vault/folders/delete", "127.0.0.1").await);
+    }
+
+    /// iter-38: `/vault/items/update` must use the tight 10 req/60 s limit.
+    /// It can overwrite passwords just as destructively as a delete and must
+    /// not be left at the default 60-req bucket.
+    #[tokio::test]
+    async fn update_item_uses_tight_limit() {
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        for i in 0..10 {
+            assert!(
+                limiter.check("/vault/items/update", "127.0.0.1").await,
+                "request {} should be allowed",
+                i + 1
+            );
+        }
+        assert!(
+            !limiter.check("/vault/items/update", "127.0.0.1").await,
+            "11th update request must be rejected by tight 10-req limit"
+        );
     }
 }

@@ -230,6 +230,7 @@ cargo build --release --features tpm
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
 | `--allow-root` | — | — | Suppress the root-user security warning (see below) |
 | `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
+| `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. |
 | — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
 
 > **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as

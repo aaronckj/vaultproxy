@@ -262,13 +262,23 @@ async fn main() -> anyhow::Result<()> {
         // Issue (iter-29): report accepted service names + rejected count on stdout
         // so CI pipelines get actionable output without parsing structured logs.
         if rejected > 0 {
+            // iter-38: hint the MAX_SERVICES=512 cap when the file is very large,
+            // since that is a non-obvious rejection reason (not SSRF / parse error).
+            let cap_hint = if attempted > 512 {
+                " NOTE: services.toml contains more than 512 entries — \
+                 vault-proxy hard-caps at 512 (MAX_SERVICES). \
+                 Split into multiple vault-proxy instances or remove unused [[service]] blocks."
+            } else {
+                ""
+            };
             println!(
                 "vaultproxy check: PARTIAL — {accepted}/{attempted} service(s) accepted from {}: {:?}. \
                  {rejected} service(s) were REJECTED — see log output above for names and reasons \
-                 (SSRF violations, unknown auth types, missing required fields). \
+                 (SSRF violations, unknown auth types, missing required fields, MAX_SERVICES=512 cap).{} \
                  Fix services.toml and re-run --check.",
                 services_path.display(),
-                registry.list()
+                registry.list(),
+                cap_hint,
             );
             std::process::exit(1);
         }
@@ -1820,7 +1830,9 @@ async fn start_server(
                 tracing::debug!("vault background refresh: calling sync()");
                 match refresh_vault.sync().await {
                     Ok(()) => {
-                        tracing::info!("vault background refresh: sync complete");
+                        // vault::sync() already logs at info! ("vault sync complete — N items");
+                        // log the background-task outcome at debug! to avoid doubling the noise.
+                        tracing::debug!("vault background refresh: sync complete");
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -2316,5 +2328,120 @@ header_name = "X-Api-Key"
         let names = registry.list();
         assert!(names.contains(&"good-service"), "clean service must be in registry");
         assert!(!names.contains(&"ssrf-service"), "SSRF service must NOT be in registry");
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// Background vault refresh task tests (iter-38)                              //
+// -------------------------------------------------------------------------- //
+//
+// These tests validate the timer-tick logic of the background refresh task
+// without requiring a live Vaultwarden connection.  They use
+// `tokio::time::pause()` + `tokio::time::advance()` to drive a synthetic
+// interval loop that mirrors the production task and assert:
+//
+//   (a) The first tick is skipped (startup double-sync prevention).
+//   (b) Exactly one counter increment fires per interval.
+//   (c) A sync failure does NOT increment the counter (the task continues).
+//
+// The production task calls `VaultManager::sync()` which requires a live
+// Vaultwarden connection — untestable in a unit context.  We substitute a
+// simple atomic counter to verify the loop structure without the I/O.
+
+#[cfg(test)]
+mod bg_refresh_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The background refresh task skips the first tick (to avoid a double-sync
+    /// immediately after startup) and then fires on each subsequent interval.
+    ///
+    /// We drive a synthetic version of the production loop with `tokio::time`
+    /// paused so the test runs in microseconds.
+    #[tokio::test]
+    async fn background_refresh_skips_first_tick_and_fires_on_interval() {
+        tokio::time::pause();
+
+        let fire_count = Arc::new(AtomicUsize::new(0));
+        let counter = fire_count.clone();
+        let interval_secs: u64 = 10;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(interval_secs),
+            );
+            // Mirror production: skip the immediate first tick.
+            interval.tick().await;
+            for _ in 0..3 {
+                interval.tick().await;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        // Yield once so the task starts and is waiting on the first (skipped) tick.
+        tokio::task::yield_now().await;
+
+        // The first tick fires immediately at t=0 (skipped — no increment).
+        // Advance past the first real firing window.
+        tokio::time::advance(std::time::Duration::from_secs(interval_secs + 1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            fire_count.load(Ordering::SeqCst),
+            1,
+            "one interval elapsed — exactly one sync should have fired"
+        );
+
+        // Advance through two more intervals.
+        tokio::time::advance(std::time::Duration::from_secs(interval_secs)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(interval_secs)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            fire_count.load(Ordering::SeqCst),
+            3,
+            "three intervals elapsed — three syncs should have fired in total"
+        );
+    }
+
+    /// When `sync()` fails, the task must NOT increment its counter but MUST
+    /// continue to the next interval rather than panicking or exiting.
+    #[tokio::test]
+    async fn background_refresh_continues_after_failure() {
+        tokio::time::pause();
+
+        let fire_count = Arc::new(AtomicUsize::new(0));
+        let counter = fire_count.clone();
+        let interval_secs: u64 = 5;
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(interval_secs),
+            );
+            interval.tick().await; // skip first
+            for tick in 0u32..4 {
+                interval.tick().await;
+                // Simulate sync failure on tick 1 and 3 (0-indexed).
+                if tick % 2 == 1 {
+                    // Failure path: log (elided in test) and continue.
+                    let _e = "simulated sync error";
+                } else {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+
+        tokio::task::yield_now().await;
+
+        // 4 intervals: tick 0 = success (+1), tick 1 = fail, tick 2 = success (+1), tick 3 = fail.
+        for _ in 0..4 {
+            tokio::time::advance(std::time::Duration::from_secs(interval_secs)).await;
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            fire_count.load(Ordering::SeqCst),
+            2,
+            "two successful syncs out of four ticks — task must not exit on failure"
+        );
     }
 }

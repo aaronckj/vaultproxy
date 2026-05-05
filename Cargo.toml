@@ -113,3 +113,5 @@ libc = "0.2"
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
+# tokio test-util enables tokio::time::pause() / advance() for timer-driven tests.
+tokio = { version = "1", features = ["test-util"] }

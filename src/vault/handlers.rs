@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, http::{HeaderMap, HeaderValue, StatusCode}, response::IntoResponse, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -2606,7 +2606,7 @@ pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::St
 /// only `$CONFIG_DIR/services.toml` — the same path used at startup.
 pub async fn reload_services(
     State(state): State<Arc<AppState>>,
-) -> (axum::http::StatusCode, Json<Value>) {
+) -> impl axum::response::IntoResponse {
     use crate::proxy::registry::ServiceRegistry;
 
     // iter-36: serialise concurrent reload calls under a dedicated mutex.
@@ -2651,14 +2651,25 @@ pub async fn reload_services(
                 "reload-services: another reload is still in progress; \
                  mutex acquisition timed out after 5 s — returning 503 to caller"
             );
+            // iter-38: set the standard HTTP `Retry-After` header (RFC 7231 §7.1.3)
+            // so monitoring systems and orchestrators that respect it back off
+            // automatically instead of hammering the endpoint. The body already
+            // carries `retry_after_s` for callers that parse JSON; the header
+            // covers callers that only inspect HTTP headers.
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::RETRY_AFTER,
+                HeaderValue::from_static("10"),
+            );
             return (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                headers,
                 Json(json!({
                     "ok": false,
                     "error": "another reload is in progress — retry after 10 s",
                     "retry_after_s": 10,
                 })),
-            );
+            ).into_response();
         }
     };
 
@@ -2679,7 +2690,7 @@ pub async fn reload_services(
                     services_path.display()
                 ),
             })),
-        );
+        ).into_response();
     }
 
     let new_registry = ServiceRegistry::from_toml_file(&services_path);
@@ -2704,7 +2715,7 @@ pub async fn reload_services(
                 "hint": "check container logs for per-service rejection reasons \
                          (SSRF violations, missing fields, bad base_url)",
             })),
-        );
+        ).into_response();
     }
 
     // Rebuild CA-cert clients for any services that specify ca_cert_path.
@@ -2784,7 +2795,7 @@ pub async fn reload_services(
                      Vault credentials (items) are NOT refreshed — call POST /vault/resync \
                      to reload credentials from Vaultwarden.",
         })),
-    )
+    ).into_response()
 }
 
 pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {
