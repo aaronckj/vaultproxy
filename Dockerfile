@@ -39,6 +39,13 @@ WORKDIR /build
 
 # Cache dependency build: copy manifests first, compile a dummy main, then
 # replace with real source. This layer is reused on source-only changes.
+#
+# iter-11: `2>/dev/null` suppresses stderr from the dummy-main compile.
+# This is intentional: `fn main(){}` fails to link with some feature flags
+# because required symbols are absent, but the dependency .rlib files are
+# already compiled by that point, which is all we want from this step.
+# The semicolon (`;`) rather than `&&` means `rm -rf src` always runs
+# regardless of whether the dummy build succeeded — correct behaviour.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release --features dashboard 2>/dev/null; \
@@ -66,25 +73,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the compiled binary from the builder stage.
 COPY --from=builder /build/target/release/vaultproxy /usr/local/bin/vaultproxy
 
-# Playwright browser agent assets (optional — only needed for browser rotation).
-# If the playwright/ directory doesn't exist, COPY will emit a warning and
-# continue; the browser rotation feature simply won't be available at runtime.
-COPY playwright/ /app/playwright/
-
-# Copy dashboard static assets (HTML/JS/CSS for the web UI).
-# If the dashboard/ directory doesn't exist (non-dashboard build), skip.
-COPY dashboard/ /app/dashboard/
+# Create non-root user BEFORE copying application files so that COPY --chown
+# can reference the user by name. Creating it first also means all subsequent
+# RUN commands can use it immediately.
+# iter-11: User must exist before COPY --chown references it.
+RUN groupadd --gid 1001 vaultproxy \
+    && useradd --uid 1001 --gid 1001 --no-create-home --shell /sbin/nologin vaultproxy
 
 # The config directory is mounted at runtime via Docker volume.
 # Create it here so the volume mount creates a directory (not a file)
-# even if the host path doesn't exist yet.
-RUN mkdir -p /config && chmod 700 /config
+# even if the host path doesn't exist yet. vault-proxy must be able to
+# write keystore files into this directory.
+RUN mkdir -p /config && chown vaultproxy:vaultproxy /config && chmod 700 /config
 
-# vault-proxy writes no persistent state except to /config.
-# Run as a non-root user for defence-in-depth.
-RUN groupadd --gid 1001 vaultproxy \
-    && useradd --uid 1001 --gid 1001 --no-create-home --shell /sbin/nologin vaultproxy \
-    && chown vaultproxy:vaultproxy /config
+# Playwright browser agent assets (optional — only needed for browser rotation).
+# Copied with --chown so the vaultproxy user can read the agent scripts at
+# runtime. If the playwright/ directory doesn't exist at build time, the COPY
+# silently skips it; the browser rotation feature simply won't be available.
+# iter-11: Added --chown so runtime user can access the files.
+COPY --chown=vaultproxy:vaultproxy playwright/ /app/playwright/
+
+# Copy dashboard static assets (HTML/JS/CSS for the web UI).
+# Also --chown so the server process can serve these files without privilege.
+# iter-11: Added --chown.
+COPY --chown=vaultproxy:vaultproxy dashboard/ /app/dashboard/
 
 USER vaultproxy
 

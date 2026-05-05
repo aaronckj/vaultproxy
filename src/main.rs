@@ -138,6 +138,39 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("created config directory '{}'", config_dir);
     }
 
+    // iter-11: Warn when an API key is passed as a CLI argument. On Linux,
+    // every process's full command line is readable by any process running as
+    // the same OS user via /proc/<pid>/cmdline and /proc/self/cmdline, making
+    // --litellm-api-key (and to a lesser extent --ntfy-url, --cloud-email)
+    // visible to other user-space processes. Environment variables (LITELLM_API_KEY
+    // etc.) are also visible via /proc/<pid>/environ *by default* on Linux, but
+    // only to the process owner and root — the same threat model as cmdline for
+    // a typical homelab single-user deployment. The recommended mitigation is to
+    // use env vars sourced from a secrets manager or a file that is chmod 600.
+    //
+    // We warn specifically on --litellm-api-key because it is a third-party API
+    // credential (sent to LiteLLM over the network); the others are URLs or
+    // account emails that have a lower sensitivity. We do NOT reject the flag —
+    // Docker / compose users often have no choice but to use CLI args.
+    if !args.litellm_api_key.is_empty() {
+        // Only warn if the value looks like it was passed on the command line
+        // (i.e. not sourced from the env var, which is the safer channel).
+        // Clap doesn't expose whether a value came from the CLI or env, so we
+        // check std::env directly: if the env var is set with the same value,
+        // suppress the warning (the user is already using the safer path).
+        let from_env = std::env::var("LITELLM_API_KEY")
+            .map(|v| v == args.litellm_api_key)
+            .unwrap_or(false);
+        if !from_env {
+            tracing::warn!(
+                "SECURITY: --litellm-api-key was passed as a CLI argument. \
+                 On Linux, /proc/<pid>/cmdline is readable by any same-user process, \
+                 exposing this value. Prefer the LITELLM_API_KEY environment variable \
+                 sourced from a secrets manager or a chmod-600 env file instead."
+            );
+        }
+    }
+
     // Issue-3 (iter-4): Validate --vault-folder early so a bad value produces
     // a clear startup error instead of silently returning zero credentials.
     // The folder name is passed to Vaultwarden folder-lookup; an empty name
@@ -542,7 +575,21 @@ async fn start_server(
     // Build service registry from services.toml in the config directory.
     let services_path = std::path::Path::new(&config_dir).join("services.toml");
     let registry = ServiceRegistry::from_toml_file(&services_path);
-    tracing::info!("registered {} services from {:?}: {:?}", registry.list().len(), services_path, registry.list());
+    let svc_count = registry.list().len();
+    if svc_count == 0 {
+        // iter-11: Provide an actionable first-run hint. An empty registry is
+        // normal on the very first run (before services.toml is populated) but
+        // confusing in production. Every /proxy call will return 404 "unknown
+        // service" until at least one [[service]] block is added.
+        tracing::warn!(
+            "no services registered — all /proxy calls will return 404 \"unknown service\". \
+             First-run? Copy services.example.toml to {:?} and add [[service]] blocks. \
+             See README for the required fields (name, base_url, auth, vault_item).",
+            services_path
+        );
+    } else {
+        tracing::info!("registered {} services from {:?}: {:?}", svc_count, services_path, registry.list());
+    }
 
     // Generate ephemeral mTLS certificates.
     //
@@ -1042,6 +1089,17 @@ async fn start_server(
         let dash_addr = args.dashboard_listen;
 
         // Build RustlsConfig from the ephemeral mTLS certs for the dashboard.
+        //
+        // TLS version policy (iter-11 verification):
+        // `axum_server::tls_rustls::RustlsConfig::from_pem` constructs a
+        // rustls `ServerConfig` using the default provider installed at startup
+        // (`rustls::crypto::ring::default_provider().install_default()` in
+        // main). Rustls's built-in defaults explicitly omit TLS 1.0 and 1.1
+        // from the supported protocol versions — only TLS 1.2 and TLS 1.3
+        // are negotiated. See: https://docs.rs/rustls/latest/rustls/struct.ServerConfig.html
+        // We do NOT override `ServerConfig::protocol_versions`, so the rustls
+        // default (TLS 1.2+) applies. No action needed; this comment documents
+        // the verified state to make future auditors' jobs easier.
         let dash_tls_config = {
             let cert_pem = dashboard_certs.server_cert_pem.as_bytes().to_vec();
             let key_pem = dashboard_certs.server_key_pem.as_bytes().to_vec();

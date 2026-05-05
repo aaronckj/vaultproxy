@@ -63,6 +63,16 @@ fn default_field_type() -> u8 { 1 }
 /// `browser_rotate` (both of which accept user-supplied URLs). Loopback
 /// addresses (`127.0.0.0/8`, `::1`, and the hostname `localhost`) are now
 /// blocked in addition to the existing link-local / cloud-metadata guards.
+///
+/// # Userinfo blocking (iter-11)
+///
+/// A URL like `http://user:password@service/api` has a userinfo component.
+/// Userinfo is forwarded verbatim in the `Authorization` header by some HTTP
+/// clients (as Basic auth) and always appears in log lines. Because vault-proxy
+/// obtains credentials exclusively from the vault, a `base_url` with embedded
+/// credentials is always a misconfiguration: the password would be passed both
+/// from the vault AND from the URL. We reject such URLs to prevent credential
+/// leakage via logs and to prevent config confusion.
 pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     let url = match url::Url::parse(raw) {
         Ok(u) => u,
@@ -71,6 +81,12 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     match url.scheme() {
         "http" | "https" => {}
         _ => return false,
+    }
+    // iter-11: Reject URLs that embed credentials (userinfo component).
+    // `url::Url::password()` returns Some(_) even when the password is the
+    // empty string (e.g. "http://user:@host/"), so we check both.
+    if url.username() != "" || url.password().is_some() {
+        return false;
     }
     let host = match url.host_str() {
         Some(h) => h,
@@ -2112,6 +2128,34 @@ mod ssrf_tests {
         assert!(!is_allowed_outbound_url("http://[::1]/api"), "::1 IPv6 loopback must be blocked");
         assert!(!is_allowed_outbound_url("http://localhost/api"), "localhost hostname must be blocked");
         assert!(!is_allowed_outbound_url("http://LOCALHOST:8080/"), "case-insensitive localhost must be blocked");
+    }
+
+    /// iter-11: URLs with an embedded userinfo component (user:password@host)
+    /// must be rejected. Userinfo leaks credentials into logs and means the
+    /// caller is bypassing vault-proxy's credential-isolation model.
+    #[test]
+    fn userinfo_urls_are_blocked() {
+        assert!(
+            !is_allowed_outbound_url("http://user:password@192.168.1.1/api"),
+            "URL with user:password userinfo must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://admin:secret@service.example.com/api/v3"),
+            "URL with credentials at public host must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://user:@192.168.1.1/api"),
+            "URL with user and empty password must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://user@192.168.1.1/api"),
+            "URL with username only (no password) must be blocked"
+        );
+        // A normal URL without userinfo must still pass.
+        assert!(
+            is_allowed_outbound_url("http://192.168.1.1:8080/api"),
+            "plain URL without userinfo must be allowed"
+        );
     }
 }
 

@@ -8,7 +8,7 @@ pub mod types;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use std::collections::HashMap;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::secure::SecureBuffer;
 use crypto::{
@@ -90,6 +90,22 @@ pub struct VaultManager {
     vaultwarden_url: String,
     access_token: RwLock<String>,
     refresh_token: RwLock<Option<String>>,
+    /// Serialises concurrent calls to `reauth()`. Without this mutex, two
+    /// concurrent 401 responses race to refresh the *same* (now-revoked)
+    /// refresh token. Vaultwarden accepts only the first refresh; the second
+    /// returns 400/401 and leaves the `VaultManager` unable to make any further
+    /// authenticated requests. The mutex ensures only one goroutine runs the
+    /// refresh exchange at a time; the loser re-reads `access_token` after
+    /// acquiring the lock and discovers it was already refreshed, so it sends
+    /// its retry with the newly-valid token instead of racing again.
+    ///
+    /// # Why Mutex and not a second RwLock
+    ///
+    /// The refresh operation is a read-modify-write on `access_token` +
+    /// `refresh_token`. Holding two separate write-locks sequentially doesn't
+    /// prevent interleaving between them. A single Mutex that the entire reauth
+    /// path holds end-to-end is the correct primitive.
+    reauth_mutex: Mutex<()>,
     enc_key: SecureBuffer,
     mac_key: SecureBuffer,
     /// Items keyed by cipher id. Value holds `(decrypted_name, cipher)` so
@@ -203,6 +219,7 @@ impl VaultManager {
             vaultwarden_url: base_url,
             access_token: RwLock::new(token_resp.access_token),
             refresh_token: RwLock::new(token_resp.refresh_token),
+            reauth_mutex: Mutex::new(()),
             enc_key,
             mac_key,
             items: RwLock::new(HashMap::new()),
@@ -222,7 +239,31 @@ impl VaultManager {
     // ---------------------------------------------------------------------- //
 
     /// Re-authenticate using the stored refresh token.
+    ///
+    /// # Concurrency safety
+    ///
+    /// This method acquires `reauth_mutex` before touching the token pair so
+    /// that concurrent 401 responses don't both try to exchange the same
+    /// (now-revoked) refresh token. The second waiter snapshots `access_token`
+    /// after winning the mutex; if it has changed since the caller last read it
+    /// (i.e. the first task already refreshed), we return `Ok(())` without
+    /// hitting Vaultwarden again — the caller will pick up the new token on its
+    /// next `access_token.read()`.
     async fn reauth(&self) -> Result<()> {
+        // Snapshot the current access token *before* acquiring the lock so we
+        // can detect whether another task already refreshed while we waited.
+        let token_before_wait = self.access_token.read().await.clone();
+
+        let _guard = self.reauth_mutex.lock().await;
+
+        // Check again under the mutex. If the token changed, the racing task
+        // already refreshed successfully — nothing to do.
+        let current_token = self.access_token.read().await.clone();
+        if current_token != token_before_wait {
+            tracing::debug!("reauth: token already refreshed by concurrent task — skipping");
+            return Ok(());
+        }
+
         let rt = self.refresh_token.read().await.clone();
         let rt = rt.ok_or_else(|| anyhow!("no refresh token available for re-authentication"))?;
 
@@ -283,6 +324,33 @@ impl VaultManager {
 
     /// Fetch all ciphers and folders from Vaultwarden and store them
     /// (encrypted) indexed by decrypted name.
+    ///
+    /// # Read/write lock contention (iter-11)
+    ///
+    /// `sync()` acquires write locks on `items`, `all_folders`, and `folders`
+    /// to rebuild the in-memory cache. All concurrent callers of `list_items`,
+    /// `list_duplicates`, `decrypt_password`, etc. that use `items.read()` block
+    /// for the duration of the write lock.
+    ///
+    /// For a typical vault with ~1000 ciphers, the HTTP round-trip to VW
+    /// (`/api/sync`) dominates: 100–500 ms depending on latency. The decrypt +
+    /// insert loop is a few milliseconds. So the read-lock blackout window is
+    /// mostly the network round-trip.
+    ///
+    /// Mitigations considered:
+    ///   - **Double-buffering** (build a fresh HashMap off-lock, then swap via
+    ///     a single short write-lock): would reduce the blackout to microseconds.
+    ///     TODO: implement if sync-vs-read latency becomes a problem in
+    ///     production (requires wrapping the HashMap in an Arc so the old and
+    ///     new copies can coexist momentarily).
+    ///   - **Timeout on write-lock acquisition**: tokio's async RwLock does not
+    ///     expose a try_write_timeout; a workaround would be
+    ///     `tokio::time::timeout(Duration::from_secs(N), items.write())`.
+    ///     Not implemented — a sync that can't acquire the lock would silently
+    ///     skip the refresh, which is worse than blocking briefly.
+    ///
+    /// For the current homelab load (single-digit concurrent requests), blocking
+    /// is acceptable. Document and revisit if concurrency increases.
     pub async fn sync(&self) -> Result<()> {
         let url = format!("{}/api/sync", self.vaultwarden_url);
         let sync_response: SyncResponse = self

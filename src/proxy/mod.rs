@@ -183,6 +183,16 @@ pub async fn handle_proxy(
             "path must not contain '.' or '..' segments".to_string(),
         ));
     }
+    // iter-11: `trim_end_matches('/')` on `base_url` prevents double-slash
+    // construction when the operator writes a trailing slash in services.toml
+    // (e.g. `base_url = "http://service/api/v3/"` + `path = "/endpoint"` would
+    // produce `http://service/api/v3//endpoint` without this trim). Some HTTP
+    // servers (notably nginx) treat `//path` as root-relative, silently routing
+    // the request to `http://service/endpoint` — a different resource from the
+    // intended `http://service/api/v3/endpoint`.
+    //
+    // The `registry.rs` `from_toml_file` loader also trims trailing slashes from
+    // `base_url` at registration time, so this is a belt-and-suspenders guard.
     let target_url = if path.is_empty() {
         service.base_url.clone()
     } else {
@@ -911,6 +921,48 @@ mod path_traversal_tests {
         // A path component that contains dots but is not exactly `.` or `..` is fine.
         assert!(!has_traversal("file.json"), "dotted filename must pass");
         assert!(!has_traversal("v3.1/items"), "version with dot must pass");
+    }
+}
+
+// iter-11: Double-slash prevention tests.
+#[cfg(test)]
+mod url_join_tests {
+    /// Replicate the URL-join logic from `handle_proxy` so the double-slash
+    /// guard can be verified without a live AppState.
+    fn join_url(base_url: &str, request_path: &str) -> String {
+        let path = request_path.trim_start_matches('/');
+        if path.is_empty() {
+            base_url.to_string()
+        } else {
+            format!("{}/{}", base_url.trim_end_matches('/'), path)
+        }
+    }
+
+    #[test]
+    fn trailing_slash_on_base_url_does_not_produce_double_slash() {
+        // Operator wrote a trailing slash in services.toml — must not produce //.
+        let url = join_url("http://service/api/v3/", "/endpoint");
+        assert_eq!(url, "http://service/api/v3/endpoint");
+        assert!(!url.contains("//api"), "double slash must not appear after host");
+    }
+
+    #[test]
+    fn leading_slash_on_path_does_not_produce_double_slash() {
+        let url = join_url("http://service/api/v3", "/endpoint");
+        assert_eq!(url, "http://service/api/v3/endpoint");
+    }
+
+    #[test]
+    fn both_trailing_and_leading_slash_normalised() {
+        let url = join_url("http://service/api/v3/", "/endpoint/items");
+        assert_eq!(url, "http://service/api/v3/endpoint/items");
+    }
+
+    #[test]
+    fn empty_path_returns_base_url_unchanged() {
+        let base = "http://service/api/v3";
+        assert_eq!(join_url(base, ""), base);
+        assert_eq!(join_url(base, "/"), base);
     }
 }
 

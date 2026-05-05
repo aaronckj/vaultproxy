@@ -236,6 +236,32 @@ pub async fn launch(
     let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
                              "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
 
+    // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
+    // (Command::status() does not redirect them). This is intentional: MCP
+    // servers communicate over stdio; their stdout MUST reach the MCP client
+    // (the calling process that invoked vault-proxy --launch), and their stderr
+    // is the standard channel for diagnostic output.
+    //
+    // RISK: the child's stderr output is interleaved with vault-proxy's own
+    // tracing output on the same file descriptor. Because vault-proxy uses
+    // `tracing_subscriber::fmt` (line-framed structured text or JSON), a child
+    // process that writes partial lines or binary data can corrupt the log
+    // stream. Two mitigations are in place:
+    //
+    //   1. vault-proxy emits all its own startup logs (including this warning)
+    //      *before* calling status() — once the child starts, vault-proxy is
+    //      effectively silent (it either exits with the child or parks in exec).
+    //
+    //   2. The `dangerous_programs` check above refuses to launch shell
+    //      interpreters, which are the most likely sources of noisy stderr.
+    //
+    // Operators who need clean separation should redirect vault-proxy's own
+    // tracing output to a separate file descriptor (e.g. 2>/var/log/vp.log)
+    // before invoking --launch.
+    //
+    // TODO: if MCP stdio framing is ever moved to a dedicated fd pair (not
+    // stdin/stdout), revisit whether child stdout should be redirected to a
+    // pipe so vault-proxy can prefix or filter log lines.
     let status = Command::new(&program)
         .args(&parts)
         .env_clear()

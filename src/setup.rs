@@ -147,9 +147,36 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     // zeroize-on-drop semantics. The trim() call produces a &str view into the
     // same allocation — we re-own with to_string() inside Zeroizing so the
     // trimmed copy is also covered.
+    //
+    // iter-11: Non-TTY stdin handling.
+    // `rpassword::prompt_password()` disables terminal echo by calling
+    // `tcsetattr()` on stdin's fd. When stdin is not a TTY (e.g. piped input,
+    // Docker `-i` without `-t`, CI pipelines), `tcsetattr()` returns ENOTTY and
+    // rpassword returns `Err(io::Error { kind: Other, "not a tty" })`. We map
+    // this specific error to an actionable message — the original I/O error
+    // message ("not a tty") is cryptic to operators who are confused about why
+    // `--setup` fails in a container without `-t`.
+    //
+    // If a non-interactive setup is genuinely needed (Docker build, CI), use
+    // `docker run -it` to allocate a pseudo-TTY, or use the web-based setup
+    // flow (start without --setup; configure via the dashboard at
+    // https://localhost:3202).
     let master_password: Zeroizing<String> = Zeroizing::new(
         rpassword::prompt_password("Vaultwarden master password: ")
-            .map_err(|e| anyhow!("failed to read master password: {}", e))?
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("not a tty") || msg.contains("inappropriate ioctl") {
+                    anyhow!(
+                        "failed to read master password: stdin is not a TTY. \
+                         Run with `docker run -it` (or equivalent) to allocate a \
+                         pseudo-TTY, or use the web-based setup flow instead: \
+                         start vault-proxy without --setup and configure via the \
+                         dashboard at https://localhost:3202"
+                    )
+                } else {
+                    anyhow!("failed to read master password: {}", e)
+                }
+            })?
             .trim()
             .to_string(),
     );
@@ -166,7 +193,20 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
         rpassword::prompt_password(
             "Choose a setup password (min 12 chars, ≥2 character classes — unlocks keystore + dashboard): ",
         )
-        .map_err(|e| anyhow!("failed to read setup password: {}", e))?
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not a tty") || msg.contains("inappropriate ioctl") {
+                anyhow!(
+                    "failed to read setup password: stdin is not a TTY. \
+                     Run with `docker run -it` (or equivalent) to allocate a \
+                     pseudo-TTY, or use the web-based setup flow instead: \
+                     start vault-proxy without --setup and configure via the \
+                     dashboard at https://localhost:3202"
+                )
+            } else {
+                anyhow!("failed to read setup password: {}", e)
+            }
+        })?
         .trim()
         .to_string(),
     );
