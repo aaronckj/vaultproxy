@@ -3,4 +3,10 @@
 *.sqlite
 *.key
 *.pem
+# iter-12: Encrypted keystore files (credentials.enc, private_key.enc,
+# private_key.tpm_enc) must never be committed.  /config/ already excludes
+# the default config directory, but *.enc / *.tpm_enc catches any file
+# placed outside config/ (e.g. a custom --config-dir path used for tests).
+*.enc
+*.tpm_enc
 .env

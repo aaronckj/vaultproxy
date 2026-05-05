@@ -61,6 +61,22 @@ pub async fn launch(
     let parsed: McpServersFile = toml::from_str(&content)
         .context("failed to parse mcp-servers.toml")?;
 
+    // Issue (iter-12): Warn on duplicate server names at load time, mirroring
+    // the duplicate-service warning in proxy/registry.rs.  Two entries with the
+    // same `name` are always a config mistake: the first match wins, making the
+    // second silently unreachable.  Emitting a warning here surfaces the problem
+    // in startup logs before it causes confusing "wrong server launched" bugs.
+    let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for s in &parsed.mcp_server {
+        if !seen_names.insert(s.name.as_str()) {
+            tracing::warn!(
+                "mcp_server '{}': duplicate name in mcp-servers.toml — \
+                 only the first entry is reachable; remove or rename the duplicate",
+                s.name
+            );
+        }
+    }
+
     let server = parsed
         .mcp_server
         .into_iter()
@@ -270,7 +286,21 @@ pub async fn launch(
         }))
         .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .status()
-        .with_context(|| format!("failed to spawn '{}'", program))?;
+        .map_err(|e| {
+            // Issue (iter-12): Distinguish "command not found" (ENOENT / NotFound)
+            // from other spawn failures (permission denied, etc.) so operators
+            // get an actionable error message instead of a bare OS error code.
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "command not found: '{}' — is it installed and on PATH?\n\
+                     PATH inherited by vault-proxy: {}",
+                    program,
+                    std::env::var("PATH").unwrap_or_else(|_| "<unset>".to_string())
+                )
+            } else {
+                anyhow::anyhow!("failed to spawn '{}': {}", program, e)
+            }
+        })?;
 
     std::process::exit(status.code().unwrap_or(1));
 }

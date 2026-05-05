@@ -1,0 +1,28 @@
+# Build artifacts — 1-3 GB; not needed in any Docker build stage.
+# The Dockerfile copies only Cargo.toml, Cargo.lock, and src/ explicitly,
+# but this file prevents accidental inclusion if COPY . . is ever added.
+target/
+
+# Sensitive runtime files — must NEVER be baked into an image.
+# credentials.enc and private_key.enc hold the Vaultwarden master key;
+# private_key.tpm_enc holds the TPM-sealed variant.
+config/
+*.enc
+*.tpm_enc
+
+# Git history — not needed in the image and can be large.
+.git/
+.gitignore
+
+# Local environment files — must not be baked into the image.
+.env
+.env.*
+*.env
+
+# Rust/IDE noise.
+.cargo/
+**/.DS_Store
+
+# Test artifacts.
+tests/
+playwright/.pytest_cache/

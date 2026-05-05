@@ -852,14 +852,40 @@ fn build_request(
     }
 
     // Request body (if any).
+    //
+    // Issue (iter-12): Normalise `body: null` to "no body".
+    //
+    // serde deserializes `{"body": null}` as `Some(Value::Null)` and a missing
+    // `body` key as `None`.  Without this guard, `Some(Null)` would call
+    // `.json(&Value::Null)` which sets `Content-Type: application/json` and
+    // sends the literal string "null" as the request body.  Most REST APIs
+    // treat that differently from a bodyless request — some return 400 Bad
+    // Request, others 415 Unsupported Media Type.  Callers who write
+    // `"body": null` almost always mean "no body", so treat both cases
+    // identically by only attaching a body for non-Null values.
     if let Some(body) = &req.body {
-        builder = builder.json(body);
+        if !body.is_null() {
+            builder = builder.json(body);
+        }
     }
 
     Ok(builder)
 }
 
 /// Send a built request and normalise the response into a `ProxyResponse`.
+///
+/// Body parsing strategy (three-tier fallback):
+///
+/// 1. Try `serde_json` — if the body is valid JSON, return it as `Value`.
+/// 2. Try `resp.bytes()` → lossily decode as UTF-8 — if the upstream returned
+///    a non-JSON text body (HTML error page, plain-text message, latin-1), we
+///    wrap it in `{"_raw": "<text>"}` so callers can see what arrived instead
+///    of getting a silent `null`.  Lossily-decoded latin-1 / binary is better
+///    than nothing for debugging.
+/// 3. If the body bytes are truly empty, return `Value::Null`.
+///
+/// No panic path: `bytes()`, `String::from_utf8_lossy`, and `serde_json`
+/// deserialization all return `Result` / infallible conversions.
 async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyResponse> {
     let resp = builder
         .send()
@@ -868,10 +894,30 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
 
     let status = resp.status().as_u16();
 
-    // Attempt to parse the body as JSON; fall back to a raw string wrapper.
-    let body: Value = match resp.json::<Value>().await {
-        Ok(json) => json,
-        Err(_) => Value::Null,
+    // Collect bytes once so we can attempt JSON parsing without consuming the
+    // response, then fall back to a text wrapper for non-JSON bodies.
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read upstream response body: {}", e))?;
+
+    let body: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(json) => json,
+            Err(_) => {
+                // Non-JSON body (binary, HTML error page, latin-1 text, etc.).
+                // Use lossy UTF-8 conversion so we always get *something* useful
+                // rather than a silent null that makes upstream errors undebuggable.
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                tracing::debug!(
+                    "upstream returned non-JSON body ({} bytes); wrapping in {{\"_raw\": ...}}",
+                    bytes.len()
+                );
+                serde_json::json!({ "_raw": text })
+            }
+        }
     };
 
     Ok(ProxyResponse { status, body })

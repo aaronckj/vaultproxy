@@ -105,4 +105,12 @@ EXPOSE 3201
 # Dashboard port (HTTPS, localhost-only)
 EXPOSE 3202
 
+# Issue (iter-12): Add a HEALTHCHECK so `docker run` deployments get container
+# health status without relying solely on the docker-compose.example.yml entry.
+# Mirrors the healthcheck in docker-compose.example.yml exactly.
+# --interval: check every 30 s; --timeout: give curl 5 s; --start-period: allow
+# 15 s for the vault to unlock on first boot before counting failures.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sf http://127.0.0.1:3201/vault/health || exit 1
+
 ENTRYPOINT ["/usr/local/bin/vaultproxy"]
