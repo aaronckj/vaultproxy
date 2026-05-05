@@ -1463,6 +1463,208 @@ mod integration_tests {
     }
 
     // ---------------------------------------------------------------------- //
+    // (d) Rate limiter returns 429 after exceeding the request budget         //
+    // ---------------------------------------------------------------------- //
+
+    /// Send N+1 requests to a rate-limited path using a RateLimiter configured
+    /// with a budget of N. The (N+1)th request must return 429 TOO_MANY_REQUESTS.
+    ///
+    /// We use a custom limiter with max=2 to keep the test fast (only 3 HTTP
+    /// round-trips required). The endpoint is `/vault/health` which is NOT in
+    /// `RATE_LIMITED_PATHS` — so we use `/proxy` which IS rate-limited. However,
+    /// since `/proxy` requires a JSON body and returns various status codes based
+    /// on routing, we test with `/proxy` at the path level.
+    ///
+    /// The test wires a fresh Router with a tight (2 req / 60 s) rate limiter so
+    /// the third request returns 429 without having to send 61 real requests.
+    #[tokio::test]
+    async fn rate_limiter_returns_429_after_budget_exhausted() {
+        use crate::security::rate_limit::RateLimiter;
+        use axum::routing::post;
+
+        let state = make_state(ServiceRegistry::new());
+        // Build a tight limiter: 2 requests per 60 s window.
+        let tight_limiter = RateLimiter::new(2, 60);
+
+        let app = Router::new()
+            .route("/proxy", post(handle_proxy))
+            .layer(axum::middleware::from_fn_with_state(
+                tight_limiter,
+                crate::security::rate_limit::rate_limit_middleware,
+            ))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({
+            "service": "x",
+            "method": "GET",
+            "path": "/api"
+        });
+
+        // First two requests: should NOT be 429 (may be 404 from registry, that's fine).
+        for i in 1..=2u32 {
+            let resp = client
+                .post(format!("http://{}/proxy", addr))
+                .json(&payload)
+                .send()
+                .await
+                .expect("request failed");
+            assert_ne!(
+                resp.status().as_u16(), 429,
+                "request {i} should not be rate-limited yet"
+            );
+        }
+
+        // Third request: must be 429.
+        let resp = client
+            .post(format!("http://{}/proxy", addr))
+            .json(&payload)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 429,
+            "third request must be rate-limited (429 TOO_MANY_REQUESTS)"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body.get("error").is_some(),
+            "429 body must contain an 'error' key"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (e) DNS rebinding guard returns 403 on bad Host header                  //
+    // ---------------------------------------------------------------------- //
+
+    /// A request with a non-localhost Host header must be rejected with 403.
+    /// A request with Host: 127.0.0.1 must be allowed through (may still fail
+    /// at the routing level with a 404, but not at the DNS guard level).
+    #[tokio::test]
+    async fn dns_rebinding_guard_blocks_external_host() {
+        use axum::routing::{get, post};
+        use crate::vault::handlers;
+
+        let state = make_state(ServiceRegistry::new());
+        let app = Router::new()
+            .route("/proxy",        post(handle_proxy))
+            .route("/vault/health", get(handlers::health))
+            .layer(axum::middleware::from_fn(crate::dns_rebinding_guard))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        // Bad Host — must return 403.
+        let resp = client
+            .get(format!("http://{}/vault/health", addr))
+            .header("host", "evil.com")
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 403,
+            "external Host header must be blocked with 403 FORBIDDEN"
+        );
+
+        // Good Host — must be allowed through (health returns 200).
+        let resp = client
+            .get(format!("http://{}/vault/health", addr))
+            .header("host", "127.0.0.1")
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 200,
+            "localhost Host header must pass the DNS guard and reach the handler"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (f) Internal bearer token returns 401 without the header                //
+    // ---------------------------------------------------------------------- //
+
+    /// An internal endpoint (e.g. /rotate) must return 401 UNAUTHORIZED when
+    /// the Authorization: Bearer header is missing or wrong.
+    /// When the correct token is supplied it must NOT return 401 (the stub vault
+    /// may return another status from the actual handler, but the auth check
+    /// itself passed).
+    #[tokio::test]
+    async fn internal_token_middleware_returns_401_without_header() {
+        use axum::routing::{get, post};
+        use crate::vault::handlers;
+
+        let state = make_state(ServiceRegistry::new());
+        let correct_token = state.internal_token.as_str().to_string();
+
+        // Wire the internal endpoint sub-router exactly as main.rs does.
+        let internal_router = Router::new()
+            .route("/rotate", post(crate::rotate::handle_rotate))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let app = Router::new()
+            .route("/vault/health", get(handlers::health))
+            .merge(internal_router)
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let payload = serde_json::json!({"service": "sonarr", "strategy": "api"});
+
+        // No auth header → 401.
+        let resp = client
+            .post(format!("http://{}/rotate", addr))
+            .json(&payload)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 401,
+            "missing Authorization header must return 401 UNAUTHORIZED"
+        );
+
+        // Wrong token → 401.
+        let resp = client
+            .post(format!("http://{}/rotate", addr))
+            .header("authorization", "Bearer wrong-token")
+            .json(&payload)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 401,
+            "invalid token must return 401 UNAUTHORIZED"
+        );
+
+        // Correct token → NOT 401 (handler runs; stub returns 501 for sonarr).
+        let resp = client
+            .post(format!("http://{}/rotate", addr))
+            .header("authorization", format!("Bearer {}", correct_token))
+            .json(&payload)
+            .send()
+            .await
+            .expect("request failed");
+        assert_ne!(
+            resp.status().as_u16(), 401,
+            "correct token must pass the auth check (handler may return non-401)"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
     // (c) POST /proxy with known service → reaches auth stage (not 404)       //
     // ---------------------------------------------------------------------- //
 

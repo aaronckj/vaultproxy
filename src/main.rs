@@ -1940,7 +1940,7 @@ async fn browser_abort(
 ///   headers: { 'Authorization': `Bearer ${token}` }
 /// });
 /// ```
-async fn require_internal_token(
+pub(crate) async fn require_internal_token(
     AxumState(state): AxumState<Arc<AppState>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -2052,7 +2052,7 @@ async fn api_security_headers(
 ///    a reverse proxy. Operators who put it behind a proxy should configure the
 ///    proxy to rewrite `Host` to `127.0.0.1`, not rely on `X-Forwarded-Host`.
 ///    This comment documents the deliberate choice so it is not "fixed" away.
-async fn dns_rebinding_guard(
+pub(crate) async fn dns_rebinding_guard(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -2083,4 +2083,130 @@ async fn dns_rebinding_guard(
         }
     }
     next.run(req).await
+}
+
+// -------------------------------------------------------------------------- //
+// --check logic tests                                                         //
+// -------------------------------------------------------------------------- //
+//
+// Issue (iter-32): `--check` is a critical operator/CI tool (validates
+// services.toml and exits with a specific exit code + stdout message).
+// Previously it had zero unit test coverage — a regression could silently
+// change the exit code or output format and break CI pipelines or Docker
+// HEALTHCHECK scripts without any test failure.
+//
+// These tests call the same `ServiceRegistry::from_toml_file_with_counts`
+// logic used by the `--check` path and assert on:
+//   (a) missing file → accepted == 0, attempted == 0.
+//   (b) valid file with services → accepted == N, list correct.
+//   (c) file with an SSRF-blocked service → that service is rejected.
+
+#[cfg(test)]
+mod check_flag_tests {
+    use crate::proxy::registry::ServiceRegistry;
+    use std::io::Write;
+
+    // ---------------------------------------------------------------------- //
+    // (a) Missing file → both counters are zero                               //
+    // ---------------------------------------------------------------------- //
+
+    /// `from_toml_file_with_counts` on a non-existent path must return an
+    /// empty registry with attempted == 0, matching the `--check` first-run
+    /// branch (file_missing → exit 0 with "not found" message).
+    #[test]
+    fn check_missing_file_returns_zero_counts() {
+        let path = std::path::Path::new("/tmp/vault-proxy-nonexistent-12345.toml");
+        // Guarantee it really is absent.
+        let _ = std::fs::remove_file(path);
+
+        let (registry, attempted) =
+            ServiceRegistry::from_toml_file_with_counts(path);
+        let accepted = registry.list().len();
+
+        assert_eq!(attempted, 0, "missing file: attempted must be 0");
+        assert_eq!(accepted, 0, "missing file: accepted must be 0");
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (b) Valid file with services → accepted == attempted                    //
+    // ---------------------------------------------------------------------- //
+
+    /// A services.toml with two syntactically-valid, SSRF-clean entries must
+    /// produce accepted == 2, attempted == 2, with the correct service names
+    /// in the registry list. This mirrors the `--check` success path that
+    /// prints "OK — N service(s) registered".
+    #[test]
+    fn check_valid_services_toml_counts_match() {
+        let content = r#"
+[[service]]
+name = "sonarr"
+base_url = "http://192.168.1.10:8989/api/v3"
+auth = "header"
+vault_item = "vault-proxy - Sonarr"
+header_name = "X-Api-Key"
+
+[[service]]
+name = "radarr"
+base_url = "http://192.168.1.11:7878/api/v3"
+auth = "header"
+vault_item = "vault-proxy - Radarr"
+header_name = "X-Api-Key"
+"#;
+        let mut tmp = tempfile::NamedTempFile::new().expect("tmpfile");
+        tmp.write_all(content.as_bytes()).unwrap();
+
+        let (registry, attempted) =
+            ServiceRegistry::from_toml_file_with_counts(tmp.path());
+        let accepted = registry.list().len();
+
+        assert_eq!(attempted, 2, "two [[service]] blocks must be attempted");
+        assert_eq!(accepted, 2, "both valid entries must be accepted");
+
+        let names = registry.list();
+        assert!(names.contains(&"sonarr"), "sonarr must be in registry");
+        assert!(names.contains(&"radarr"), "radarr must be in registry");
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (c) SSRF-blocked service → that entry is rejected                       //
+    // ---------------------------------------------------------------------- //
+
+    /// A services.toml where one service has an SSRF-blocked base_url (a
+    /// private loopback address targeting vault-proxy itself) must result in
+    /// attempted == 2, accepted == 1 — the blocked entry is counted as
+    /// attempted but never added to the registry. This mirrors the `--check`
+    /// PARTIAL path that prints "N/M service(s) accepted" and exits 1.
+    #[test]
+    fn check_ssrf_blocked_service_is_rejected() {
+        let content = r#"
+[[service]]
+name = "good-service"
+base_url = "http://192.168.1.10:8989/api/v3"
+auth = "header"
+vault_item = "vault-proxy - Good"
+header_name = "X-Api-Key"
+
+[[service]]
+name = "ssrf-service"
+base_url = "http://127.0.0.1:3201/internal"
+auth = "header"
+vault_item = "vault-proxy - Bad"
+header_name = "X-Api-Key"
+"#;
+        let mut tmp = tempfile::NamedTempFile::new().expect("tmpfile");
+        tmp.write_all(content.as_bytes()).unwrap();
+
+        let (registry, attempted) =
+            ServiceRegistry::from_toml_file_with_counts(tmp.path());
+        let accepted = registry.list().len();
+        let rejected = attempted.saturating_sub(accepted);
+
+        assert_eq!(attempted, 2, "two [[service]] blocks must be attempted");
+        assert_eq!(accepted, 1, "only the SSRF-clean service must be accepted");
+        assert_eq!(rejected, 1, "SSRF-blocked service must be counted as rejected");
+
+        let names = registry.list();
+        assert!(names.contains(&"good-service"), "clean service must be in registry");
+        assert!(!names.contains(&"ssrf-service"), "SSRF service must NOT be in registry");
+    }
 }

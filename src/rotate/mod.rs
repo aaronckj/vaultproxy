@@ -62,6 +62,14 @@ pub async fn handle_rotate(
     }
 
     // Dispatch to the per-service strategy function.
+    //
+    // Issue (iter-32): `rotate_sonarr` and `rotate_radarr` return
+    // `status: "unsupported"` — but the handler was returning HTTP 200 OK for
+    // them. A caller cannot distinguish a successful rotation from an
+    // unimplemented one by status code alone. Return 501 Not Implemented for
+    // any result whose status is "unsupported" so callers and monitoring tools
+    // can act on the correct signal. When a real implementation is added, it
+    // should change the status to "success" and this path will return 200.
     let result = match req.service.as_str() {
         "sonarr" => strategies::rotate_sonarr().await,
         "radarr" => strategies::rotate_radarr().await,
@@ -102,6 +110,13 @@ pub async fn handle_rotate(
         permission: "Allowed".to_string(),
         trigger: "http".to_string(),
     });
+
+    // Return 501 Not Implemented when the strategy is a known stub.
+    // "unsupported" means the strategy exists in code but is not yet
+    // implemented — this is distinct from "error" (bad input) and "success".
+    if result.status == "unsupported" {
+        return Err((StatusCode::NOT_IMPLEMENTED, Json(result)));
+    }
 
     Ok(Json(result))
 }
