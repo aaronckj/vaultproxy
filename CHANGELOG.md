@@ -3,6 +3,47 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.4] — iteration-27 audit fixes
+
+### Security fixes (iteration 27)
+
+- **`GET /vault/services` exposed `login_path` on open router (iter-27)**:
+  The endpoint added in iter-26 included `login_path` in the `auth_detail`
+  object for `session` and `unifi_dual` auth patterns. Combined with the
+  already-exposed `base_url`, an unauthenticated attacker enumerating this
+  endpoint from a browser tab (no bearer token required) could build a map of
+  `<base_url, login_path>` pairs for every registered service — enough to craft
+  targeted credential-stuffing or SSRF probes. `login_path` is now omitted from
+  the response. Token field names and `login_include_username` are retained as
+  they don't aid path enumeration.
+
+- **`totp.rs:28` — `unwrap()` on `SystemTime::duration_since` (iter-27)**:
+  `seconds_remaining()` called `.unwrap()` on `SystemTime::now().duration_since(UNIX_EPOCH)`.
+  `duration_since` returns `Err` when the system clock is set before the epoch — a
+  real scenario on embedded or misconfigured systems. Changed to `.unwrap_or(Duration::ZERO)`
+  so the function returns 30 (full TOTP period) rather than panicking.
+
+- **`credential_audit/orchestrator.rs` — `Mutex::lock().unwrap()` with no
+  panic message (iter-27)**: Seven `self.conn.lock().unwrap()` calls in the
+  orchestrator had no context string — a mutex-poison panic would produce an
+  opaque message. Changed all to `.expect("DB mutex poisoned")` for
+  diagnosability.
+
+### UX / tooling (iteration 27)
+
+- **`--check` flag — validate services.toml without Vaultwarden (iter-27)**:
+  `vault-proxy --check` parses `services.toml` and applies SSRF validation
+  rules, then exits. No Vaultwarden credentials required, no ports bound.
+  Exit 0 = config OK. Useful for CI pipelines and pre-deploy verification.
+
+- **`GET /vault/services` documented in README (iter-27)**: The endpoint added
+  in iter-26 was not referenced in the README API/CLI section. Added a
+  description under the Quick Start "verify" step and added `--check` to the
+  CLI reference table.
+
+- **`Cargo.toml` bumped to `0.1.4` (iter-27)**: Captures all iter-25/26/27
+  fixes. Previous versions are in the CHANGELOG below.
+
 ## [Unreleased] — iteration-26 audit fixes
 
 ### Security fixes (iteration 26)

@@ -51,7 +51,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         let run_id = Uuid::new_v4().to_string();
         let started = chrono::Utc::now().to_rfc3339();
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().expect("DB mutex poisoned");
             conn.execute(
                 "INSERT INTO audit_runs(run_id, status, started_at) VALUES (?1, 'running', ?2)",
                 params![&run_id, &started],
@@ -179,7 +179,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
 
         // 5) Persist results.
         {
-            let mut conn = self.conn.lock().unwrap();
+            let mut conn = self.conn.lock().expect("DB mutex poisoned");
             let tx = conn.transaction()?;
             for r in &resp.items {
                 tx.execute(
@@ -216,7 +216,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     /// It was passed at call sites (`"engine_unreachable"`, `"engine_error: …"`) but
     /// never stored, leaving `fail_reason` always NULL in the database.
     fn fail_run(&self, run_id: &str, reason: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("DB mutex poisoned");
         conn.execute(
             "UPDATE audit_runs SET status='aborted_engine_error', finished_at=?1, fail_reason=?2 WHERE run_id=?3",
             params![&chrono::Utc::now().to_rfc3339(), reason, run_id],
@@ -225,7 +225,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     }
 
     pub fn list_pending(&self, run_id: &str) -> Result<Vec<ItemResult>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("DB mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT item_id, category, status, reason, evidence_json, dedup_cluster_id, marked_for_delete, pass
              FROM audit_run_items WHERE run_id=?1 AND marked_for_delete=1",
@@ -289,7 +289,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
             }
         }
         if applied > 0 {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().expect("DB mutex poisoned");
             conn.execute(
                 "UPDATE audit_runs SET applied_at=?1 WHERE run_id=?2",
                 params![&chrono::Utc::now().to_rfc3339(), run_id],
@@ -309,7 +309,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     /// List items that classified as `needs_pass_2` after Pass 1 — these are
     /// the input to the Pass-2 dispatch worker.
     pub fn list_needs_pass_2(&self, run_id: &str) -> Result<Vec<ItemResult>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("DB mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT item_id, category, status, reason, evidence_json,
                     dedup_cluster_id, marked_for_delete, pass
@@ -510,7 +510,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         let verdict_str = serde_json::to_string(verdict)?;
         // serde_json wraps enum in quotes — strip them for the DB column.
         let verdict_clean = verdict_str.trim_matches('"').to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("DB mutex poisoned");
         conn.execute(
             "UPDATE audit_run_items
              SET pass2_verdict = ?1,

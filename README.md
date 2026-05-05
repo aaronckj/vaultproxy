@@ -153,6 +153,14 @@ The proxy is now running. Verify with:
 curl http://127.0.0.1:3201/vault/health
 ```
 
+To verify that services.toml loaded correctly, use:
+
+```bash
+curl http://127.0.0.1:3201/vault/services
+```
+
+`GET /vault/services` returns the count and list of registered services — each entry includes the service `name`, `base_url`, `auth` type (`bearer`, `header`, `query_param`, `basic`, `session`, or `unifi_dual`), and auth-type-specific detail (header name, param name, token field, etc.). `vault_item` (the Vaultwarden credential name) is intentionally omitted. This endpoint requires no authentication token; it exposes no secrets.
+
 > **Internal token:** vault-proxy generates a 64-character hex bearer token at startup and writes it to `$CONFIG_DIR/internal-token` (mode 0600). Internal endpoints (`/vault/connecterr-secrets`, `/vault/connecterr-secrets/upsert`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <token>`. The Connecterr TypeScript side reads this file automatically. If you are integrating a custom client, read `CONFIG_DIR/internal-token` and include it as `Authorization: Bearer <value>` on calls to those endpoints.
 
 > **`write_env` feature:** `POST /vault/write-env` (which decrypts a vault item and writes its credentials as env-var lines to a file) is disabled by default (`501 Not Implemented`). Enable it by setting `ENV_WRITE_ROOT` to a directory that the proxy is allowed to write into (e.g. `ENV_WRITE_ROOT=/envs`). The endpoint enforces that `target_path` begins with this prefix.
@@ -170,6 +178,7 @@ cargo build --release --features tpm
 | `--config-dir` | `CONFIG_DIR` | `/config` | Keystore + config directory |
 | `--vault-folder` | `VAULT_FOLDER` | `vault-proxy` | Vaultwarden folder name |
 | `--setup` | — | — | Run interactive setup wizard |
+| `--check` | — | — | Validate services.toml (parse + SSRF rules) and exit. No Vaultwarden connection required. Exit 0 = ok. |
 | `--proxy-timeout` | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
 | `--ntfy-url` | `NTFY_URL` | — | ntfy.sh topic URL for push alerts |
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |

@@ -451,6 +451,11 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 ///   reveals vault credential naming conventions and is not needed for debugging
 ///   service registration issues. The header_name / param_name are included
 ///   because they are required to understand the auth wiring.
+/// - `login_path` is intentionally OMITTED for session / unifi_dual auth. An
+///   attacker enumerating this open endpoint could combine a known login_path
+///   with the exposed base_url to craft a targeted credential-stuffing or
+///   SSRF probe without the bearer token. Token field name and
+///   login_include_username are retained because they don't aid path enumeration.
 /// - This endpoint is on the open router (no bearer token required) because
 ///   service names and auth types are not secrets — they are visible in
 ///   services.toml and the startup logs. Equivalent security posture to
@@ -477,12 +482,11 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
                     "key_field": key_field,
                     "secret_field": secret_field,
                 }),
-                AuthPattern::Session { login_path, token_field, login_include_username, .. } => json!({
-                    "login_path": login_path,
+                AuthPattern::Session { token_field, login_include_username, .. } => json!({
                     "token_field": token_field,
                     "login_include_username": login_include_username,
                 }),
-                AuthPattern::UnifiDual { login_path, .. } => json!({ "login_path": login_path }),
+                AuthPattern::UnifiDual { .. } => json!({}),
                 AuthPattern::Bearer { .. } => json!({}),
             };
             json!({

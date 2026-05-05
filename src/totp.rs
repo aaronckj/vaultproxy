@@ -22,10 +22,13 @@ pub fn generate_code(seed: &str) -> Result<String> {
 }
 
 /// Get seconds remaining until the current code expires.
+///
+/// Returns 30 (full period) on the unlikely event that the system clock
+/// is set before the Unix epoch (duration_since returns Err in that case).
 pub fn seconds_remaining() -> u64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(std::time::Duration::ZERO)
         .as_secs();
     30 - (now % 30)
 }
