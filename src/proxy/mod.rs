@@ -75,6 +75,10 @@ pub struct AppState {
     pub notifier: Arc<crate::notify::Notifier>,
     /// One-time handshake flag — prevents key exfiltration after first retrieval.
     pub handshake_completed: Arc<std::sync::atomic::AtomicBool>,
+    /// Runtime vault folder (from `--vault-folder` / `VAULT_FOLDER`).
+    /// Stored here so HTTP handlers use the same folder the registry was
+    /// built against, instead of falling back to `DEFAULT_VAULT_FOLDER`.
+    pub vault_folder: String,
 }
 
 // -------------------------------------------------------------------------- //

@@ -497,6 +497,7 @@ async fn start_server(
         audit_log,
         notifier,
         handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        vault_folder: args.vault_folder.clone(),
     });
 
     // Build router with rate limiting on sensitive endpoints.
