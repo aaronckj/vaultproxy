@@ -27,6 +27,13 @@ impl SetupState {
 }
 
 /// Validate Vaultwarden credentials by attempting to authenticate.
+///
+/// Issue-9 (iter-4): Errors are annotated with the URL and a human-readable
+/// hint so operators know immediately whether the problem is a wrong URL
+/// (network unreachable / DNS failure), wrong email/password (401 from
+/// Vaultwarden), or a TLS issue (self-signed cert without accept_invalid_certs).
+/// Previously all three cases surfaced the same opaque "vault init failed" line
+/// in the setup wizard output.
 pub async fn validate_vaultwarden_creds(url: &str, email: &str, password: &str) -> Result<()> {
     // Guard against an SSRF-style setup where the operator is tricked into
     // pointing the wizard at a link-local/cloud-metadata endpoint. Every
@@ -38,7 +45,31 @@ pub async fn validate_vaultwarden_creds(url: &str, email: &str, password: &str) 
             "vaultwarden URL must be http(s) and resolve to a non-metadata, non-link-local host"
         ));
     }
-    let _vault = VaultManager::new(url, email, password).await?;
+    VaultManager::new(url, email, password).await.map_err(|e| {
+        // Classify the error into actionable buckets for the operator.
+        let detail = e.to_string();
+        let hint = if detail.contains("authentication failed") || detail.contains("401") {
+            "wrong email or master password — verify your Vaultwarden login credentials"
+        } else if detail.contains("prelogin request failed")
+            || detail.contains("connection refused")
+            || detail.contains("dns error")
+            || detail.contains("No such host")
+            || detail.contains("tcp connect")
+        {
+            "cannot reach Vaultwarden — check the URL, ensure the server is running and reachable from this host"
+        } else if detail.contains("certificate")
+            || detail.contains("tls")
+            || detail.contains("ssl")
+        {
+            "TLS/certificate error — if your Vaultwarden uses a self-signed cert, this is expected (vault-proxy accepts self-signed certs)"
+        } else {
+            "check URL, credentials, and Vaultwarden server status"
+        };
+        anyhow!(
+            "failed to connect to Vaultwarden at '{}': {} — hint: {}",
+            url, detail, hint
+        )
+    })?;
     Ok(())
 }
 

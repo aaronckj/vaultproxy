@@ -44,6 +44,14 @@ anyhow = "1"
 dashmap = "6"
 base64 = "0.22"
 rand = "0.8"
+# RUSTSEC-2023-0071: rsa 0.9 is affected by the Marvin Attack (RSA timing
+# side-channel). No fixed version exists for 0.9.x. The crate is used only
+# for Bitwarden type-4 cipher-string decryption (organisation key unwrapping),
+# which is a one-shot operation at vault sync time on a localhost-only service.
+# The practical exploitation window is narrow, but this should be revisited
+# when a patched rsa crate is available.
+# TODO: migrate to ring's RSA-OAEP-SHA1 once ring publishes a stable async API,
+# or replace with a purpose-built OAEP implementation that is constant-time.
 rsa = "0.9"
 rusqlite = { version = "0.31", features = ["bundled"] }
 sha1 = "0.10"

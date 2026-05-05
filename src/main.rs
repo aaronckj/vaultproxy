@@ -122,6 +122,28 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
 
+    // Issue-3 (iter-4): Validate --vault-folder early so a bad value produces
+    // a clear startup error instead of silently returning zero credentials.
+    // The folder name is passed to Vaultwarden folder-lookup; an empty name
+    // would match nothing, a name with null bytes could confuse the HTTP layer,
+    // and leading/trailing slashes look like path components in the Vaultwarden
+    // API URL even though they never are — reject them to avoid confusion.
+    {
+        let f = args.vault_folder.as_str();
+        if f.is_empty() {
+            anyhow::bail!("--vault-folder / VAULT_FOLDER must not be empty");
+        }
+        if f.contains('\0') {
+            anyhow::bail!("--vault-folder / VAULT_FOLDER must not contain null bytes");
+        }
+        if f.contains('/') {
+            anyhow::bail!(
+                "--vault-folder / VAULT_FOLDER must not contain '/' — got '{}'",
+                f
+            );
+        }
+    }
+
     // CLI setup mode (headless/Docker) — interactive wizard, then start server
     if args.setup {
         // Guard against silent overwrite of an existing, working keystore.
@@ -1027,21 +1049,49 @@ async fn browser_abort(
 /// DNS rebinding guard — rejects requests where the Host header is not
 /// localhost or 127.0.0.1. Prevents external websites from making
 /// JavaScript requests to the sidecar via DNS rebinding attacks.
+///
+/// Issue-5 (iter-4): Two additional defences applied:
+///
+/// 1. **Missing Host header** — HTTP/1.1 requires a Host header; its absence
+///    is suspicious (attacker-crafted raw TCP) and is now rejected. HTTP/2
+///    uses `:authority` pseudo-headers which reqwest / curl always send, so
+///    legitimate callers are unaffected.
+///
+/// 2. **X-Forwarded-Host ignored** — if vault-proxy is accidentally placed
+///    behind a reverse proxy that sets `X-Forwarded-Host`, this guard still
+///    reads `Host` (the hop-by-hop header). `X-Forwarded-Host` is NOT read
+///    because vault-proxy is designed to run as a localhost sidecar, not behind
+///    a reverse proxy. Operators who put it behind a proxy should configure the
+///    proxy to rewrite `Host` to `127.0.0.1`, not rely on `X-Forwarded-Host`.
+///    This comment documents the deliberate choice so it is not "fixed" away.
 async fn dns_rebinding_guard(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::StatusCode;
 
-    if let Some(host) = req.headers().get("host").and_then(|v| v.to_str().ok()) {
-        let host_part = host.split(':').next().unwrap_or(host);
-        if host_part != "127.0.0.1" && host_part != "localhost" && host_part != "[::1]" {
-            tracing::warn!("DNS rebinding blocked: Host={}", host);
+    match req.headers().get("host").and_then(|v| v.to_str().ok()) {
+        None => {
+            // Issue-5: No Host header — reject. HTTP/1.1 requires it;
+            // missing Host is either a protocol violation or an attacker
+            // bypassing the rebinding guard by omitting the header entirely.
+            tracing::warn!("DNS rebinding guard: missing Host header — request blocked");
             return (
                 StatusCode::FORBIDDEN,
-                AxumJson(serde_json::json!({"error": "request blocked — invalid host"})),
+                AxumJson(serde_json::json!({"error": "request blocked — missing host header"})),
             )
                 .into_response();
+        }
+        Some(host) => {
+            let host_part = host.split(':').next().unwrap_or(host);
+            if host_part != "127.0.0.1" && host_part != "localhost" && host_part != "[::1]" {
+                tracing::warn!("DNS rebinding blocked: Host={}", host);
+                return (
+                    StatusCode::FORBIDDEN,
+                    AxumJson(serde_json::json!({"error": "request blocked — invalid host"})),
+                )
+                    .into_response();
+            }
         }
     }
     next.run(req).await

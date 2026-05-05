@@ -143,6 +143,20 @@ pub async fn launch(
         );
     }
 
+    // Issue-8 (iter-4): Warn operators about the /proc/<pid>/environ exposure
+    // at runtime, not just in the example config file. The SECURITY.md and
+    // mcp-servers.example.toml both document this, but operators who copy the
+    // file without reading the header never see the warning. Emitting it here
+    // ensures it appears in container logs on every launch, making it
+    // discoverable without reading documentation.
+    tracing::warn!(
+        "--launch mode: credentials for '{}' are injected into the child process via \
+         fork/exec and are readable via /proc/<pid>/environ by same-user processes. \
+         For stronger isolation use an MCP server that supports the native /proxy \
+         integration and does not need credentials in its environment.",
+        server_name
+    );
+
     tracing::info!(
         "launching '{}': {} (injecting {} env vars)",
         server_name,

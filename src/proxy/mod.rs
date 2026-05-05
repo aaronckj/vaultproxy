@@ -551,6 +551,20 @@ async fn session_login(
         })?
         .to_string();
 
+    // Issue-2 (iter-4): Reject empty tokens before caching them. A 200
+    // response with `token_field` present but empty would be cached, cause a
+    // 401 on the real request, trigger `force_refresh`, re-login, get the
+    // same empty string, and cache it again — meaning every call for this
+    // service hereafter pays an extra login round-trip. Returning an error
+    // here causes the entire proxy call to fail with BAD_GATEWAY rather than
+    // silently caching a useless token.
+    if token.is_empty() {
+        return Err(anyhow::anyhow!(
+            "login response field '{}' is present but empty — refusing to cache empty token",
+            token_field
+        ));
+    }
+
     Ok(token)
 }
 
@@ -618,7 +632,38 @@ fn build_request(
     let mut builder = client.request(method, url);
 
     // Extra query params supplied by the caller.
+    //
+    // Issue-6 (iter-4): Duplicate query key behaviour.
+    // `reqwest::RequestBuilder::query()` APPENDS to any keys already present
+    // in the base URL — it does NOT replace them. This means if `base_url`
+    // contains `?token=real` and the caller passes `query = {"token": "X"}`,
+    // the upstream receives `?token=real&token=X`. Most HTTP services use the
+    // FIRST occurrence of a repeated key, so the attacker's value is silently
+    // ignored. However, some services (RFC 3986 allows either) use the LAST
+    // value — in that case the caller's value wins, which is dangerous for any
+    // service that embeds a static credential or CSRF token in base_url.
+    //
+    // Guard: reject any caller-supplied query key that also appears in the
+    // base URL's query string. This prevents both accidental misconfiguration
+    // and deliberate credential-override attempts.
     if let Some(query) = &req.query {
+        // Parse the static query string from the base URL (if any).
+        if let Ok(parsed_url) = url::Url::parse(url) {
+            let base_keys: std::collections::HashSet<String> = parsed_url
+                .query_pairs()
+                .map(|(k, _)| k.to_string())
+                .collect();
+            for key in query.keys() {
+                if base_keys.contains(key.as_str()) {
+                    return Err(anyhow::anyhow!(
+                        "query key '{}' conflicts with a key already present in the service base_url — \
+                         refusing to shadow or duplicate it",
+                        key
+                    ));
+                }
+            }
+        }
+
         let pairs: Vec<(&str, String)> = query
             .iter()
             .map(|(k, v)| {
@@ -711,5 +756,56 @@ mod path_traversal_tests {
         // A path component that contains dots but is not exactly `.` or `..` is fine.
         assert!(!has_traversal("file.json"), "dotted filename must pass");
         assert!(!has_traversal("v3.1/items"), "version with dot must pass");
+    }
+}
+
+// Issue-6 (iter-4): Query key conflict detection tests.
+#[cfg(test)]
+mod query_conflict_tests {
+    /// Replicate the key-extraction logic from build_request inline so we can
+    /// test without a live reqwest client.
+    fn base_url_query_keys(url: &str) -> std::collections::HashSet<String> {
+        url::Url::parse(url)
+            .map(|u| u.query_pairs().map(|(k, _)| k.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn base_url_without_query_has_no_keys() {
+        let keys = base_url_query_keys("http://service/api/v2");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn base_url_with_token_param_detected() {
+        let keys = base_url_query_keys("http://service/api/v2?token=real&other=x");
+        assert!(keys.contains("token"), "token key must be detected");
+        assert!(keys.contains("other"), "other key must be detected");
+    }
+
+    #[test]
+    fn caller_key_conflict_would_be_blocked() {
+        // Simulates: base_url has ?apikey=real, caller passes query={"apikey":"X"}
+        let base_keys = base_url_query_keys("http://tautulli/api/v2?apikey=real&cmd=get_libraries");
+        // The caller's query map.
+        let caller_keys = vec!["apikey".to_string()];
+        let conflicts: Vec<&str> = caller_keys
+            .iter()
+            .filter(|k| base_keys.contains(k.as_str()))
+            .map(String::as_str)
+            .collect();
+        assert!(!conflicts.is_empty(), "apikey conflict must be detected and blocked");
+    }
+
+    #[test]
+    fn non_conflicting_caller_keys_are_allowed() {
+        let base_keys = base_url_query_keys("http://tautulli/api/v2?apikey=real");
+        let caller_keys = vec!["cmd".to_string(), "output_format".to_string()];
+        let conflicts: Vec<&str> = caller_keys
+            .iter()
+            .filter(|k| base_keys.contains(k.as_str()))
+            .map(String::as_str)
+            .collect();
+        assert!(conflicts.is_empty(), "non-conflicting keys must pass through");
     }
 }

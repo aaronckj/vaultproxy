@@ -506,8 +506,19 @@ impl ServiceRegistry {
 
     /// Build a `ServiceRegistry` from a `services.toml` file in `--config-dir`.
     ///
-    /// Gracefully handles a missing file (returns empty registry with a warning)
-    /// and parse errors (returns empty registry with an error log).
+    /// A missing file returns an empty registry with a warning (not an error).
+    /// This is **intentionally different** from `launcher::launch()`, which
+    /// returns a hard error when `mcp-servers.toml` is missing:
+    ///
+    /// - `services.toml` is *optional* — the proxy can serve vault/health and
+    ///   the dashboard even without any registered downstream services. An
+    ///   operator who only uses `--launch` mode never creates this file.
+    /// - `mcp-servers.toml` is *required* for the `--launch` flag, so a
+    ///   missing file is always a configuration error that must stop the process.
+    ///
+    /// Parse errors also return an empty registry with an error log, giving
+    /// operators a chance to fix the TOML without taking down an already-running
+    /// proxy (e.g. during a hot-reload). Both cases emit a visible log entry.
     pub fn from_toml_file(path: &Path) -> Self {
         let mut registry = Self::new();
 
@@ -528,6 +539,30 @@ impl ServiceRegistry {
         };
 
         for svc in parsed.service {
+            // Issue-1 (iter-4): Validate service name. An empty name would
+            // register a "" key in the lookup map, making `/proxy` calls with
+            // `service = ""` reach a real service. Names with null bytes, path
+            // separators, or only whitespace are rejected to keep routing and
+            // logging unambiguous.
+            if svc.name.is_empty() {
+                tracing::error!("services.toml: skipping service with empty name");
+                continue;
+            }
+            if svc.name.contains('\0') {
+                tracing::error!(
+                    "services.toml: service name '{}' contains null byte — skipping",
+                    svc.name
+                );
+                continue;
+            }
+            if svc.name.chars().all(|c| c.is_whitespace()) {
+                tracing::error!(
+                    "services.toml: service name '{}' is all-whitespace — skipping",
+                    svc.name
+                );
+                continue;
+            }
+
             let base_url = svc.base_url.trim_end_matches('/').to_string();
 
             // Validate base_url against SSRF policy. This prevents a
@@ -1278,5 +1313,45 @@ token_field = "token"
             }
             other => panic!("expected Session, got {:?}", other),
         }
+    }
+
+    // Issue-1 (iter-4): Service name validation tests.
+
+    #[test]
+    fn test_empty_service_name_is_rejected() {
+        // TOML requires a value for `name`, but an empty string is valid TOML.
+        // A service with name="" would register under the "" key and be
+        // reachable via `{"service": ""}` — reject it.
+        let f = write_toml(r#"
+[[service]]
+name = ""
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "myproxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.list().is_empty(), "empty name should be rejected");
+    }
+
+    #[test]
+    fn test_all_whitespace_service_name_is_rejected() {
+        let f = write_toml(r#"
+[[service]]
+name = "   "
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "myproxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.list().is_empty(), "all-whitespace name should be rejected");
+    }
+
+    #[test]
+    fn test_service_name_with_null_byte_is_rejected() {
+        // Null bytes in service names can confuse logging and routing.
+        let toml = "[[service]]\nname = \"bad\x00name\"\nbase_url = \"http://192.0.2.1:8123\"\nauth = \"bearer\"\nvault_item = \"x\"\n";
+        let f = write_toml(toml);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.list().is_empty(), "name with null byte should be rejected");
     }
 }

@@ -1,0 +1,9 @@
+# cargo audit configuration for vaultproxy
+# Managed by the iter-4 security audit pass.
+
+[advisories]
+
+# RUSTSEC-2023-0071: rsa 0.9 Marvin Attack (timing side-channel in RSA).
+# No fixed version available. Tracked in Cargo.toml with a TODO comment.
+# Used only for org-key unwrapping at vault sync on a localhost-only service.
+ignore = ["RUSTSEC-2023-0071"]

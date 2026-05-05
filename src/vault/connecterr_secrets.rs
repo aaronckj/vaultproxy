@@ -63,6 +63,26 @@ fn walk_path<'a>(root: &'a mut Map<String, Value>, parts: &[&str]) -> &'a mut Ma
 // single VaultManager::list_field_pairs(item) -> Vec<(name, SecureBuffer)>
 // pass if profiling shows a real cost or if folder ever grows.
 pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<Value> {
+    // Issue-7 (iter-4): Distinguish "folder does not exist" from "folder
+    // exists but is empty". `list_items_in_folder` returns an empty Vec for
+    // both cases (it resolves folder_name → folder_id, and returns Vec::new()
+    // when the folder_id is not found). An empty result from a non-existent
+    // folder means every downstream service appears unconfigured — silent and
+    // confusing. Log a warning so operators see it in logs.
+    //
+    // We deliberately do NOT hard-error here (returning Ok({})) because the
+    // caller (GET /vault/connecterr-secrets) should still return a valid empty
+    // JSON object — returning an HTTP error would break the MCP server's
+    // startup health check. The warning in logs is sufficient for diagnosis.
+    let folder_exists = vault.find_folder_id_by_name_async(folder_name).await.is_some();
+    if !folder_exists {
+        tracing::warn!(
+            "vault folder '{}' not found — no items will be aggregated. \
+             Create the folder in Vaultwarden and populate it with service credentials.",
+            folder_name
+        );
+    }
+
     let items = vault.list_items_in_folder(folder_name).await;
     let mut pairs: Vec<(String, Map<String, Value>)> = Vec::with_capacity(items.len());
     let mut seen_names: std::collections::HashSet<String> =
