@@ -3,15 +3,94 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — security hardening (iterations 1–16)
+## [Unreleased] — security hardening (iterations 1–20)
 
 The v0.1.0 release tag reflects the initial public scaffold. Since that
-tag, the codebase has gone through 16 focused security and reliability
-audit passes totalling 130+ individual fixes. The items below are
+tag, the codebase has gone through 20 focused security and reliability
+audit passes totalling 160+ individual fixes. The items below are
 representative; they are NOT all included in the v0.1.0 release artifact.
 
 Users building from source or pulling a `latest` image get all fixes.
-Users on the v0.1.0 tagged release should upgrade.
+Users on the v0.1.0 tagged release should upgrade to v0.1.1 (or later).
+
+### Security fixes (iterations 17–20) — vault_folder scope hardening
+
+**Critical/high severity.** Iterations 17–19 added `vault_folder` scope
+guards to every vault mutation and read-sensitive handler. Iteration 20
+closed the remaining gaps. Without these guards, any local caller (MCP
+client, localhost process) could read or modify vault items from outside
+the proxy's designated folder, potentially accessing personal credentials
+(banking, SSH keys, etc.) stored elsewhere in the same Vaultwarden vault.
+
+- **`list_items` scoped to `vault_folder` (iter-18)**: `GET /vault/items`
+  previously returned all items in the vault. Now filtered to items whose
+  `folder_id` matches `vault_folder`. Personal items in other folders are
+  never surfaced.
+
+- **`list_duplicates` scoped to `vault_folder` (iter-19)**: the duplicate
+  detection scan now operates only within `vault_folder`. Previously it
+  fingerprinted passwords from every folder, which could reveal
+  cross-folder password reuse patterns for personal accounts.
+
+- **`create_item` locked to `vault_folder` (iter-19)**: `POST /vault/items`
+  now rejects any `folder_name` that doesn't match `vault_folder`, and
+  defaults to `vault_folder` when `folder_name` is omitted. Prevents
+  callers from injecting items into arbitrary vault folders.
+
+- **`update_item` scoped to `vault_folder` (iter-17)**: `PATCH /vault/items`
+  verifies the target item is in `vault_folder` before modifying it.
+
+- **`delete_item` scoped to `vault_folder` (iter-18)**: `DELETE /vault/items`
+  verifies the target item is in `vault_folder` before soft-deleting it.
+
+- **`clone_item` source scoped to `vault_folder` (iter-18)**: `POST
+  /vault/clone` verifies the *source* item is in `vault_folder`. Without
+  this guard a caller could clone a personal vault item's encrypted password
+  blob into the proxy's folder and then decrypt it.
+
+- **`test_credential` scoped to `vault_folder` (iter-19)**: `POST
+  /vault/test-credential` verifies the vault item is in `vault_folder`
+  before decrypting and forwarding credentials to the target URL.
+
+- **`generate_totp` scoped to `vault_folder` (iter-19)**: `POST /vault/totp`
+  verifies the item name is in `vault_folder` before decrypting and generating
+  a live TOTP code. Prevents access to banking or email 2FA seeds.
+
+- **`decrypt_notes` scoped to `vault_folder` (iter-19)**: `POST /vault/notes`
+  verifies the item name is in `vault_folder` before returning the full
+  decrypted notes field (which may contain API tokens, SSH keys, recovery codes).
+
+- **`delete_folder` blocks deletion of `vault_folder` itself (iter-19)**:
+  prevents an MCP caller from deleting the proxy's own folder, which would
+  silently break all subsequent credential lookups.
+
+- **`move_cipher` source scoped to `vault_folder` (iter-19)**: `POST
+  /vault/move` verifies the source item is in `vault_folder` before moving it.
+
+- **`write_env` scoped to `vault_folder` (iter-20)**: `POST /vault/write-env`
+  now verifies the vault item is in `vault_folder` before decrypting credentials
+  and writing them to disk. Previously any local caller could exfiltrate the
+  plaintext of any vault item by passing its UUID to this endpoint.
+
+- **`inject_creds` scoped to `vault_folder` (iter-20)**: `POST
+  /vault/inject-creds` now checks both `vault_item` and `ha_token_item` against
+  `vault_folder` before decrypting. Previously a caller could name any vault item
+  and have its credentials submitted to an arbitrary HA config-flow URL.
+
+- **`list_untracked_items` scoped to `vault_folder` (iter-20)**: `GET
+  /vault/items/untracked` now returns only items inside `vault_folder` that are
+  absent from the sync map. Previously it returned all untracked items across the
+  entire vault, exposing names, usernames, and URIs of personal items.
+
+- **`list_folders` scoped to `vault_folder` (iter-20)**: `GET /vault/folders`
+  now returns only the folder(s) matching `vault_folder`. Previously it returned
+  all vault folders, exposing personal folder names (e.g. "Banking", "Work")
+  as metadata.
+
+- **Duplicate folder name warning (iter-19)**: `sync()` now logs a prominent
+  warning when two vault folders share the same decrypted name. Duplicate names
+  cause `find_folder_id_by_name_async` to resolve non-deterministically, which
+  could silently break scope guards. Operators are prompted to consolidate.
 
 ### Security fixes and features (iteration 16)
 

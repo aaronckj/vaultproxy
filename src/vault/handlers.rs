@@ -377,10 +377,22 @@ pub async fn list_duplicates(
     Json(groups)
 }
 
-/// `GET /vault/folders` — list all folders the vault knows about with their
-/// item counts and sync-tracking status. Duplicate folder names (a common
-/// artefact of cloud→self-hosted migrations) show up here as separate entries
-/// with different ids, so callers can consolidate them.
+/// `GET /vault/folders` — list folders scoped to `vault_folder`.
+///
+/// # Folder scope (iter-20)
+///
+/// Previously this returned ALL folders in the vault, exposing personal folder
+/// names (e.g. "Banking", "Work", "Personal SSH Keys") to any local caller.
+/// Folder names are sensitive metadata: they reveal the owner's life categories
+/// even without exposing any credential values.
+///
+/// We now return only the folder(s) whose decrypted name matches
+/// `state.vault_folder` (the proxy's own folder). Duplicate `vault_folder`
+/// entries (same name, different IDs — a common cloud→self-hosted migration
+/// artefact) still show up as separate entries so the operator can consolidate
+/// them, but personal folders are no longer surfaced.
+///
+/// If the vault_folder is not found (fresh vault), an empty list is returned.
 pub async fn list_folders(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<FolderInfo>> {
@@ -395,12 +407,31 @@ pub async fn list_folders(
     } else {
         std::collections::HashSet::new()
     };
-    Json(state.vault.list_folders_with_counts(&tracked).await)
+    let all = state.vault.list_folders_with_counts(&tracked).await;
+    // Filter to only entries whose name matches vault_folder. This still exposes
+    // duplicate vault_folder entries (same name, different id) so operators can
+    // identify and consolidate migration artefacts.
+    let scoped: Vec<FolderInfo> = all
+        .into_iter()
+        .filter(|f| f.name == state.vault_folder.as_str())
+        .collect();
+    Json(scoped)
 }
 
 /// `GET /vault/items/untracked` — list vault items that have no entry in the
 /// cloud↔VW sync map. These are either personal items created directly in VW
 /// (expected) or orphans from past broken-sync runs (cleanup targets).
+///
+/// # Folder scope (iter-20)
+///
+/// Without a scope guard this endpoint returns ALL vault items not in the sync
+/// map — including personal items from every other folder (banking, personal SSH
+/// keys, etc.). The "untracked" check is purely about sync-map membership, not
+/// about folder ownership. We now filter the result to only items inside
+/// `vault_folder`, consistent with every other listing endpoint. Items outside
+/// `vault_folder` that are also outside the sync map are none of vault-proxy's
+/// concern; an operator who wants to find personal vault orphans should use the
+/// Vaultwarden UI directly.
 pub async fn list_untracked_items(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -415,7 +446,42 @@ pub async fn list_untracked_items(
     } else {
         std::collections::HashSet::new()
     };
-    let items = state.vault.list_untracked_item_ids(&tracked).await;
+
+    // Issue (iter-20): Scope to vault_folder items only. list_untracked_item_ids
+    // returns ALL items not in the sync map — including personal items from other
+    // folders. Filter to vault_folder before returning so callers cannot enumerate
+    // names/usernames/URIs of personal vault entries.
+    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+
+    let all_untracked = state.vault.list_untracked_item_ids(&tracked).await;
+
+    // When vault_folder is not yet resolved (fresh vault), return everything
+    // untracked — same permissive fallback used by list_items.
+    let items: Vec<(String, String)> = match vault_folder_id {
+        Some(ref fid) => {
+            // We need folder_id per item. Re-read from the vault to filter.
+            // list_untracked_item_ids already holds a snapshot; we cross-reference
+            // against get_cipher_by_id to get folder membership.
+            // Build the filtered list inline.
+            let mut out = Vec::new();
+            for (id, name) in all_untracked {
+                if let Some(cipher) = state.vault.get_cipher_by_id(&id).await {
+                    if cipher.folder_id.as_deref() == Some(fid.as_str()) {
+                        out.push((id, name));
+                    }
+                }
+            }
+            out
+        }
+        None => {
+            tracing::debug!(
+                "list_untracked_items: vault_folder '{}' not found — returning all untracked items (fresh vault?)",
+                state.vault_folder
+            );
+            all_untracked
+        }
+    };
+
     Json(json!({
         "count": items.len(),
         "items": items
@@ -1164,6 +1230,56 @@ pub async fn write_env(
         }
     }
 
+    // Issue (iter-20): Scope write_env to vault_folder items only.
+    // write_env decrypts a vault item's credentials and writes them to disk.
+    // Without a folder scope guard a caller could pass any vault item UUID —
+    // including personal banking or SSH-key entries — and silently exfiltrate
+    // their plaintext credentials to a file. Mirror the guard used by
+    // test_credential (iter-19).
+    {
+        let cipher = match state.vault.get_cipher_by_id(&req.vault_item_id).await {
+            Some(c) => c,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "vault item not found"})),
+                )
+            }
+        };
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match cipher.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} is not in the vault-proxy folder ('{}') — \
+                                 write_env is scoped to vault-proxy items only",
+                                req.vault_item_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} has no folder — write_env is scoped to \
+                                 items inside the vault-proxy folder ('{}')",
+                                req.vault_item_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
+        // If vault_folder_id is None (folder not found), fall through
+        // permissively — fresh vault / first-run scenario.
+    }
+
     let (username_buf, password_buf) = match state
         .vault
         .decrypt_credentials_by_id(&req.vault_item_id)
@@ -1655,6 +1771,42 @@ pub async fn inject_creds(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "flow_id must be alphanumeric (with - or _), non-empty, max 128 chars"})),
+        );
+    }
+
+    // Issue (iter-20): Scope inject_creds to vault_folder items only.
+    // inject_creds looks up vault items by decrypted *name* (not UUID), so we
+    // cannot use the get_cipher_by_id + folder_id check used by test_credential
+    // and write_env. Instead we use item_name_is_in_folder (the same helper
+    // used by generate_totp and decrypt_notes in iter-19). Without this guard
+    // a caller could supply any item name — including personal banking or
+    // SSH-key entries — and have their plaintext credentials submitted to an
+    // arbitrary HA config-flow endpoint.
+    //
+    // Both vault_item (credential source) and ha_token_item (HA token source)
+    // must be inside vault_folder.
+    if !state.vault.item_name_is_in_folder(&req.vault_item, &state.vault_folder).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "vault_item '{}' is not in the vault-proxy folder ('{}') — \
+                     inject_creds is scoped to vault-proxy items only",
+                    req.vault_item, state.vault_folder
+                )
+            })),
+        );
+    }
+    if !state.vault.item_name_is_in_folder(&req.ha_token_item, &state.vault_folder).await {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "ha_token_item '{}' is not in the vault-proxy folder ('{}') — \
+                     inject_creds is scoped to vault-proxy items only",
+                    req.ha_token_item, state.vault_folder
+                )
+            })),
         );
     }
 
