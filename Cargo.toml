@@ -66,7 +66,10 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 async-trait = "0.1"
 toml = "0.8"
 shell-words = "1"
-libc = "0.2"
+# libc is only used for the root-check (geteuid) on Unix; it does not compile
+# on Windows without the Win32 POSIX compat layer. Restrict to unix targets so
+# `cargo build --target x86_64-pc-windows-gnu` doesn't fail.
+# (iter-19 fix: was an unconditional [dependencies] entry)
 
 [features]
 # `default` = no optional features. This is the recommended build for Docker/server
@@ -100,6 +103,9 @@ dashboard = []
 # (embeds a full SQLite build). If you do not use the credential-audit subsystem,
 # removing `bundled` and depending on the system SQLite library will shave ~1 MB.
 # This is not done by default because the Docker image has no system SQLite.
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 wiremock = "0.6"

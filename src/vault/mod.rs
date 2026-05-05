@@ -499,6 +499,30 @@ impl VaultManager {
         let folder_count = decrypted_folders.len();
         // Keep a raw copy (allowing duplicate names) for the folders endpoint.
         *self.all_folders.write().await = decrypted_folders.clone();
+
+        // Issue (iter-19): Detect duplicate folder names before indexing.
+        // FolderIndex is keyed by name (last-write-wins). When two folders
+        // share a name, find_folder_id_by_name_async returns whichever id was
+        // inserted last — silently shadowing the other. This is ambiguous and
+        // can cause folder-scope guards to pass for items in the wrong folder.
+        // Warn loudly so operators know to consolidate or rename.
+        {
+            let mut seen_names: HashMap<String, String> = HashMap::new();
+            for (id, name) in &decrypted_folders {
+                if let Some(prev_id) = seen_names.insert(name.clone(), id.clone()) {
+                    tracing::warn!(
+                        folder_name = %name,
+                        id_a = %prev_id,
+                        id_b = %id,
+                        "sync: two folders share the same decrypted name '{}' (ids {} and {}). \
+                         find_folder_id_by_name_async will resolve to one of them non-deterministically. \
+                         Consolidate or rename duplicate folders in Vaultwarden to avoid scope-guard ambiguity.",
+                        name, prev_id, id
+                    );
+                }
+            }
+        }
+
         let mut idx = self.folders.write().await;
         populate_folder_index(&mut idx, decrypted_folders);
         drop(idx);
@@ -573,6 +597,18 @@ impl VaultManager {
     /// field such as placeholder MetaMask entries) are excluded from grouping;
     /// callers can find those via `list_items` with a password filter.
     pub async fn list_duplicates(&self) -> Vec<DuplicateGroup> {
+        // Unscoped variant — kept for internal/test use only.
+        self.list_duplicates_in_folder(None).await
+    }
+
+    /// Find duplicate items, optionally scoped to a specific folder.
+    ///
+    /// When `folder_id` is `Some(id)` only items whose `folder_id` matches are
+    /// considered — preventing callers from fingerprinting personal items that
+    /// live outside the vault-proxy folder. When `folder_id` is `None` (folder
+    /// not found / fresh vault) all items are scanned so first-run tooling
+    /// continues to work.
+    pub async fn list_duplicates_in_folder(&self, folder_id: Option<&str>) -> Vec<DuplicateGroup> {
         use sha2::{Digest, Sha256};
 
         let map = self.items.read().await;
@@ -584,6 +620,15 @@ impl VaultManager {
         let mut groups: HashMap<Fingerprint, Vec<DuplicateMember>> = HashMap::new();
 
         for (name, cipher) in map.values() {
+            // Issue (iter-19): When a folder_id scope is active, skip items
+            // that don't belong to vault_folder so personal entries are never
+            // fingerprinted or exposed in the output.
+            if let Some(fid) = folder_id {
+                if cipher.folder_id.as_deref() != Some(fid) {
+                    continue;
+                }
+            }
+
             let login = match cipher.login.as_ref() {
                 Some(l) => l,
                 None => continue,
@@ -1418,6 +1463,26 @@ impl VaultManager {
     /// Returns None if no folder with that name exists in the vault.
     pub async fn find_folder_id_by_name_async(&self, name: &str) -> Option<String> {
         self.folders.read().await.find_id_by_name(name).map(String::from)
+    }
+
+    /// Check whether the item with the given decrypted name belongs to the
+    /// folder with the given decrypted name. Returns `true` if:
+    ///   - the folder exists AND the item is found inside it, OR
+    ///   - the folder does not exist yet (fresh vault — permissive fallback).
+    ///
+    /// Returns `false` when the folder is known but the item is either absent
+    /// from the folder or has no folder at all. Used by the `decrypt_notes` and
+    /// `generate_totp` HTTP handlers (iter-19) to scope reads to `vault_folder`.
+    pub async fn item_name_is_in_folder(&self, item_name: &str, folder_name: &str) -> bool {
+        let folder_id = match self.folders.read().await.find_id_by_name(folder_name) {
+            Some(id) => id.to_string(),
+            // Folder not found — fresh vault; allow permissively so first-run works.
+            None => return true,
+        };
+        let items = self.items.read().await;
+        items.values().any(|(n, c)| {
+            n.as_str() == item_name && c.folder_id.as_deref() == Some(folder_id.as_str())
+        })
     }
 
     /// Return items in the folder with the given (decrypted) name.

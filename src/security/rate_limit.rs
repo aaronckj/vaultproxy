@@ -75,10 +75,21 @@ impl RateLimiter {
 }
 
 /// Routes that are subject to rate limiting.
+///
+/// Issue (iter-19): The destructive vault mutation endpoints — item delete,
+/// item update, and folder delete — were not rate-limited despite being the
+/// most dangerous write operations. A runaway MCP session or a compromised
+/// local caller could delete the entire vault folder's contents before the
+/// operator noticed. Added to the shared 60 req/60s bucket; a separate
+/// per-endpoint tighter limit would require a second rate-limiter instance
+/// wired per-route, tracked as a future improvement.
 const RATE_LIMITED_PATHS: &[&str] = &[
     "/proxy",
     "/vault/totp",
     "/vault/resync",
+    "/vault/items/delete",
+    "/vault/items/update",
+    "/vault/folders/delete",
     "/rotate",
     "/browser/rotate",
     "/sync/init",

@@ -363,10 +363,17 @@ pub async fn list_items(
 /// `GET /vault/duplicates` — find items that share the same
 /// `(organization_id, username, password)`. Passwords are hashed and
 /// compared inside the proxy; plaintext and hashes never leave.
+///
+/// Issue (iter-19): Scope to vault_folder only. Previously this scanned the
+/// full vault cache and returned names/usernames of personal items (outside
+/// vault_folder) to any local caller. We now filter to vault_folder items
+/// before duplicate detection so personal entries are never exposed.
 pub async fn list_duplicates(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<DuplicateGroup>> {
-    let groups = state.vault.list_duplicates().await;
+    // Resolve vault_folder → folder_id for filtering.
+    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+    let groups = state.vault.list_duplicates_in_folder(vault_folder_id.as_deref()).await;
     Json(groups)
 }
 
@@ -422,12 +429,39 @@ pub async fn list_untracked_items(
 ///
 /// Encrypts all fields with the vault's symmetric key and creates the cipher
 /// in Vaultwarden. Plaintext is zeroized after encryption.
+///
+/// # Folder scope (iter-19)
+///
+/// Items must land in `vault_folder`. When the caller omits `folder_name` the
+/// proxy defaults to `state.vault_folder` so the item is always created inside
+/// the owned folder. When `folder_name` is supplied it must exactly match
+/// `state.vault_folder`; a different value is rejected with 400 to prevent
+/// callers from injecting items into arbitrary vault folders.
 pub async fn create_item(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateItemRequest>,
 ) -> (StatusCode, Json<Value>) {
     use crate::vault::crypto::encrypt_to_cipher_string;
     use crate::vault::types::{EncryptedCipher, EncryptedField, EncryptedLogin, EncryptedUri};
+
+    // Issue (iter-19): Enforce folder scope.
+    // If folder_name is provided it must match vault_folder; if omitted, default
+    // to vault_folder so items are never created outside the owned folder.
+    let effective_folder_name = match req.folder_name.as_deref() {
+        Some(fname) if fname != state.vault_folder.as_str() => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "folder_name '{}' is not the vault-proxy folder ('{}') — \
+                         create_item only creates items inside the vault-proxy folder",
+                        fname, state.vault_folder
+                    )
+                })),
+            );
+        }
+        Some(_) | None => state.vault_folder.clone(),
+    };
 
     let enc_key = state.vault.enc_key();
     let mac_key = state.vault.mac_key();
@@ -480,16 +514,21 @@ pub async fn create_item(
         Some(out)
     };
 
-    // Resolve folder_name → folder_id (if requested).
-    let folder_id = if let Some(ref fname) = req.folder_name {
-        match state.vault.find_folder_id_by_name_async(fname).await {
-            Some(id) => Some(id),
-            None => return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("folder '{}' not found in vault", fname)})),
-            ),
+    // Resolve effective_folder_name → folder_id.
+    // effective_folder_name is always vault_folder (validated above), so this
+    // places the new item inside the owned folder. Returns None only when the
+    // folder doesn't exist yet (fresh vault) — the item will be created without
+    // a folder, which is acceptable for first-run tooling.
+    let folder_id = match state.vault.find_folder_id_by_name_async(&effective_folder_name).await {
+        Some(id) => Some(id),
+        None => {
+            tracing::debug!(
+                "create_item: vault_folder '{}' not found — creating item without folder (fresh vault?)",
+                effective_folder_name
+            );
+            None
         }
-    } else { None };
+    };
 
     let cipher = EncryptedCipher {
         id: String::new(),
@@ -820,6 +859,49 @@ pub async fn test_credential(
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "url must be http(s) and resolve to a non-metadata, non-link-local host" })),
         );
+    }
+
+    // Issue (iter-19): Scope test_credential to vault_folder items only.
+    // Without this guard a caller can pass any vault item UUID and use this
+    // endpoint to decrypt + test credentials for unrelated personal accounts.
+    // We check the item's folder_id against vault_folder before decrypting.
+    {
+        let cipher = match state.vault.get_cipher_by_id(&req.vault_item_id).await {
+            Some(c) => c,
+            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "vault item not found"}))),
+        };
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match cipher.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} is not in the vault-proxy folder ('{}') — \
+                                 test_credential is scoped to vault-proxy items only",
+                                req.vault_item_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} has no folder — test_credential is scoped to \
+                                 items inside the vault-proxy folder ('{}')",
+                                req.vault_item_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
+        // If vault_folder_id is None (folder not found), fall through
+        // permissively — fresh vault / first-run scenario.
     }
 
     // Decrypt creds. Plaintext lives in SecureBuffers, zeroised on drop.
@@ -1288,6 +1370,26 @@ pub async fn delete_folder(
         );
     }
 
+    // Issue (iter-19): Prevent deletion of vault_folder itself.
+    // Deleting vault_folder would silently break all credential lookups —
+    // list_items, update_item, delete_item, etc. all filter by vault_folder.
+    // If the requested folder id matches vault_folder's id, refuse.
+    if let Some(vault_folder_id) = state.vault.find_folder_id_by_name_async(&state.vault_folder).await {
+        if req.id.trim() == vault_folder_id.as_str() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "cannot delete the vault-proxy folder ('{}') — \
+                         deleting it would break all credential lookups. \
+                         Move or reassign items first, then delete via Vaultwarden directly.",
+                        state.vault_folder
+                    )
+                })),
+            );
+        }
+    }
+
     match state.vault.delete_folder(&req.id).await {
         Ok(()) => (StatusCode::OK, Json(json!({ "ok": true, "id": req.id }))),
         Err(e) => {
@@ -1678,6 +1780,10 @@ pub async fn inject_creds(
 // -------------------------------------------------------------------------- //
 
 /// `POST /vault/totp` -- generate a TOTP code for a vault item.
+///
+/// Issue (iter-19): Scope to vault_folder only. Without this guard a caller
+/// could supply any item name and obtain a live TOTP code for an unrelated
+/// account stored in the personal vault (e.g. banking, email 2FA).
 pub async fn generate_totp(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Value>,
@@ -1685,6 +1791,17 @@ pub async fn generate_totp(
     let item_name = req.get("item_name").and_then(|v| v.as_str()).unwrap_or("");
     if item_name.is_empty() {
         return Json(json!({"error": "item_name required"}));
+    }
+
+    // Folder scope guard: reject item names that don't belong to vault_folder.
+    if !state.vault.item_name_is_in_folder(item_name, &state.vault_folder).await {
+        return Json(json!({
+            "error": format!(
+                "item '{}' is not in the vault-proxy folder ('{}') — \
+                 generate_totp is scoped to vault-proxy items only",
+                item_name, state.vault_folder
+            )
+        }));
     }
 
     match state.vault.decrypt_totp(item_name) {
@@ -1751,6 +1868,19 @@ pub async fn decrypt_notes(
     let item_name = req.get("item_name").and_then(|v| v.as_str()).unwrap_or("");
     if item_name.is_empty() {
         return Json(json!({"error": "item_name required"}));
+    }
+
+    // Issue (iter-19): Scope to vault_folder. Without this guard any local
+    // caller can extract the full notes field of any vault item — including
+    // API tokens, SSH keys, and recovery codes stored in personal entries.
+    if !state.vault.item_name_is_in_folder(item_name, &state.vault_folder).await {
+        return Json(json!({
+            "error": format!(
+                "item '{}' is not in the vault-proxy folder ('{}') — \
+                 decrypt_notes is scoped to vault-proxy items only",
+                item_name, state.vault_folder
+            )
+        }));
     }
 
     match state.vault.decrypt_notes(item_name) {
