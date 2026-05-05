@@ -239,8 +239,27 @@ impl VaultManager {
         // Compute the token expiry instant from expires_in (seconds).
         // Vaultwarden typically returns 3600. A value of 0 means the field was
         // absent or zero — proactive refresh is disabled in that case.
+        //
+        // Issue (iter-25): Use checked_add to avoid a panic on absurdly large
+        // expires_in values. Some self-hosted Vaultwarden configs return
+        // expires_in = 9999999 or even u64::MAX. Rust's `Instant + Duration`
+        // panics on overflow (in both debug and release builds on most platforms).
+        // Cap at 7 days (604800 s) — any token with a longer lifetime than that
+        // won't benefit from proactive refresh and can simply be refreshed on the
+        // first 401 response after the cap window.
+        const MAX_EXPIRES_IN_SECS: u64 = 7 * 24 * 3600; // 7 days
         let token_expires_at = if token_resp.expires_in > 0 {
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(token_resp.expires_in))
+            let clamped = token_resp.expires_in.min(MAX_EXPIRES_IN_SECS);
+            if clamped != token_resp.expires_in {
+                tracing::warn!(
+                    expires_in = token_resp.expires_in,
+                    clamped = clamped,
+                    "expires_in is unusually large — clamping to {} s for proactive-refresh \
+                     tracking to prevent Instant overflow; reactive 401 refresh still active",
+                    clamped
+                );
+            }
+            std::time::Instant::now().checked_add(std::time::Duration::from_secs(clamped))
         } else {
             None
         };
@@ -335,9 +354,13 @@ impl VaultManager {
             *self.refresh_token.write().await = Some(new_rt);
         }
         // Update the expiry tracker so proactive refresh uses the new window.
+        // Apply the same MAX_EXPIRES_IN_SECS cap as at initial auth to avoid
+        // Instant overflow on self-hosted configs with absurdly large expires_in.
         if data.expires_in > 0 {
+            const MAX_EXPIRES_IN_SECS: u64 = 7 * 24 * 3600;
+            let clamped = data.expires_in.min(MAX_EXPIRES_IN_SECS);
             *self.token_expires_at.write().await =
-                Some(std::time::Instant::now() + std::time::Duration::from_secs(data.expires_in));
+                std::time::Instant::now().checked_add(std::time::Duration::from_secs(clamped));
         }
         tracing::info!("re-authenticated to Vaultwarden via refresh token");
         Ok(())

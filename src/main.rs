@@ -678,6 +678,36 @@ async fn start_server(
         );
     }
 
+    // Issue (iter-25): Validate that vault_folder actually EXISTS in Vaultwarden
+    // at startup. The name is validated for format (non-empty, no slashes, no
+    // nulls) at parse time, but that cannot catch a typo like
+    // VAULT_FOLDER=vault_prox (missing 'y') — the folder is simply absent and
+    // every scoped handler silently falls through to permissive mode (returns
+    // all items) or creates items without a folder. Operators get no warning
+    // until they notice wrong behavior. Check once here and emit a SECURITY
+    // warning so the misconfiguration surfaces immediately in startup logs.
+    {
+        let resolved = vault_arc.find_folder_id_by_name_async(&args.vault_folder).await;
+        if resolved.is_none() {
+            tracing::warn!(
+                vault_folder = %args.vault_folder,
+                "STARTUP: vault_folder '{}' was NOT FOUND in Vaultwarden. \
+                 Scoped endpoints (list, create, update, duplicate-scan) will \
+                 fall through to permissive mode or skip folder placement. \
+                 Check that VAULT_FOLDER matches an existing Vaultwarden folder name \
+                 exactly (case-sensitive). Use POST /vault/resync to reload after \
+                 creating the folder.",
+                args.vault_folder
+            );
+        } else {
+            tracing::info!(
+                vault_folder = %args.vault_folder,
+                "vault_folder '{}' resolved in Vaultwarden — scoped endpoints active",
+                args.vault_folder
+            );
+        }
+    }
+
     // Generate ephemeral mTLS certificates.
     //
     // Issue-6 (iter-5): These certs are regenerated on every startup — they are
@@ -765,6 +795,15 @@ async fn start_server(
     // a CA-cert client for that service — it will fall back to the strict
     // system-root client, which may fail with a TLS error, but startup is not
     // aborted so other services remain functional.
+    //
+    // Issue (iter-25): CA cert rotation requires a restart.
+    // The PEM file for each service's `ca_cert` is read ONCE here at startup
+    // and baked into a reqwest::Client. If an operator rotates the CA cert
+    // on disk (replaces the PEM file) while vault-proxy is running, the new
+    // cert is NOT picked up — vault-proxy continues to use the old client
+    // until restarted. This is logged below for each loaded CA cert so operators
+    // have a visible record that a restart is required after cert rotation.
+    // There is no hot-reload mechanism for CA certs at this time.
     let ca_cert_clients: std::collections::HashMap<String, reqwest::Client> = {
         let mut map = std::collections::HashMap::new();
         for svc_name in registry.list() {
@@ -782,8 +821,9 @@ async fn start_server(
                                 .build()
                             {
                                 Ok(client) => {
-                                    tracing::debug!(
-                                        "service '{}': built CA-cert client from '{}'",
+                                    tracing::info!(
+                                        "service '{}': CA-cert client loaded from '{}' \
+                                         (restart required to pick up cert rotation)",
                                         svc_name, ca_path
                                     );
                                     map.insert(svc_name.to_string(), client);

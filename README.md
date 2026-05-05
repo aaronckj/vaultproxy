@@ -153,6 +153,10 @@ The proxy is now running. Verify with:
 curl http://127.0.0.1:3201/vault/health
 ```
 
+> **Internal token:** vault-proxy generates a 64-character hex bearer token at startup and writes it to `$CONFIG_DIR/internal-token` (mode 0600). Internal endpoints (`/vault/connecterr-secrets`, `/vault/connecterr-secrets/upsert`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <token>`. The Connecterr TypeScript side reads this file automatically. If you are integrating a custom client, read `CONFIG_DIR/internal-token` and include it as `Authorization: Bearer <value>` on calls to those endpoints.
+
+> **`write_env` feature:** `POST /vault/write-env` (which decrypts a vault item and writes its credentials as env-var lines to a file) is disabled by default (`501 Not Implemented`). Enable it by setting `ENV_WRITE_ROOT` to a directory that the proxy is allowed to write into (e.g. `ENV_WRITE_ROOT=/envs`). The endpoint enforces that `target_path` begins with this prefix.
+
 **With TPM (bare metal):**
 ```bash
 cargo build --release --features tpm
