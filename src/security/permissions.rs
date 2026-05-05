@@ -103,10 +103,10 @@ impl ToolPermissions {
         let lower = tool_name.to_lowercase();
         let mut matched: Option<(&str, &Permission)> = None;
         for (category, perm) in &self.defaults {
-            if lower.contains(category) {
-                if matched.is_none() || category.len() > matched.unwrap().0.len() {
-                    matched = Some((category, perm));
-                }
+            if lower.contains(category)
+                && (matched.is_none() || category.len() > matched.unwrap().0.len())
+            {
+                matched = Some((category, perm));
             }
         }
         matched.map(|(_, p)| p.clone()).unwrap_or(Permission::Log)
@@ -117,10 +117,10 @@ impl ToolPermissions {
         let lower = tool_name.to_lowercase();
         let mut matched: Option<&str> = None;
         for category in self.defaults.keys() {
-            if lower.contains(category) {
-                if matched.is_none() || category.len() > matched.unwrap().len() {
-                    matched = Some(category);
-                }
+            if lower.contains(category)
+                && (matched.is_none() || category.len() > matched.unwrap().len())
+            {
+                matched = Some(category);
             }
         }
         matched.unwrap_or("other").to_string()

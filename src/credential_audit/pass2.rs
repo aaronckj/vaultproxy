@@ -129,7 +129,7 @@ impl Pass2Engine {
                 .next_line()
                 .await?
                 .context("agent.py closed stdout before reply")?;
-            Ok(serde_json::from_str(&line).context("agent.py emitted non-JSON line")?)
+            serde_json::from_str(&line).context("agent.py emitted non-JSON line")
         }
 
         // 1) navigate

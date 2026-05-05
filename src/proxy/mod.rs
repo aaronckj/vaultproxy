@@ -1014,7 +1014,7 @@ fn upstream_body_limit_bytes() -> usize {
     let mb = match std::env::var("UPSTREAM_BODY_LIMIT_MB") {
         Ok(val) => match val.parse::<usize>() {
             Ok(n) => {
-                if n < MIN_MB || n > MAX_MB {
+                if !(MIN_MB..=MAX_MB).contains(&n) {
                     tracing::warn!(
                         "UPSTREAM_BODY_LIMIT_MB={} is out of the allowed range [{}, {}] MB — \
                          using default of {} MB",
@@ -1259,7 +1259,7 @@ mod query_conflict_tests {
         // Simulates: base_url has ?apikey=real, caller passes query={"apikey":"X"}
         let base_keys = base_url_query_keys("http://tautulli/api/v2?apikey=real&cmd=get_libraries");
         // The caller's query map.
-        let caller_keys = vec!["apikey".to_string()];
+        let caller_keys = ["apikey".to_string()];
         let conflicts: Vec<&str> = caller_keys
             .iter()
             .filter(|k| base_keys.contains(k.as_str()))
@@ -1271,7 +1271,7 @@ mod query_conflict_tests {
     #[test]
     fn non_conflicting_caller_keys_are_allowed() {
         let base_keys = base_url_query_keys("http://tautulli/api/v2?apikey=real");
-        let caller_keys = vec!["cmd".to_string(), "output_format".to_string()];
+        let caller_keys = ["cmd".to_string(), "output_format".to_string()];
         let conflicts: Vec<&str> = caller_keys
             .iter()
             .filter(|k| base_keys.contains(k.as_str()))
@@ -1323,19 +1323,20 @@ mod integration_tests {
     /// instead of forwarding to the upstream — which is the expected behaviour
     /// when testing the routing path without a live vault.
     ///
-    /// Each call creates a unique audit log path using a random suffix so that
-    /// parallel test runs (which is the default for `cargo test`) do not race
-    /// on a shared `/tmp/vault-proxy-test-audit.json` file.
+    /// Each call creates a unique audit log path using a monotonically
+    /// incrementing counter so that parallel test runs (which is the default
+    /// for `cargo test`) do not race on a shared audit log file.
+    ///
+    /// Issue (iter-31): the previous implementation used `subsec_nanos()` as the
+    /// suffix, which is not unique — two invocations within the same nanosecond
+    /// (e.g. on a fast machine running tests in parallel) would produce the same
+    /// path. A `static AtomicU64` counter is strictly monotonic regardless of
+    /// clock resolution.
     fn make_state(registry: ServiceRegistry) -> Arc<AppState> {
-        // Use a per-invocation random suffix so parallel tests don't share a
-        // single audit log file and race on writes.
-        let audit_path = format!(
-            "/tmp/vault-proxy-test-audit-{}.json",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos()
-        );
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let audit_path = format!("/tmp/vault-proxy-test-audit-{n}.json");
         Arc::new(AppState {
             vault: Arc::new(VaultManager::new_stub()),
             registry: Arc::new(tokio::sync::RwLock::new(registry)),

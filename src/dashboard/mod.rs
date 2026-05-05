@@ -490,6 +490,15 @@ async fn security_headers(req: Request, next: Next) -> Response {
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=(), payment=()".parse().unwrap(),
     );
+    // Issue (iter-31): `unsafe-inline` is permitted for both script-src and
+    // style-src because the dashboard HTML files contain inline <script> and
+    // <style> blocks that would be blocked by a stricter policy.  This is a
+    // known weakness: any XSS that injects inline script would not be stopped
+    // by the CSP.  The correct fix is to extract all inline JS/CSS into
+    // separate .js/.css files served under `/static/`, then tighten this header
+    // to `script-src 'self'` with no `unsafe-inline`.  Until that refactor is
+    // complete the inline allowance is intentional and documented here so it
+    // is not accidentally "fixed" by removing the CSP header entirely.
     headers.insert(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"

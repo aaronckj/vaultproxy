@@ -67,7 +67,7 @@ pub async fn listen(
 
     // SignalR handshake: negotiate JSON protocol, version 1.
     // The record separator 0x1e terminates every SignalR frame.
-    let handshake = format!("{{\"protocol\":\"json\",\"version\":1}}\x1e");
+    let handshake = "{\"protocol\":\"json\",\"version\":1}\x1e".to_string();
     write
         .send(Message::Text(handshake))
         .await

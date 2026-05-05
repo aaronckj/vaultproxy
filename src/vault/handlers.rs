@@ -971,7 +971,7 @@ pub async fn update_item(
 
     // Update login fields if any are provided.
     if req.username.is_some() || req.password.is_some() || req.uri.is_some() {
-        let login = updated.login.get_or_insert_with(|| EncryptedLogin {
+        let login = updated.login.get_or_insert(EncryptedLogin {
             username: None, password: None, uris: None, totp: None,
         });
         if let Some(ref u) = req.username {

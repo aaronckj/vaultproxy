@@ -196,6 +196,16 @@ impl Drop for AuditLog {
     }
 }
 
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let mut result = s[..max_len].to_string();
+        result.push_str("...");
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,15 +252,5 @@ mod tests {
         let result = json!(["a", "b", "c"]);
         let summary = AuditLog::summarize_result(&result);
         assert!(!summary.is_empty());
-    }
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let mut result = s[..max_len].to_string();
-        result.push_str("...");
-        result
     }
 }

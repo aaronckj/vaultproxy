@@ -209,7 +209,7 @@ pub async fn launch(
         .to_lowercase();
     // Strip version suffixes: "python3.11" → "python3", "python3" → "python3" (match)
     let program_stem: &str = program_basename
-        .split(|c: char| c == '-' || c == '.')
+        .split(['-', '.'])
         .next()
         .unwrap_or(&program_basename);
     if dangerous_programs.contains(&program_lower.as_str())
@@ -487,7 +487,7 @@ command = "cmd-b"
             .unwrap_or(program)
             .to_lowercase();
         let stem: &str = basename
-            .split(|c: char| c == '-' || c == '.')
+            .split(['-', '.'])
             .next()
             .unwrap_or(&basename);
         dangerous.contains(&lower.as_str())

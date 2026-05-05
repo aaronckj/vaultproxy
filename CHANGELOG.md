@@ -3,6 +3,95 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.6] — iterations 29–31 audit fixes
+
+### Correctness fixes (iteration 31)
+
+- **`security/permissions.rs:106,120` — collapsible nested `if` (iter-31)**:
+  Two nested `if outer { if inner { ... } }` blocks in `get_default_permission`
+  and `get_category` were flagged by `clippy::collapsible_if`. Collapsed to
+  `if outer && inner` — no behaviour change, cleaner control flow.
+
+- **`proxy/mod.rs:1017` — `manual_range_contains` (iter-31)**:
+  `n < MIN_MB || n > MAX_MB` in `upstream_body_limit_bytes` replaced with
+  `!(MIN_MB..=MAX_MB).contains(&n)` per clippy suggestion.
+
+- **`vault/handlers.rs:974` — `unnecessary_lazy_evaluations` (iter-31)**:
+  `get_or_insert_with(|| EncryptedLogin { ... })` replaced with
+  `get_or_insert(EncryptedLogin { ... })` since the closure captured nothing.
+
+- **`security/audit_log.rs:200` — `items_after_test_module` (iter-31)**:
+  `truncate_str` was defined after the `#[cfg(test)] mod tests` block,
+  triggering `clippy::items_after_test_module`. Moved before the test module.
+
+- **`proxy/mod.rs:1262,1274` — `useless_vec!` in tests (iter-31)**:
+  Two `vec![...]` literals in unit tests that were immediately iterated but
+  never mutated replaced with array literals per clippy suggestion.
+
+- **Integration test audit-log path collision (iter-31)**:
+  `make_state` in the integration test module used `subsec_nanos()` as the
+  unique suffix for the per-test audit log path. Two tests starting within the
+  same nanosecond on a fast machine would produce the same path and race on the
+  file. Replaced with a `static AtomicU64` counter that is strictly monotonic
+  regardless of clock resolution.
+
+### Documentation fixes (iteration 31)
+
+- **`dashboard/mod.rs:495` — CSP `unsafe-inline` tradeoff documented (iter-31)**:
+  The `Content-Security-Policy` header on the dashboard has permitted
+  `unsafe-inline` for both `script-src` and `style-src` since the dashboard
+  HTML files contain inline `<script>` and `<style>` blocks. This weakness
+  was previously undocumented, risking it being "fixed" by removing the CSP
+  header entirely. Added a comment explaining the tradeoff and the correct
+  remediation path (extract inline JS/CSS to separate files, then tighten
+  to `script-src 'self'`).
+
+### Bug fixes (iteration 30)
+
+- **Dashboard unlock redirect (iter-30)**: A fresh restart sent users to
+  `/login` even when the keystore was locked. Entering credentials at `/login`
+  failed silently because that page validates dashboard sessions, not the
+  keystore password. The `require_session_redirect` middleware now routes based
+  on system state: locked → `/unlock`; unlocked+no session → `/login`.
+
+- **Audit log path race in parallel tests (iter-30)**: All 3 integration tests
+  shared `/tmp/vault-proxy-test-audit.json`, causing file-level races on
+  parallel `cargo test` runs. Each `make_state` call now generates a unique
+  path using a monotonic suffix.
+
+- **`credential_audit/mod.rs` dead-code re-exports (iter-30)**: Unused
+  `pub use` re-exports of `ItemResult`, `Run`, and `RunStatus` removed.
+
+### Bug fixes / improvements (iteration 29)
+
+- **SIGHUP rollback guard (iter-29)**: `reload_services_toml` now refuses to
+  swap in a 0-service registry when the previous registry was non-empty,
+  preventing a silent outage when `services.toml` is temporarily unreadable or
+  every entry is rejected. A warning naming the count mismatch is logged.
+
+- **SIGHUP reload count logged (iter-29)**: The reload completion log now
+  shows "N service(s) now registered (was M)" so operators can confirm the
+  swap took effect.
+
+- **`--check` stdout improvements (iter-29)**: Uses `from_toml_file_with_counts`
+  to report attempted vs. accepted counts; names the rejected count; exits 1
+  on partial acceptance so CI pipelines detect misconfigured entries without
+  parsing structured tracing JSON.
+
+- **`VaultManager::new_stub()` (iter-29)**: Test-only constructor for building
+  `AppState` in integration tests without a live Vaultwarden connection.
+  Crypto operations fail gracefully (wrong-key error, not panic), causing
+  `handle_proxy` to return 502 rather than crashing.
+
+- **Integration tests — real HTTP path (iter-29)**: Three new integration tests
+  spin up a real `axum::serve` listener on `127.0.0.1:0` and make real
+  `reqwest` HTTP requests, exercising the full middleware stack (bearer token
+  check, rate limiter, DNS rebinding guard) rather than calling handler
+  functions directly.
+
+- **`Cargo.toml` bumped to `0.1.6` (iter-31)**: Captures all iter-29/30/31
+  fixes listed above.
+
 ## [0.1.5] — iteration-28 audit fixes
 
 ### Security fixes (iteration 28)

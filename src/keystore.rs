@@ -527,7 +527,7 @@ pub fn seal_after_unlock(config_dir: &str, setup_password: &str) -> Result<()> {
     // Write AES-encrypted private key + nonce to disk.
     let tpm_enc = WrappedPrivateKey {
         salt: String::new(), // not used for TPM path
-        nonce: STANDARD.encode(&nonce_bytes),
+        nonce: STANDARD.encode(nonce_bytes),
         ciphertext: STANDARD.encode(&ciphertext),
     };
     let tpm_enc_json = serde_json::to_vec(&tpm_enc)

@@ -498,7 +498,7 @@ impl RotationWorkflow {
         match poll_result {
             Ok(Ok(response)) => {
                 if let Some(code) = response {
-                    self.log(&format!("2FA code received, entering code"));
+                    self.log("2FA code received, entering code");
                     // Try to find 2FA input and fill it.
                     let screenshot = self.take_screenshot().await?;
                     let action = self

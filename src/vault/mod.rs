@@ -1006,7 +1006,7 @@ impl VaultManager {
         .context("re-encrypting new password")?;
 
         let mut updated = cipher.clone();
-        let login = updated.login.get_or_insert_with(|| crate::vault::types::EncryptedLogin {
+        let login = updated.login.get_or_insert(crate::vault::types::EncryptedLogin {
             username: None,
             password: None,
             uris: None,
@@ -1788,7 +1788,7 @@ mod tests {
         use crate::vault::types::SyncFolder;
 
         // Simulate the post-sync population step in isolation.
-        let folders = vec![
+        let folders = [
             SyncFolder { id: "id-c".into(), name: "ENCRYPTED_NAME_PLACEHOLDER".into(), revision_date: None },
         ];
 
@@ -1815,7 +1815,7 @@ mod tests {
             revision_date: None, key: None, extra: None,
         };
 
-        let items = vec![
+        let items = [
             ("apiKey".to_string(), make_cipher("apiKey", Some("id-c"))),
             ("unifi/home".to_string(), make_cipher("unifi/home", Some("id-c"))),
             ("personal-thing".to_string(), make_cipher("personal-thing", Some("id-other"))),
