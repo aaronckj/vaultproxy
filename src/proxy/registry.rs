@@ -517,11 +517,27 @@ impl ServiceRegistry {
                         vault_item: svc.vault_item,
                     }
                 }
-                "basic" => AuthPattern::Basic {
-                    vault_item: svc.vault_item,
-                    key_field: svc.key_field.unwrap_or_else(|| "key".to_string()),
-                    secret_field: svc.secret_field.unwrap_or_else(|| "secret".to_string()),
-                },
+                "basic" => {
+                    let key_field = match svc.key_field {
+                        Some(k) => k,
+                        None => {
+                            tracing::warn!("service '{}': auth=basic requires key_field — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    let secret_field = match svc.secret_field {
+                        Some(s) => s,
+                        None => {
+                            tracing::warn!("service '{}': auth=basic requires secret_field — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    AuthPattern::Basic {
+                        vault_item: svc.vault_item,
+                        key_field,
+                        secret_field,
+                    }
+                }
                 "session" => {
                     let login_path = match svc.login_path {
                         Some(p) => p,
@@ -949,5 +965,80 @@ vault_item = "myproxy - HA"
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("ha").unwrap();
         assert_eq!(svc.base_url, "http://192.0.2.1:8123");
+    }
+
+    #[test]
+    fn test_query_param_service_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "tautulli"
+base_url = "http://192.0.2.1:8181"
+auth = "query_param"
+param_name = "apikey"
+vault_item = "myproxy - Tautulli"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        match &registry.get("tautulli").unwrap().auth {
+            AuthPattern::QueryParam { param_name, .. } => assert_eq!(param_name, "apikey"),
+            other => panic!("expected QueryParam, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_basic_service_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "opnsense"
+base_url = "https://192.0.2.4/api"
+auth = "basic"
+key_field = "key"
+secret_field = "secret"
+vault_item = "myproxy - OPNsense"
+insecure_tls = true
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("opnsense").unwrap();
+        assert!(svc.insecure_tls);
+        match &svc.auth {
+            AuthPattern::Basic { key_field, secret_field, .. } => {
+                assert_eq!(key_field, "key");
+                assert_eq!(secret_field, "secret");
+            }
+            other => panic!("expected Basic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_session_service_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "npm"
+base_url = "http://192.0.2.1:81/api"
+auth = "session"
+vault_item = "myproxy - NPM"
+login_path = "/tokens"
+token_field = "token"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        match &registry.get("npm").unwrap().auth {
+            AuthPattern::Session { login_path, token_field, .. } => {
+                assert_eq!(login_path, "/tokens");
+                assert_eq!(token_field, "token");
+            }
+            other => panic!("expected Session, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_basic_missing_key_field_skips_service() {
+        let f = write_toml(r#"
+[[service]]
+name = "bad_basic"
+base_url = "https://192.0.2.4/api"
+auth = "basic"
+vault_item = "myproxy - Bad"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.get("bad_basic").is_none(), "basic service missing key_field should be skipped");
     }
 }
