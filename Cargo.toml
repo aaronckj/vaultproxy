@@ -1,7 +1,13 @@
 [package]
-name = "vault-proxy"
+name = "mcp-vault-proxy"
 version = "0.1.0"
 edition = "2021"
+description = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents"
+license = "MIT"
+repository = "https://github.com/ajarratt/mcp-vault-proxy"
+homepage = "https://github.com/ajarratt/mcp-vault-proxy"
+keywords = ["mcp", "vaultwarden", "credentials", "security", "proxy"]
+categories = ["authentication", "network-programming"]
 
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
@@ -54,6 +60,7 @@ async-trait = "0.1"
 [features]
 default = []
 tpm = ["tss-esapi"]
+dashboard = []
 
 [dev-dependencies]
 wiremock = "0.6"
