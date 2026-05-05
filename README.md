@@ -28,10 +28,11 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 
 | Pattern | Example services |
 |---------|-----------------|
-| `X-Api-Key` header | UniFi, Plex |
+| `X-Api-Key` header | Sonarr, Radarr, Overseerr |
+| `X-Plex-Token` header | Plex |
 | `Authorization: Bearer` | Home Assistant |
 | HTTP Basic | OPNsense |
-| Session (POST login → cookie) | Nginx Proxy Manager, Duplicati |
+| Session (POST login → token) | Nginx Proxy Manager, Duplicati |
 | UniFi dual (API key → session fallback) | UniFi OS |
 | Query param | Tautulli |
 

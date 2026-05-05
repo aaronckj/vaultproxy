@@ -210,7 +210,10 @@ pub async fn handle_proxy(
         });
     }
 
-    let upstream_status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::OK);
+    // Prefer the exact upstream status; fall back to 502 Bad Gateway rather
+    // than 200 OK — an unrecognised upstream status code is still an error
+    // condition, not a success.
+    let upstream_status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::BAD_GATEWAY);
     Ok((upstream_status, Json(response.body)))
 }
 
@@ -531,16 +534,22 @@ async fn session_login(
 
 /// Build the JSON body for the session login request.
 ///
-/// - NPM (`Connecterr - Nginx Proxy Manager`):
+/// - NPM (vault_item contains `"nginx proxy manager"` case-insensitively):
 ///   `{"identity": "<username>", "secret": "<password>"}`
-/// - Duplicati (`Duplicati UI`):
+/// - Duplicati (vault_item contains `"duplicati"` case-insensitively):
 ///   `{"Password": "<password>"}`
+///
+/// The match is intentionally case-insensitive and substring-based so that
+/// operators can name their vault items freely (e.g. `"vault-proxy - Duplicati"`
+/// or `"Duplicati UI"`) without breaking the login body shape. The legacy
+/// exact-string `"Duplicati UI"` match is preserved as a special case.
 fn build_session_login_body(
     state: &AppState,
     vault_item: &str,
 ) -> anyhow::Result<Value> {
-    if vault_item == "Duplicati UI" {
-        // Duplicati only needs a password.
+    let lower = vault_item.to_lowercase();
+    if lower.contains("duplicati") {
+        // Duplicati only needs a password — no username field in its auth API.
         let password = state.vault.decrypt_password(vault_item)?;
         let password_str = std::str::from_utf8(&password)
             .map_err(|e| anyhow::anyhow!("password is not valid UTF-8: {}", e))?

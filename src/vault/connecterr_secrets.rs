@@ -26,16 +26,24 @@ pub fn build_secrets_json(pairs: Vec<(String, Map<String, Value>)>) -> Value {
 }
 
 fn walk_path<'a>(root: &'a mut Map<String, Value>, parts: &[&str]) -> &'a mut Map<String, Value> {
-    let (head, tail) = parts.split_first().expect("non-empty path");
+    // Safety: callers must pass a non-empty slice. `build_secrets_json` splits
+    // on '/' so the minimum is one element. Return root unchanged for empty
+    // slices instead of panicking — callers validate item names before calling.
+    let (head, tail) = match parts.split_first() {
+        Some(pair) => pair,
+        None => return root,
+    };
     if tail.is_empty() {
         // Leaf — ensure key exists as object, return mut ref.
         let entry = root.entry(head.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if !entry.is_object() { *entry = Value::Object(Map::new()); }
-        entry.as_object_mut().unwrap()
+        // SAFETY: we just ensured the entry is an Object above.
+        entry.as_object_mut().expect("entry is Object")
     } else {
         let entry = root.entry(head.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if !entry.is_object() { *entry = Value::Object(Map::new()); }
-        walk_path(entry.as_object_mut().unwrap(), tail)
+        // SAFETY: we just ensured the entry is an Object above.
+        walk_path(entry.as_object_mut().expect("entry is Object"), tail)
     }
 }
 
@@ -137,5 +145,17 @@ mod tests {
         // accidentally drop the validation responsibility on the floor.
         let v = build_secrets_json(vec![("/apiKey".into(), fields(&[("apiKey", "ABC")]))]);
         assert!(v.get("").is_some(), "empty leading segment should produce '' key");
+    }
+
+    #[test]
+    fn walk_path_empty_slice_returns_root_without_panic() {
+        // Regression test for the `expect("non-empty path")` panic fix.
+        // walk_path is an internal helper; passing an empty slice previously
+        // would panic. After the fix it must return root unchanged.
+        let mut root = Map::new();
+        root.insert("existing".to_string(), Value::String("val".to_string()));
+        let result = walk_path(&mut root, &[]);
+        // Root is returned as-is; the existing key is preserved.
+        assert!(result.contains_key("existing"));
     }
 }

@@ -109,9 +109,13 @@ pub async fn launch(
         resolved.len()
     );
 
-    // Safe env vars to inherit from parent (non-sensitive, needed for child to function)
+    // Safe env vars to inherit from parent (non-sensitive, needed for child to function).
+    // XDG_RUNTIME_DIR is intentionally excluded: it points to /run/user/<uid>
+    // which contains D-Bus, Wayland, and systemd session sockets. Passing it
+    // to an untrusted MCP server child process would give it the same IPC
+    // surface as the vault-proxy process, undermining the env_clear isolation.
     let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
-                             "LANG", "LC_ALL", "LC_CTYPE", "TERM", "XDG_RUNTIME_DIR"];
+                             "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
 
     let status = Command::new(&program)
         .args(&parts)

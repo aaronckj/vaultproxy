@@ -143,7 +143,13 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     } else {
         println!("No TPM detected — you will need your setup password on restart.");
     }
-    println!("Your Vaultwarden master password is your recovery path — keep it safe.\n");
+    println!("Your Vaultwarden master password is your recovery path — keep it safe.");
+    println!();
+    println!("Next steps:");
+    println!("  1. Copy services.example.toml to {}/services.toml and edit to match your setup.", config_dir);
+    println!("  2. Remove --setup from your start command and restart to begin proxying.");
+    println!("  3. Test with: curl -s http://127.0.0.1:3201/vault/health | jq .");
+    println!();
 
     Ok(creds)
 }
@@ -156,9 +162,7 @@ pub async fn run_web_setup(
     master_password: &str,
     setup_password: &str,
 ) -> Result<Credentials> {
-    if setup_password.len() < 8 {
-        return Err(anyhow!("setup password must be at least 8 characters"));
-    }
+    validate_setup_password(setup_password)?;
 
     validate_vaultwarden_creds(url, email, master_password).await?;
 
@@ -186,4 +190,49 @@ pub async fn run_web_setup(
     )?;
 
     Ok(creds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_setup_password_accepts_strong_password() {
+        // 12+ chars with upper + digit = 2 classes → OK
+        assert!(validate_setup_password("Str0ngPassword").is_ok());
+        // 12+ chars with digit + symbol = 2 classes → OK
+        assert!(validate_setup_password("abcdefghijk1!").is_ok());
+        // 12+ chars with upper + symbol = 2 classes → OK
+        assert!(validate_setup_password("ABCDefghijkl!").is_ok());
+    }
+
+    #[test]
+    fn validate_setup_password_rejects_too_short() {
+        assert!(validate_setup_password("Short1!").is_err());
+        assert!(validate_setup_password("11charPass!").is_err());  // 11 chars
+        assert!(validate_setup_password("12charPass1!").is_ok()); // 12 chars, has digit + symbol
+    }
+
+    #[test]
+    fn validate_setup_password_rejects_insufficient_char_classes() {
+        // Only lowercase — fails (0 non-lowercase classes)
+        assert!(validate_setup_password("abcdefghijkl").is_err());
+        // Lowercase + uppercase only — fails (1 class: upper; no digit, no symbol)
+        assert!(validate_setup_password("Abcdefghijkl").is_err());
+        // Lowercase + digit — passes (digit = 1 class, symbol = 1 class, total ≥ 2 if combined)
+        // Note: "digit" and "symbol" are separate classes; lowercase alone doesn't count.
+        // digit only = 1 class → fails. digit + symbol = 2 classes → passes.
+        assert!(validate_setup_password("abcdefghijk1!").is_ok()); // digit + symbol = 2 classes
+        assert!(validate_setup_password("abcdefghijk11").is_err()); // digit only = 1 class
+    }
+
+    #[test]
+    fn web_setup_uses_same_policy_as_cli_setup() {
+        // Both paths now delegate to validate_setup_password, so the 8-char
+        // web minimum is gone. Verify that a previously-accepted 10-char
+        // password is now correctly rejected.
+        let short = "Pass1word!"; // 10 chars, has upper + digit + symbol
+        let result = validate_setup_password(short);
+        assert!(result.is_err(), "10-char password should be rejected by new 12-char minimum");
+    }
 }

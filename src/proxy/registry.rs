@@ -487,6 +487,20 @@ impl ServiceRegistry {
 
         for svc in parsed.service {
             let base_url = svc.base_url.trim_end_matches('/').to_string();
+
+            // Validate base_url against SSRF policy. This prevents a
+            // compromised/tricked services.toml from pointing the proxy at
+            // cloud-metadata endpoints (169.254.169.254, fd00:ec2::254, etc.)
+            // or link-local addresses. The check mirrors the one used by
+            // `inject_creds` and `browser_rotate` in vault/handlers.rs.
+            if !crate::vault::handlers::is_allowed_outbound_url(&base_url) {
+                tracing::error!(
+                    "service '{}': base_url '{}' is not allowed (link-local or cloud-metadata endpoint) — skipping",
+                    svc.name, base_url
+                );
+                continue;
+            }
+
             let auth = match svc.auth.as_str() {
                 "bearer" => AuthPattern::Bearer {
                     vault_item: svc.vault_item,
@@ -1040,5 +1054,33 @@ vault_item = "myproxy - Bad"
 "#);
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.get("bad_basic").is_none(), "basic service missing key_field should be skipped");
+    }
+
+    #[test]
+    fn test_ssrf_blocked_base_url_skips_service() {
+        // A services.toml pointing at a cloud-metadata endpoint must be
+        // rejected at registry load time to prevent SSRF via proxied requests.
+        let f = write_toml(r#"
+[[service]]
+name = "evil"
+base_url = "http://169.254.169.254/latest/meta-data"
+auth = "bearer"
+vault_item = "myproxy - Evil"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.get("evil").is_none(), "link-local/metadata base_url should be rejected");
+    }
+
+    #[test]
+    fn test_ssrf_link_local_ipv6_base_url_skips_service() {
+        let f = write_toml(r#"
+[[service]]
+name = "evil6"
+base_url = "http://[fe80::1]/api"
+auth = "bearer"
+vault_item = "myproxy - Evil"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.get("evil6").is_none(), "fe80:: link-local base_url should be rejected");
     }
 }

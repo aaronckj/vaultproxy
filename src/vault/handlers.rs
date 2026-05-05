@@ -79,7 +79,12 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     }
     // If the host is a literal IP, also block link-local and loopback-to-
     // other-container exposure of IMDS-adjacent ranges.
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+    // NOTE: url::Url::host_str() returns IPv6 addresses with enclosing
+    // brackets (e.g. "[fe80::1]"). Rust's IpAddr parser does NOT accept
+    // brackets, so we must strip them before parsing or the IPv6 link-local
+    // check silently passes for fe80:: addresses.
+    let host_for_ip = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host_for_ip.parse::<std::net::IpAddr>() {
         match ip {
             std::net::IpAddr::V4(v4) => {
                 let octs = v4.octets();
@@ -1877,5 +1882,44 @@ mod create_item_tests {
         assert_eq!(req.fields[0].name, "apiKey");
         assert_eq!(req.fields[0].value, "ABC123");
         assert_eq!(req.fields[0].field_type, 1); // default = hidden
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::*;
+
+    #[test]
+    fn ipv6_link_local_fe80_is_blocked() {
+        // Regression: url::Url::host_str() returns "[fe80::1]" WITH brackets.
+        // Rust's IpAddr parser does not accept brackets, so the IPv6 link-local
+        // check was silently bypassed before the bracket-stripping fix.
+        assert!(!is_allowed_outbound_url("http://[fe80::1]/api"), "fe80::1 must be blocked");
+        assert!(!is_allowed_outbound_url("https://[fe80::abcd:ef01]/path"), "fe80:: prefix must be blocked");
+    }
+
+    #[test]
+    fn ipv4_link_local_169_254_is_blocked() {
+        assert!(!is_allowed_outbound_url("http://169.254.169.254/latest/meta-data"), "AWS IMDS must be blocked");
+        assert!(!is_allowed_outbound_url("http://169.254.1.1/"), "all 169.254.x.x must be blocked");
+    }
+
+    #[test]
+    fn blocked_hostname_strings_are_blocked() {
+        assert!(!is_allowed_outbound_url("http://metadata.google.internal/"), "GCP metadata must be blocked");
+        assert!(!is_allowed_outbound_url("http://metadata.aws.cloud/"), "AWS cloud metadata must be blocked");
+    }
+
+    #[test]
+    fn normal_urls_are_allowed() {
+        assert!(is_allowed_outbound_url("http://192.168.1.1:8123"), "LAN IP should be allowed");
+        assert!(is_allowed_outbound_url("https://vault.example.com"), "public hostname should be allowed");
+        assert!(is_allowed_outbound_url("http://10.0.0.1:8080/api"), "RFC1918 should be allowed");
+    }
+
+    #[test]
+    fn non_http_schemes_are_blocked() {
+        assert!(!is_allowed_outbound_url("ftp://example.com/"));
+        assert!(!is_allowed_outbound_url("file:///etc/passwd"));
     }
 }

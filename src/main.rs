@@ -220,10 +220,12 @@ async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()
     // Spawn dashboard
     tokio::spawn(async move {
         tracing::info!("dashboard listening on {} (HTTPS) — waiting for setup/unlock", dash_addr);
-        axum_server::bind_rustls(dash_addr, dash_tls_config)
+        if let Err(e) = axum_server::bind_rustls(dash_addr, dash_tls_config)
             .serve(dash_router.into_make_service())
             .await
-            .unwrap();
+        {
+            tracing::error!("dashboard server error: {}", e);
+        }
     });
 
     // Poll for credentials to appear (user completes setup/unlock via web UI)
@@ -842,10 +844,12 @@ async fn start_server(
                 drop(probe); // Port is free — start dashboard
                 tokio::spawn(async move {
                     tracing::info!("dashboard listening on {} (HTTPS)", dash_addr);
-                    axum_server::bind_rustls(dash_addr, dash_tls_config)
+                    if let Err(e) = axum_server::bind_rustls(dash_addr, dash_tls_config)
                         .serve(dash_router.into_make_service())
                         .await
-                        .unwrap();
+                    {
+                        tracing::error!("dashboard server error: {}", e);
+                    }
                 });
             }
             Err(_) => {
