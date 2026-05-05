@@ -324,7 +324,7 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // Session auth (login first, then use token as Bearer)                //
         // ------------------------------------------------------------------ //
-        AuthPattern::Session { vault_item, login_path, token_field } => {
+        AuthPattern::Session { vault_item, login_path, token_field, login_include_username } => {
             // Step 1: obtain a session token. Hit the cache first so we don't
             // pay a login round-trip on every proxy call; fall back to the
             // login endpoint on miss, expiry, or upstream 401.
@@ -333,6 +333,7 @@ async fn apply_auth_and_send(
                 &vault_item,
                 &login_path,
                 &token_field,
+                login_include_username,
                 false, /* force_refresh */
             )
             .await?;
@@ -350,6 +351,7 @@ async fn apply_auth_and_send(
                     &vault_item,
                     &login_path,
                     &token_field,
+                    login_include_username,
                     true, /* force_refresh */
                 )
                 .await?;
@@ -464,6 +466,7 @@ async fn get_or_refresh_session_token(
     vault_item: &str,
     login_path: &str,
     token_field: &str,
+    login_include_username: bool,
     force_refresh: bool,
 ) -> anyhow::Result<String> {
     if !force_refresh {
@@ -475,7 +478,7 @@ async fn get_or_refresh_session_token(
         }
     }
 
-    let fresh = session_login(state, vault_item, login_path, token_field).await?;
+    let fresh = session_login(state, vault_item, login_path, token_field, login_include_username).await?;
     state
         .session_tokens
         .write()
@@ -492,6 +495,7 @@ async fn session_login(
     vault_item: &str,
     login_path: &str,
     token_field: &str,
+    login_include_username: bool,
 ) -> anyhow::Result<String> {
     // Determine the base URL for the service that owns this login endpoint.
     // The `login_path` is relative to the service's base_url.  We find the
@@ -518,8 +522,8 @@ async fn session_login(
         login_path
     );
 
-    // Build the login body based on the vault item name.
-    let login_body = build_session_login_body(state, vault_item)?;
+    // Build the login body using the configured login_include_username flag.
+    let login_body = build_session_login_body(state, vault_item, login_include_username)?;
 
     let resp = state
         .http
@@ -552,47 +556,34 @@ async fn session_login(
 
 /// Build the JSON body for the session login request.
 ///
-/// - NPM (vault_item contains `"nginx proxy manager"` case-insensitively):
-///   `{"identity": "<username>", "secret": "<password>"}`
-/// - Duplicati (vault_item contains `"duplicati"` case-insensitively):
-///   `{"Password": "<password>"}`
-///
-/// The match is intentionally case-insensitive and substring-based so that
-/// operators can name their vault items freely (e.g. `"vault-proxy - Duplicati"`
-/// or `"Duplicati UI"`) without breaking the login body shape. The legacy
-/// exact-string `"Duplicati UI"` match is preserved as a special case.
+/// When `login_include_username` is `false`, only the password is sent
+/// (no username field). This is controlled by the `login_include_username`
+/// flag on `AuthPattern::Session`, set via `services.toml` — no service name
+/// detection is performed here.
 fn build_session_login_body(
     state: &AppState,
     vault_item: &str,
+    login_include_username: bool,
 ) -> anyhow::Result<Value> {
-    let lower = vault_item.to_lowercase();
-    if lower.contains("duplicati") {
-        // Duplicati only needs a password — no username field in its auth API.
-        let password = state.vault.decrypt_password(vault_item)?;
-        let password_str = std::str::from_utf8(&password)
-            .map_err(|e| anyhow::anyhow!("password is not valid UTF-8: {}", e))?
-            .to_string();
-        drop(password);
-        return Ok(serde_json::json!({ "Password": password_str }));
+    let password_buf = state.vault.decrypt_password(vault_item)?;
+    let password = std::str::from_utf8(&password_buf)
+        .map_err(|e| anyhow::anyhow!("password is not valid UTF-8: {}", e))?
+        .to_string();
+    drop(password_buf);
+
+    if !login_include_username {
+        // Password-only login body — no username field.
+        return Ok(serde_json::json!({ "Password": password }));
     }
 
-    // For NPM (and any future session-based service with a username):
-    // username = vault login username, password = vault login password.
     let username_buf = state
         .vault
         .decrypt_username(vault_item)?
         .ok_or_else(|| anyhow::anyhow!("vault item '{}' has no username", vault_item))?;
-    let password_buf = state.vault.decrypt_password(vault_item)?;
-
     let username = std::str::from_utf8(&username_buf)
         .map_err(|e| anyhow::anyhow!("username is not valid UTF-8: {}", e))?
         .to_string();
-    let password = std::str::from_utf8(&password_buf)
-        .map_err(|e| anyhow::anyhow!("password is not valid UTF-8: {}", e))?
-        .to_string();
-
     drop(username_buf);
-    drop(password_buf);
 
     Ok(serde_json::json!({
         "identity": username,

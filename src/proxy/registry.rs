@@ -1,4 +1,9 @@
 //! Service auth registry — maps service names to their auth patterns and base URLs.
+//!
+//! Public API: [`ServiceRegistry::from_toml_file`] — reads user-defined services.toml.
+//! Internal legacy: [`ServiceRegistry::from_config`] / [`ServiceRegistry::from_vault`] —
+//! used by the /vault/connecterr-secrets HTTP handlers only. Contains homelab-specific
+//! service type mappings and should not be extended.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,8 +31,14 @@ struct ServiceConfig {
     secret_field: Option<String>,
     login_path: Option<String>,
     token_field: Option<String>,
+    #[serde(default = "default_true")]
+    login_include_username: bool,
     #[serde(default)]
     insecure_tls: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // -------------------------------------------------------------------------- //
@@ -66,10 +77,15 @@ pub enum AuthPattern {
     /// Session-based login: first POST credentials to `login_path`, extract a
     /// token from the JSON response field `token_field`, then attach it as a
     /// `Bearer` header (or service-specific header) on the real request.
+    ///
+    /// When `login_include_username` is `false`, the login body contains only the
+    /// password field (no username). Configure this in `services.toml` for services
+    /// like Duplicati whose login API does not accept a username field.
     Session {
         vault_item: String,
         login_path: String,
         token_field: String,
+        login_include_username: bool,
     },
 
     /// UniFi dual auth: try `X-API-Key` from `vault_item.password`, and on
@@ -156,11 +172,14 @@ impl ServiceRegistry {
     // Config-driven construction                                               //
     // ---------------------------------------------------------------------- //
 
-    /// Build a `ServiceRegistry` from the Connecterr config JSON.
+    /// Internal legacy path — used only by the /vault/connecterr-secrets HTTP handlers.
+    /// Public users register services via services.toml and from_toml_file().
+    /// DO NOT add new service-specific logic here.
     ///
     /// Reads `modules.media.services`, `modules.ha.instances`,
     /// `modules.opnsense.instances`, `modules.npm.instances`, and
     /// `modules.duplicati.instances`.
+    #[doc(hidden)]
     pub fn from_config(config: &serde_json::Value) -> Self {
         let mut registry = Self::new();
 
@@ -264,6 +283,7 @@ impl ServiceRegistry {
                         vault_item: "Connecterr - Nginx Proxy Manager".to_string(),
                         login_path: "/tokens".to_string(),
                         token_field: "token".to_string(),
+                        login_include_username: true,
                     },
                     insecure_tls: false,
                 });
@@ -316,6 +336,7 @@ impl ServiceRegistry {
                         vault_item: "Duplicati UI".to_string(),
                         login_path: "/auth/login".to_string(),
                         token_field: "AccessToken".to_string(),
+                        login_include_username: false,
                     },
                     insecure_tls: false,
                 });
@@ -329,6 +350,10 @@ impl ServiceRegistry {
     // Vault-driven construction                                                //
     // ---------------------------------------------------------------------- //
 
+    /// Internal legacy path — used only by the /vault/connecterr-secrets HTTP handlers.
+    /// Public users register services via services.toml and from_toml_file().
+    /// DO NOT add new service-specific logic here.
+    ///
     /// Build a `ServiceRegistry` from the aggregated JSON served by
     /// `GET /vault/connecterr-secrets`.
     ///
@@ -346,6 +371,7 @@ impl ServiceRegistry {
     ///
     /// Keys `ssh`, `docker`, `vaultwarden`, and `apiKey` are silently ignored —
     /// they don't need proxy-side registrations.
+    #[doc(hidden)]
     pub fn from_vault(aggregated: &serde_json::Value, vault_prefix: &str) -> Self {
         let mut registry = Self::new();
 
@@ -406,6 +432,7 @@ impl ServiceRegistry {
                         vault_item: format!("{} - Nginx Proxy Manager", vault_prefix),
                         login_path: "/tokens".to_string(),
                         token_field: "token".to_string(),
+                        login_include_username: true,
                     },
                     insecure_tls: false,
                 });
@@ -445,6 +472,7 @@ impl ServiceRegistry {
                         vault_item: "Duplicati UI".to_string(),
                         login_path: "/auth/login".to_string(),
                         token_field: "AccessToken".to_string(),
+                        login_include_username: false,
                     },
                     insecure_tls: false,
                 });
@@ -598,6 +626,7 @@ impl ServiceRegistry {
                         vault_item: svc.vault_item,
                         login_path,
                         token_field,
+                        login_include_username: svc.login_include_username,
                     }
                 }
                 "unifi_dual" => {
@@ -659,6 +688,10 @@ fn login_path_has_traversal(path: &str) -> bool {
     path.split('/').any(|seg| seg == ".." || seg == ".")
 }
 
+/// Internal legacy path — used only by the /vault/connecterr-secrets HTTP handlers.
+/// Public users register services via services.toml and from_toml_file().
+/// DO NOT add new service-specific logic here.
+///
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
 /// types.
 fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &str) -> Option<ServiceEntry> {
@@ -1202,5 +1235,48 @@ vault_item = "myproxy - HA v2"
             "duplicate name: second entry should overwrite first");
         // Only one entry should exist (no phantom first entry).
         assert_eq!(registry.list().len(), 1, "should have exactly one entry after dedup");
+    }
+
+    #[test]
+    fn test_session_login_include_username_false() {
+        let f = write_toml(r#"
+[[service]]
+name = "duplicati"
+base_url = "http://192.0.2.1:8200/api/v1"
+auth = "session"
+vault_item = "vault-proxy - Duplicati"
+login_path = "/auth/login"
+token_field = "AccessToken"
+login_include_username = false
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("duplicati").unwrap();
+        match &svc.auth {
+            AuthPattern::Session { login_include_username, .. } => {
+                assert!(!login_include_username, "should exclude username from login body");
+            }
+            other => panic!("expected Session, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_session_login_include_username_defaults_true() {
+        let f = write_toml(r#"
+[[service]]
+name = "npm"
+base_url = "http://192.0.2.1:81/api"
+auth = "session"
+vault_item = "vault-proxy - NPM"
+login_path = "/tokens"
+token_field = "token"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("npm").unwrap();
+        match &svc.auth {
+            AuthPattern::Session { login_include_username, .. } => {
+                assert!(login_include_username, "should include username by default");
+            }
+            other => panic!("expected Session, got {:?}", other),
+        }
     }
 }

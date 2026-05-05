@@ -64,9 +64,10 @@ token_field = "token"
 name = "duplicati_main"
 base_url = "http://duplicati.local:8200/api/v1"
 auth = "session"
-vault_item = "vault-proxy - Duplicati"   # vault_item must contain "duplicati" (case-insensitive) so the proxy uses Duplicati's password-only login body
+vault_item = "vault-proxy - Duplicati"
 login_path = "/auth/login"
 token_field = "AccessToken"
+login_include_username = false   # Duplicati's login API accepts only a password, no username field
 
 # ── UniFi dual auth (API key first, session fallback) ───────────────────────
 [[service]]
