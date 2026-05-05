@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::process::Command;
 use anyhow::{Context, Result};
+use zeroize::Zeroizing;
 
 #[derive(serde::Deserialize)]
 struct McpServersFile {
@@ -70,10 +71,10 @@ pub async fn launch(
         ))?;
 
     // Resolve env vars — static values pass through, vault refs are decrypted.
-    let mut resolved: Vec<(String, String)> = Vec::new();
+    let mut resolved: Vec<(String, Zeroizing<String>)> = Vec::new();
     for mapping in server.env {
         if let Some(static_val) = mapping.value {
-            resolved.push((mapping.var, static_val));
+            resolved.push((mapping.var, Zeroizing::new(static_val)));
         } else if let Some(item_name) = mapping.vault_item {
             let field = mapping.field.as_deref().unwrap_or("password");
             let credential = vault
@@ -83,7 +84,7 @@ pub async fn launch(
                     "failed to resolve vault item '{}' field '{}'",
                     item_name, field
                 ))?;
-            resolved.push((mapping.var, credential));
+            resolved.push((mapping.var, Zeroizing::new(credential)));
         } else {
             anyhow::bail!(
                 "env mapping for '{}' must have either 'value' or 'vault_item'",
@@ -108,9 +109,17 @@ pub async fn launch(
         resolved.len()
     );
 
+    // Safe env vars to inherit from parent (non-sensitive, needed for child to function)
+    let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
+                             "LANG", "LC_ALL", "LC_CTYPE", "TERM", "XDG_RUNTIME_DIR"];
+
     let status = Command::new(&program)
         .args(&parts)
-        .envs(resolved)
+        .env_clear()
+        .envs(safe_parent_vars.iter().filter_map(|k| {
+            std::env::var(k).ok().map(|v| (k.to_string(), v))
+        }))
+        .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .status()
         .with_context(|| format!("failed to spawn '{}'", program))?;
 
