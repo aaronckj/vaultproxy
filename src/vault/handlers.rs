@@ -1608,9 +1608,9 @@ pub async fn connecterr_secrets(
     State(state): State<Arc<AppState>>,
 ) -> (StatusCode, Json<Value>) {
     use crate::security::audit_log::AuditEntry;
-    use crate::vault::connecterr_secrets::aggregate;
+    use crate::vault::connecterr_secrets::{aggregate, DEFAULT_VAULT_FOLDER};
 
-    let result = aggregate(&state.vault).await;
+    let result = aggregate(&state.vault, DEFAULT_VAULT_FOLDER).await;
     match result {
         Ok(v) => {
             // Audit log: top-level key names only (item/field names are
@@ -1741,7 +1741,7 @@ pub async fn upsert_connecterr_secrets(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpsertConnecterrSecretsRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    use super::connecterr_secrets::CONNECTERR_FOLDER;
+    use super::connecterr_secrets::DEFAULT_VAULT_FOLDER;
 
     // Validate all names up-front so we don't half-apply.
     let mut errors: Vec<Value> = Vec::new();
@@ -1763,7 +1763,7 @@ pub async fn upsert_connecterr_secrets(
     for item in req.items {
         match state
             .vault
-            .upsert_folder_item(CONNECTERR_FOLDER, &item.name, item.fields)
+            .upsert_folder_item(DEFAULT_VAULT_FOLDER, &item.name, item.fields)
             .await
         {
             Ok(was_create) => {

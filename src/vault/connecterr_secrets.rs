@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use super::VaultManager;
 
-pub const CONNECTERR_FOLDER: &str = "Connecterr";
+pub const DEFAULT_VAULT_FOLDER: &str = "vault-proxy";
 
 /// Pure helper — build the nested JSON object from a list of
 /// (item_name, fields_map) pairs where item_name is `/`-delimited.
@@ -54,8 +54,8 @@ fn walk_path<'a>(root: &'a mut Map<String, Value>, parts: &[&str]) -> &'a mut Ma
 // expected sizes (boot-time, ~10 items, 2-5 fields each). Refactor to a
 // single VaultManager::list_field_pairs(item) -> Vec<(name, SecureBuffer)>
 // pass if profiling shows a real cost or if folder ever grows.
-pub async fn aggregate(vault: &Arc<VaultManager>) -> Result<Value> {
-    let items = vault.list_items_in_folder(CONNECTERR_FOLDER).await;
+pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<Value> {
+    let items = vault.list_items_in_folder(folder_name).await;
     let mut pairs: Vec<(String, Map<String, Value>)> = Vec::with_capacity(items.len());
     let mut seen_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(items.len());

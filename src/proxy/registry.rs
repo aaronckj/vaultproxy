@@ -304,7 +304,7 @@ impl ServiceRegistry {
     ///
     /// Keys `ssh`, `docker`, `vaultwarden`, and `apiKey` are silently ignored —
     /// they don't need proxy-side registrations.
-    pub fn from_vault(aggregated: &serde_json::Value) -> Self {
+    pub fn from_vault(aggregated: &serde_json::Value, vault_prefix: &str) -> Self {
         let mut registry = Self::new();
 
         let obj = match aggregated.as_object() {
@@ -323,7 +323,7 @@ impl ServiceRegistry {
                     name: format!("ha_{}", inst_name),
                     base_url: url,
                     auth: AuthPattern::Bearer {
-                        vault_item: "Connecterr - Home Assistant".to_string(),
+                        vault_item: format!("{} - Home Assistant", vault_prefix),
                     },
                     insecure_tls: false,
                 });
@@ -341,7 +341,7 @@ impl ServiceRegistry {
                     name: format!("opnsense_{}", inst_name),
                     base_url: format!("{}/api", url),
                     auth: AuthPattern::Basic {
-                        vault_item: "Connecterr - OPNsense".to_string(),
+                        vault_item: format!("{} - OPNsense", vault_prefix),
                         key_field: "key".to_string(),
                         secret_field: "secret".to_string(),
                     },
@@ -361,7 +361,7 @@ impl ServiceRegistry {
                     name: format!("npm_{}", inst_name),
                     base_url: format!("{}/api", url),
                     auth: AuthPattern::Session {
-                        vault_item: "Connecterr - Nginx Proxy Manager".to_string(),
+                        vault_item: format!("{} - Nginx Proxy Manager", vault_prefix),
                         login_path: "/tokens".to_string(),
                         token_field: "token".to_string(),
                     },
@@ -381,7 +381,7 @@ impl ServiceRegistry {
                     name: format!("unifi_{}", ctrl_name),
                     base_url: format!("{}/proxy/network", url),
                     auth: AuthPattern::UnifiDual {
-                        vault_item: "Connecterr - UniFi".to_string(),
+                        vault_item: format!("{} - UniFi", vault_prefix),
                         login_path: "/api/auth/login".to_string(),
                     },
                     insecure_tls: false,
@@ -614,7 +614,7 @@ mod from_vault_tests {
         let blob = json!({
             "ha": { "home": { "url": "http://10.0.0.115:8123" } }
         });
-        let reg = ServiceRegistry::from_vault(&blob);
+        let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("ha_home").expect("ha_home should be registered");
         assert_eq!(entry.base_url, "http://10.0.0.115:8123");
         match &entry.auth {
@@ -626,7 +626,7 @@ mod from_vault_tests {
     #[test]
     fn from_vault_registers_opnsense_with_basic_auth_and_api_suffix() {
         let blob = json!({ "opnsense": { "main": { "url": "https://10.0.0.167" } } });
-        let reg = ServiceRegistry::from_vault(&blob);
+        let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("opnsense_main").expect("opnsense_main should be registered");
         assert_eq!(entry.base_url, "https://10.0.0.167/api");
         assert!(matches!(entry.auth, AuthPattern::Basic { .. }));
@@ -635,7 +635,7 @@ mod from_vault_tests {
     #[test]
     fn from_vault_registers_unifi_with_proxy_network_suffix() {
         let blob = json!({ "unifi": { "home": { "url": "https://10.0.0.1", "site": "default" } } });
-        let reg = ServiceRegistry::from_vault(&blob);
+        let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("unifi_home").expect("unifi_home should be registered");
         assert_eq!(entry.base_url, "https://10.0.0.1/proxy/network");
         assert!(matches!(entry.auth, AuthPattern::UnifiDual { .. }));
@@ -652,7 +652,7 @@ mod from_vault_tests {
                 "tautulli":  { "type": "tautulli",  "url": "http://tautulli" },
             }
         });
-        let reg = ServiceRegistry::from_vault(&blob);
+        let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         for svc in ["plex", "sonarr", "radarr", "overseerr", "tautulli"] {
             assert!(reg.get(svc).is_some(), "missing {}", svc);
         }
@@ -661,13 +661,28 @@ mod from_vault_tests {
     #[test]
     fn from_vault_skips_items_without_url() {
         let blob = json!({ "ha": { "home": {} } });
-        let reg = ServiceRegistry::from_vault(&blob);
+        let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         assert!(reg.get("ha_home").is_none());
     }
 
     #[test]
     fn from_vault_empty_blob_returns_empty_registry() {
-        let reg = ServiceRegistry::from_vault(&json!({}));
+        let reg = ServiceRegistry::from_vault(&json!({}), "Connecterr");
         assert_eq!(reg.list().len(), 0);
+    }
+
+    #[test]
+    fn test_from_vault_uses_vault_prefix() {
+        let aggregated = serde_json::json!({
+            "ha": { "home": { "url": "http://192.0.2.10:8123" } }
+        });
+        let registry = ServiceRegistry::from_vault(&aggregated, "myproxy");
+        let svc = registry.get("ha_home").unwrap();
+        match &svc.auth {
+            AuthPattern::Bearer { vault_item } => {
+                assert_eq!(vault_item, "myproxy - Home Assistant");
+            }
+            other => panic!("expected Bearer, got {:?}", other),
+        }
     }
 }

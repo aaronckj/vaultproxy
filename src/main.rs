@@ -91,6 +91,11 @@ struct Args {
     /// Proxy request timeout in seconds.
     #[arg(long, env = "PROXY_TIMEOUT", default_value = "120")]
     proxy_timeout: u64,
+
+    /// Vaultwarden folder name that holds this proxy's service credentials.
+    /// Vault items must be named "<vault-folder> - <Service>" (e.g. "vault-proxy - UniFi").
+    #[arg(long, env = "VAULT_FOLDER", default_value = "vault-proxy")]
+    vault_folder: String,
 }
 
 // -------------------------------------------------------------------------- //
@@ -409,14 +414,14 @@ async fn start_server(
     };
 
     // Build service registry from vault's Connecterr folder instead of the legacy modules block in config.
-    let aggregated = match crate::vault::connecterr_secrets::aggregate(&vault_arc).await {
+    let aggregated = match crate::vault::connecterr_secrets::aggregate(&vault_arc, &args.vault_folder).await {
         Ok(blob) => blob,
         Err(e) => {
             tracing::warn!("could not aggregate connecterr secrets: {} — starting with empty registry", e);
             serde_json::Value::Object(serde_json::Map::new())
         }
     };
-    let registry = ServiceRegistry::from_vault(&aggregated);
+    let registry = ServiceRegistry::from_vault(&aggregated, &args.vault_folder);
     tracing::info!("registered services: {:?}", registry.list());
 
     // Generate ephemeral mTLS certificates.
