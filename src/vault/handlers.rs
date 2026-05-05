@@ -2624,7 +2624,43 @@ pub async fn reload_services(
     // the three write-lock acquisitions into one critical section. SIGHUP is
     // not affected: it runs in a dedicated task that processes signals serially
     // in a loop and never contends on this mutex.
-    let _reload_guard = state.reload_mutex.lock().await;
+    //
+    // iter-37: add a 5-second acquisition timeout so callers do not queue
+    // indefinitely behind a long-running reload (e.g. services.toml on a slow
+    // NFS mount, or many CA-cert clients to build). A timed-out caller receives
+    // 503 Service Unavailable with a Retry-After hint rather than blocking
+    // forever. The executing reload continues uninterrupted — the 5 s limit only
+    // applies to *acquiring* the lock, not to the duration of the reload itself.
+    //
+    // Operator note: if services.toml has N services with ca_cert_path, the
+    // reload holds this mutex while building N reqwest::Client instances
+    // (~1 ms each). For N = 512 (the MAX_SERVICES cap) that is roughly 500 ms
+    // of lock hold time. Callers that arrive during that window queue here and
+    // will proceed once the lock is released; only callers that wait more than
+    // 5 s receive the 503. In practice, manual `POST /vault/reload-services`
+    // calls are infrequent (operator-triggered), so lock contention is rare.
+    let _reload_guard = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.reload_mutex.lock(),
+    )
+    .await
+    {
+        Ok(guard) => guard,
+        Err(_) => {
+            tracing::warn!(
+                "reload-services: another reload is still in progress; \
+                 mutex acquisition timed out after 5 s — returning 503 to caller"
+            );
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "another reload is in progress — retry after 10 s",
+                    "retry_after_s": 10,
+                })),
+            );
+        }
+    };
 
     // iter-35: use the config_dir captured at startup (stored in AppState) rather
     // than reading CONFIG_DIR from the environment at reload time. Container

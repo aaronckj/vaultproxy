@@ -3,7 +3,57 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.0] — iteration-36 concurrent reload guard and final gaps
+## [0.2.0] — iterations 36–37: concurrent reload guard, background vault refresh, hard service cap
+
+### Security / correctness fixes (iteration 37)
+
+- **`reload_mutex` acquisition timeout (iter-37)**: `POST /vault/reload-services`
+  previously blocked indefinitely when another reload was already in progress
+  (e.g. services.toml on a slow NFS mount, or many CA-cert clients building).
+  Added a 5-second `tokio::time::timeout` around `reload_mutex.lock()`. Callers
+  that time out receive `503 Service Unavailable` with `retry_after_s: 10` in
+  the JSON body; the executing reload is unaffected.
+
+- **Per-route tighter rate limits on destructive operations (iter-37)**:
+  `/vault/items/delete` and `/vault/folders/delete` now enforce a 10 req/60 s
+  limit (down from the global 60 req/60 s). Implemented via a
+  `per_route: HashMap<&str, u64>` override map in `RateLimiter` so no second
+  middleware instance is required. All other rate-limited routes retain 60/60.
+
+- **Hard service cap at 512 (iter-37)**: `ServiceRegistry::from_toml_file` now
+  enforces a `MAX_SERVICES = 512` hard cap. Entries beyond the cap are logged by
+  name and dropped — the registry is still usable for the accepted entries.
+  This bounds worst-case `reload_mutex` hold time to ~500 ms (512 CA-cert client
+  builds at ~1 ms each). The 256-entry warning threshold is retained; entries
+  between 257 and 512 warn, entries above 512 error and are dropped.
+
+- **Forgejo token stripped from `.git/config` (iter-37)**: The Forgejo API token
+  embedded in the `pushurl` in `.git/config` has been removed. The plaintext
+  token `cba541e6543bcddcf59ed157a0355df08d26f4be` should be considered
+  compromised and rotated.
+
+### Features (iteration 37)
+
+- **Background vault refresh (iter-37)**: New `--vault-refresh-interval-secs`
+  flag (env: `VAULT_REFRESH_INTERVAL_SECS`, default `0` = disabled). When
+  non-zero, a background task calls `vault.sync()` every N seconds, closing the
+  staleness window when Vaultwarden credentials are rotated externally. Failures
+  are logged as warnings; the last good credentials remain in use. Recommended
+  value: `300` (5 minutes).
+
+- **Rate limiter tests (iter-37)**: Added 5 unit tests for `RateLimiter` covering
+  default limits, per-route overrides, independent IP buckets, and both delete
+  endpoints.
+
+### Operator notes (iteration 37)
+
+- **Reload latency**: With `MAX_SERVICES = 512` and all services having
+  `ca_cert_path`, `reload_services` holds the mutex for approximately 512 ms
+  while building CA-cert clients. Callers that need to issue concurrent reloads
+  (unusual) will queue for up to 5 seconds before receiving a 503. Normal
+  single-operator reload calls are unaffected.
+
+## [0.2.0-base] — iteration-36 concurrent reload guard and final gaps
 
 ### Security / correctness fixes (iteration 36)
 

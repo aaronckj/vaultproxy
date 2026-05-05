@@ -1140,18 +1140,53 @@ impl ServiceRegistry {
             });
         }
 
-        // Warn on unusually large registries. The registry HashMap and the
-        // session_tokens cache both scale with the number of services; past
-        // 256 entries the operator should verify they haven't accidentally
-        // included a generated or duplicated services.toml.
-        const SERVICE_COUNT_WARN_THRESHOLD: usize = 256;
-        if registry.entries.len() > SERVICE_COUNT_WARN_THRESHOLD {
+        // iter-37: hard cap at MAX_SERVICES to bound reload latency.
+        //
+        // A services.toml with N services that each have a ca_cert_path causes
+        // `reload_services` (and startup) to build N reqwest::Client instances
+        // while holding the reload_mutex. At ~1 ms per build, 10 000 entries
+        // would hold the mutex for ~10 s and queue all concurrent reload
+        // callers behind it. Cap at 512 to keep worst-case lock hold under
+        // ~500 ms. Entries beyond the cap are logged by name and silently
+        // dropped so the rest of the registry remains usable.
+        //
+        // Operators who genuinely need more than 512 services should split
+        // into multiple vault-proxy instances (one per domain / team).
+        //
+        // For `--check`, the caller sees the truncation in the accepted vs
+        // attempted count and in the tracing log above, and the process exits 1
+        // (because rejected > 0) so CI catches the oversized file.
+        const MAX_SERVICES: usize = 512;
+        if registry.entries.len() > MAX_SERVICES {
+            // Collect names of entries to drop (sorted for deterministic logs).
+            let all_names: Vec<String> = registry.entries.keys().cloned().collect();
+            let mut sorted_names = all_names.clone();
+            sorted_names.sort();
+            let dropped: Vec<&str> = sorted_names[MAX_SERVICES..].iter().map(String::as_str).collect();
+            tracing::error!(
+                "services.toml contains {} services which exceeds the hard cap of {}. \
+                 The following {} service(s) will NOT be registered: {:?}. \
+                 Split services.toml into multiple files served by separate vault-proxy \
+                 instances, or remove unused [[service]] blocks.",
+                registry.entries.len(),
+                MAX_SERVICES,
+                dropped.len(),
+                dropped,
+            );
+            // Retain only the first MAX_SERVICES entries (by sorted key order
+            // for determinism — same services survive across reloads).
+            for name in dropped {
+                registry.entries.remove(name);
+            }
+        } else if registry.entries.len() > 256 {
+            // Warn on unusually large registries (256..=512). Past 256 entries
+            // the operator should verify they haven't accidentally included a
+            // generated or duplicated services.toml.
             tracing::warn!(
-                "services.toml registered {} services (threshold {}). \
+                "services.toml registered {} services (warn threshold 256, hard cap 512). \
                  Verify this is intentional — large registries increase memory use and \
                  credential-lookup noise. Consider splitting into multiple vault-proxy instances.",
                 registry.entries.len(),
-                SERVICE_COUNT_WARN_THRESHOLD,
             );
         }
 

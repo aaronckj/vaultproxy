@@ -4,6 +4,15 @@
 //! `tokio::sync::Mutex<HashMap>`. Keying on the client IP (not just the route
 //! path) prevents a single caller from exhausting the budget for everyone
 //! else and prevents many clients from collectively bypassing a per-route cap.
+//!
+//! # Per-route overrides (iter-37)
+//!
+//! Destructive vault operations (`/vault/items/delete`, `/vault/folders/delete`)
+//! have a tighter limit (10 req/60 s) than the default (60 req/60 s). This is
+//! enforced by a `per_route` map in `RateLimiter` that is checked before the
+//! global `max_requests` fallback. The tight limits are intentionally low:
+//! deleting 10 vault items in one minute is already an unusual workload for a
+//! homelab sidecar; anything beyond that is likely runaway automation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -31,25 +40,56 @@ struct RouteCounter {
 pub struct RateLimiter {
     /// Map of (route_path, client_ip) -> counter.
     counters: Arc<Mutex<HashMap<(String, String), RouteCounter>>>,
-    /// Maximum requests per window.
+    /// Default maximum requests per window (applies when no per-route override).
     max_requests: u64,
-    /// Window duration.
+    /// Window duration (shared by all routes).
     window: std::time::Duration,
+    /// Per-route overrides: route path → max requests per window.
+    ///
+    /// When a route appears here its value overrides `max_requests`. This allows
+    /// destructive endpoints to have tighter limits without a second middleware
+    /// instance.
+    per_route: Arc<HashMap<&'static str, u64>>,
 }
 
 impl RateLimiter {
-    /// Create a new rate limiter with the given max requests per window.
+    /// Create a new rate limiter with the given default max requests per window.
     pub fn new(max_requests: u64, window_secs: u64) -> Self {
         Self {
             counters: Arc::new(Mutex::new(HashMap::new())),
             max_requests,
             window: std::time::Duration::from_secs(window_secs),
+            per_route: Arc::new(HashMap::new()),
+        }
+    }
+
+    /// Create a rate limiter with per-route overrides.
+    ///
+    /// `per_route` maps a route path (must match `RATE_LIMITED_PATHS` exactly)
+    /// to a maximum request count per window. Routes not in the map use the
+    /// default `max_requests` value.
+    pub fn with_per_route_overrides(
+        max_requests: u64,
+        window_secs: u64,
+        per_route: HashMap<&'static str, u64>,
+    ) -> Self {
+        Self {
+            counters: Arc::new(Mutex::new(HashMap::new())),
+            max_requests,
+            window: std::time::Duration::from_secs(window_secs),
+            per_route: Arc::new(per_route),
         }
     }
 
     /// Check if a request to the given path from the given client IP should be
     /// allowed. Returns `true` if allowed, `false` if rate-limited.
     async fn check(&self, path: &str, ip: &str) -> bool {
+        let limit = self
+            .per_route
+            .get(path)
+            .copied()
+            .unwrap_or(self.max_requests);
+
         let mut counters = self.counters.lock().await;
         let now = std::time::Instant::now();
 
@@ -70,7 +110,7 @@ impl RateLimiter {
         }
 
         counter.count += 1;
-        counter.count <= self.max_requests
+        counter.count <= limit
     }
 }
 
@@ -83,6 +123,9 @@ impl RateLimiter {
 /// operator noticed. Added to the shared 60 req/60s bucket; a separate
 /// per-endpoint tighter limit would require a second rate-limiter instance
 /// wired per-route, tracked as a future improvement.
+///
+/// iter-37: That future improvement is now implemented. See `per_route_limits()`
+/// and `default_rate_limiter()` below.
 const RATE_LIMITED_PATHS: &[&str] = &[
     "/proxy",
     "/vault/totp",
@@ -94,6 +137,19 @@ const RATE_LIMITED_PATHS: &[&str] = &[
     "/browser/rotate",
     "/sync/init",
 ];
+
+/// Per-route tighter limits for destructive operations (iter-37).
+///
+/// These routes delete or irreversibly modify vault data. 10 req/60 s is
+/// generous enough for legitimate automation (a script rotating 5 passwords
+/// generates 10 calls: 5 update + 5 confirm) while blocking runaway loops
+/// that could wipe the vault folder in seconds.
+fn per_route_limits() -> HashMap<&'static str, u64> {
+    let mut m = HashMap::new();
+    m.insert("/vault/items/delete", 10u64);
+    m.insert("/vault/folders/delete", 10u64);
+    m
+}
 
 /// Axum middleware that enforces per-`(route, ip)` rate limits on sensitive
 /// endpoints. The client IP is pulled from `ConnectInfo<SocketAddr>` injected
@@ -127,7 +183,9 @@ pub async fn rate_limit_middleware(
     next.run(req).await
 }
 
-/// Create a default rate limiter: 60 requests per 60-second window.
+/// Create a default rate limiter: 60 req/60 s globally, with tighter
+/// per-route overrides for destructive operations (10 req/60 s for
+/// `/vault/items/delete` and `/vault/folders/delete`).
 ///
 /// # Slowloris / slow-client note
 ///
@@ -166,5 +224,71 @@ pub async fn rate_limit_middleware(
 /// then, operators running many concurrent MCP servers may need to raise this
 /// limit via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` env vars (not yet wired).
 pub fn default_rate_limiter() -> RateLimiter {
-    RateLimiter::new(60, 60)
+    RateLimiter::with_per_route_overrides(60, 60, per_route_limits())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_limit_allows_up_to_max() {
+        let limiter = RateLimiter::new(3, 60);
+        assert!(limiter.check("/proxy", "1.2.3.4").await);
+        assert!(limiter.check("/proxy", "1.2.3.4").await);
+        assert!(limiter.check("/proxy", "1.2.3.4").await);
+        assert!(!limiter.check("/proxy", "1.2.3.4").await);
+    }
+
+    #[tokio::test]
+    async fn per_route_override_is_tighter() {
+        // default=60, delete override=10
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        for _ in 0..10 {
+            assert!(
+                limiter.check("/vault/items/delete", "127.0.0.1").await,
+                "should allow first 10"
+            );
+        }
+        assert!(
+            !limiter.check("/vault/items/delete", "127.0.0.1").await,
+            "11th request should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_route_override_does_not_affect_other_routes() {
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        // /vault/resync should still allow 60
+        for i in 0..60 {
+            assert!(
+                limiter.check("/vault/resync", "127.0.0.1").await,
+                "request {} should be allowed",
+                i + 1
+            );
+        }
+        assert!(
+            !limiter.check("/vault/resync", "127.0.0.1").await,
+            "61st request should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn different_ips_have_independent_buckets() {
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        for _ in 0..10 {
+            limiter.check("/vault/items/delete", "10.0.0.1").await;
+        }
+        // A different IP should still have a fresh bucket
+        assert!(limiter.check("/vault/items/delete", "10.0.0.2").await);
+    }
+
+    #[tokio::test]
+    async fn folder_delete_uses_tight_limit() {
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        for _ in 0..10 {
+            assert!(limiter.check("/vault/folders/delete", "127.0.0.1").await);
+        }
+        assert!(!limiter.check("/vault/folders/delete", "127.0.0.1").await);
+    }
 }

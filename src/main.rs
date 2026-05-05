@@ -152,6 +152,25 @@ struct Args {
     /// No Vaultwarden credentials are required. No network calls are made.
     #[arg(long)]
     check: bool,
+
+    /// Background vault refresh interval in seconds.
+    ///
+    /// When set to a non-zero value, vault-proxy spawns a background task that
+    /// calls `vault.sync()` (the same operation as `POST /vault/resync`) every
+    /// N seconds. This closes the staleness window when Vaultwarden credentials
+    /// are rotated externally — without this, the cached credential blobs are
+    /// only refreshed when an operator manually calls `POST /vault/resync` or
+    /// when vault-proxy restarts.
+    ///
+    /// Set to 0 (the default) to disable the background refresh entirely.
+    /// A value of 300 (5 minutes) is a reasonable default for most homelabs.
+    ///
+    /// The background task logs a warning if `sync()` fails (Vaultwarden
+    /// unreachable, re-auth error) but does NOT restart or exit — the last
+    /// successfully cached credentials remain in use until the next successful
+    /// refresh. Operators should monitor for repeated sync-failure warnings.
+    #[arg(long, env = "VAULT_REFRESH_INTERVAL_SECS", default_value = "0")]
+    vault_refresh_interval_secs: u64,
 }
 
 // -------------------------------------------------------------------------- //
@@ -1769,6 +1788,55 @@ async fn start_server(
                 }
             }
         });
+    }
+
+    // iter-37: background vault refresh task.
+    //
+    // When `--vault-refresh-interval-secs` (or `VAULT_REFRESH_INTERVAL_SECS`) is
+    // non-zero, spawn a task that calls `vault.sync()` every N seconds. This
+    // closes the staleness window when Vaultwarden credentials are rotated
+    // externally — without it the cached credential blobs are only refreshed via
+    // `POST /vault/resync` or a restart.
+    //
+    // On sync failure the task logs a warning and continues — the last successful
+    // credentials remain in use. Repeated failures surface in structured logs so
+    // operators can investigate (Vaultwarden down, network partition, re-auth
+    // expiry, etc.).
+    if args.vault_refresh_interval_secs > 0 {
+        let refresh_vault = vault_arc.clone();
+        let interval_secs = args.vault_refresh_interval_secs;
+        tokio::spawn(async move {
+            tracing::info!(
+                "vault background refresh task started — interval {} s",
+                interval_secs
+            );
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // The first tick fires immediately; skip it so we don't double-sync
+            // right after startup (the initial sync ran in `VaultManager::new`).
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                tracing::debug!("vault background refresh: calling sync()");
+                match refresh_vault.sync().await {
+                    Ok(()) => {
+                        tracing::info!("vault background refresh: sync complete");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "vault background refresh: sync failed (will retry in {} s): {:#}",
+                            interval_secs,
+                            e
+                        );
+                    }
+                }
+            }
+        });
+    } else {
+        tracing::debug!(
+            "vault background refresh disabled \
+             (set VAULT_REFRESH_INTERVAL_SECS=300 to enable 5-minute auto-sync)"
+        );
     }
 
     let server_handle = axum_server::Handle::new();
