@@ -80,7 +80,7 @@ struct Args {
     #[arg(long, env = "VISION_MODEL", default_value = "qwen3-vl-32b")]
     vision_model: String,
 
-    /// ntfy.sh topic URL for push notifications (e.g. "https://ntfy.sh/connecterr-alerts").
+    /// ntfy.sh topic URL for push notifications (e.g. `"https://ntfy.sh/connecterr-alerts"`).
     /// Leave empty to disable notifications.
     #[arg(long, env = "NTFY_URL", default_value = "")]
     ntfy_url: String,
@@ -100,12 +100,12 @@ struct Args {
     proxy_timeout: u64,
 
     /// Vaultwarden folder name that holds this proxy's service credentials.
-    /// Vault items must be named "<vault-folder> - <Service>" (e.g. "vault-proxy - UniFi").
+    /// Vault items must be named `"<vault-folder> - <Service>"` (e.g. `"vault-proxy - UniFi"`).
     #[arg(long, env = "VAULT_FOLDER", default_value = "vault-proxy")]
     vault_folder: String,
 
     /// Launch a registered MCP server with credentials injected from Vaultwarden.
-    /// The server name must match an [[mcp_server]] entry in mcp-servers.toml.
+    /// The server name must match an `[[mcp_server]]` entry in mcp-servers.toml.
     #[arg(long)]
     launch: Option<String>,
 
@@ -1074,6 +1074,9 @@ async fn start_server(
         cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
         // iter-23: empty string = disabled (returns 501 Not Implemented).
         env_write_root: args.env_write_root.clone(),
+        // iter-35: store startup config_dir so reload-services never reads
+        // CONFIG_DIR from the environment at reload time.
+        config_dir: config_dir.to_string(),
     });
 
     // Build router with rate limiting on sensitive endpoints.

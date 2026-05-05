@@ -3,6 +3,51 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.8] — iteration-34 correctness and production hardening
+
+### Features (iteration 34)
+
+- **`POST /vault/reload-services` endpoint (iter-34)**: New internal endpoint
+  that performs a synchronous hot-reload of `services.toml` and returns a JSON
+  body confirming the before/after service count. Equivalent to sending SIGHUP
+  but HTTP-accessible. Gated behind the internal bearer token. Includes the same
+  rollback guard as SIGHUP (409 Conflict if reload produces zero services).
+
+- **TPM status in `GET /vault/health` (iter-34)**: Health response now includes
+  `tpm_feature_compiled` and `tpm_chip_available` fields so operators can confirm
+  at a glance whether hardware sealing is possible on the running host.
+
+- **Credential audit engine 503 fix (iter-34)**: `POST /audit/credaudit/scan/start`
+  previously returned 500 when the audit engine was unreachable (the raw reqwest
+  connection-refused error propagated). Now normalised to 503 SERVICE_UNAVAILABLE
+  with a structured warning log and actionable hint (`CRED_AUDIT_ENGINE_URL`).
+
+### Correctness fixes (iteration 35)
+
+- **`config_dir` stored in `AppState` (iter-35)**: `POST /vault/reload-services`
+  previously read `CONFIG_DIR` from the environment at reload time. In container
+  orchestrators that inject env var changes without restarting the process, this
+  could cause the reload handler to read `services.toml` from a different path
+  than the one used at startup. `config_dir` is now captured at startup and stored
+  in `AppState`, ensuring all reload operations use the original path.
+
+- **`cargo doc` warnings cleared (iter-35)**: Fixed 8 rustdoc warnings introduced
+  in iter-33: unresolved intra-doc links (`from_toml_file`, `mcp_server`), unclosed
+  HTML tags (`Vec<u8>`, `<id>`, `<vault-folder>`, `<Service>`), and a bare URL not
+  wrapped in backticks.
+
+### Tests (iteration 35)
+
+- **`reload-services` integration tests (iter-35)**: Three HTTP-level tests covering
+  the happy path (new services.toml → 200 + correct count), the rollback path
+  (empty file with existing registry → 409 Conflict), and the auth path (no bearer
+  token → 401 Unauthorized).
+
+- **`credaudit/scan/start` 503 integration test (iter-35)**: Verifies that
+  `POST /audit/credaudit/scan/start` returns 503 (not 500 or a panic) when the
+  credential audit engine is unreachable. Exercises the iter-34 error-normalisation
+  path end-to-end through a real axum router with an in-memory SQLite DB.
+
 ## [0.1.7] — iterations 32–33 audit fixes
 
 ### Features (iteration 33)

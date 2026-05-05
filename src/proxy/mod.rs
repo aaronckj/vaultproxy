@@ -155,6 +155,18 @@ pub struct AppState {
     ///
     /// See `write_env` in `vault/handlers.rs` and the iter-23 TODO fix.
     pub env_write_root: String,
+
+    /// Config directory path — captured from `--config-dir` / `CONFIG_DIR` at
+    /// startup and stored here so handlers always use the **startup** path.
+    ///
+    /// Issue (iter-35): `POST /vault/reload-services` previously read
+    /// `CONFIG_DIR` from the environment at reload time. In container
+    /// orchestrators that inject env var changes without restarting the
+    /// process, this could cause the reload handler to read `services.toml`
+    /// from a different path than the one used at startup. Storing the path
+    /// in `AppState` ensures the reload handler is always consistent with
+    /// the startup path.
+    pub config_dir: String,
 }
 
 // -------------------------------------------------------------------------- //
@@ -1414,6 +1426,7 @@ mod integration_tests {
             internal_token: Arc::new("test-internal-token".to_string()),
             cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
             env_write_root: String::new(),
+            config_dir: "/config".to_string(),
         })
     }
 
@@ -2031,6 +2044,307 @@ mod integration_tests {
             current_count, 1,
             "rollback guard must preserve original registry — \
              zero-service reload must be rejected (SIGHUP regression check)"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (i) POST /vault/reload-services — HTTP integration tests (iter-35)       //
+    // ---------------------------------------------------------------------- //
+
+    /// Helper: write a minimal services.toml with the given service blocks to
+    /// `<dir>/services.toml` and return the path.
+    fn write_services_toml(dir: &std::path::Path, content: &str) {
+        let path = dir.join("services.toml");
+        std::fs::write(&path, content).expect("write_services_toml failed");
+    }
+
+    /// `POST /vault/reload-services` happy-path: write a new services.toml with
+    /// two services, call the endpoint, and assert the response shows both
+    /// service names and `new_service_count == 2`.
+    #[tokio::test]
+    async fn reload_services_happy_path_updates_registry() {
+        use crate::vault::handlers;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Use a temp directory so the test doesn't interfere with /config.
+        static RELOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = RELOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vault-proxy-reload-test-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a services.toml with two bearer-auth services.
+        write_services_toml(&dir, r#"
+[[service]]
+name        = "alpha"
+base_url    = "http://alpha.internal/api"
+auth        = "bearer"
+vault_item  = "vault-proxy - Alpha"
+
+[[service]]
+name        = "beta"
+base_url    = "http://beta.internal/api"
+auth        = "bearer"
+vault_item  = "vault-proxy - Beta"
+"#);
+
+        // Build state with empty registry but config_dir pointing at our temp dir.
+        let mut state = (*make_state(ServiceRegistry::new())).clone();
+        state.config_dir = dir.to_str().unwrap().to_string();
+        state.internal_token = Arc::new("reload-test-token".to_string());
+        let state = Arc::new(state);
+
+        let internal_router = Router::new()
+            .route("/vault/reload-services", post(handlers::reload_services))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{}/vault/reload-services", addr))
+            .header("authorization", "Bearer reload-test-token")
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status().as_u16(), 200, "happy path must return 200 OK");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ok"], true, "response must contain ok=true");
+        assert_eq!(
+            body["new_service_count"], 2,
+            "new_service_count must reflect both services loaded from services.toml"
+        );
+        let services = body["services"].as_array().unwrap();
+        assert!(
+            services.iter().any(|v| v.as_str() == Some("alpha")),
+            "services list must contain 'alpha'"
+        );
+        assert!(
+            services.iter().any(|v| v.as_str() == Some("beta")),
+            "services list must contain 'beta'"
+        );
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /vault/reload-services` rollback path: write an empty services.toml
+    /// when the current registry is non-empty. The endpoint must return 409 Conflict
+    /// and the existing registry must remain intact.
+    #[tokio::test]
+    async fn reload_services_empty_file_returns_409_conflict() {
+        use crate::vault::handlers;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static RELOAD_CONFLICT_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = RELOAD_CONFLICT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vault-proxy-reload-conflict-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write an empty services.toml (no [[service]] blocks).
+        write_services_toml(&dir, "# no services\n");
+
+        // Build state with one pre-registered service so the rollback guard fires.
+        let mut initial_registry = ServiceRegistry::new();
+        initial_registry.register(ServiceEntry {
+            name: "existing".to_string(),
+            base_url: "http://existing.internal/api".to_string(),
+            auth: AuthPattern::Bearer {
+                vault_item: "vault-proxy - Existing".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+
+        let mut state = (*make_state(initial_registry)).clone();
+        state.config_dir = dir.to_str().unwrap().to_string();
+        state.internal_token = Arc::new("reload-conflict-token".to_string());
+        let state = Arc::new(state);
+
+        let internal_router = Router::new()
+            .route("/vault/reload-services", post(handlers::reload_services))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{}/vault/reload-services", addr))
+            .header("authorization", "Bearer reload-conflict-token")
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(), 409,
+            "empty services.toml with non-empty existing registry must return 409 Conflict"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ok"], false, "rollback response must contain ok=false");
+        assert_eq!(
+            body["prev_service_count"], 1,
+            "prev_service_count must reflect the pre-reload registry size"
+        );
+        assert_eq!(
+            body["new_service_count"], 0,
+            "new_service_count must be 0 for the empty reload"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /vault/reload-services` auth path: a request without an
+    /// Authorization: Bearer token must return 401 Unauthorized before the
+    /// handler runs.
+    #[tokio::test]
+    async fn reload_services_without_token_returns_401() {
+        use crate::vault::handlers;
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static RELOAD_AUTH_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = RELOAD_AUTH_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("vault-proxy-reload-auth-{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_services_toml(&dir, "# placeholder\n");
+
+        let mut state = (*make_state(ServiceRegistry::new())).clone();
+        state.config_dir = dir.to_str().unwrap().to_string();
+        state.internal_token = Arc::new("reload-auth-token".to_string());
+        let state = Arc::new(state);
+
+        let internal_router = Router::new()
+            .route("/vault/reload-services", post(handlers::reload_services))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        // No bearer token → 401.
+        let resp = client
+            .post(format!("http://{}/vault/reload-services", addr))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 401,
+            "missing Authorization header must return 401 before the handler runs"
+        );
+
+        // Wrong token → 401.
+        let resp = client
+            .post(format!("http://{}/vault/reload-services", addr))
+            .header("authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(), 401,
+            "invalid token must return 401"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (j) POST /audit/credaudit/scan/start — 503 when engine unreachable       //
+    //     (iter-35)                                                             //
+    // ---------------------------------------------------------------------- //
+
+    /// `POST /audit/credaudit/scan/start` must return 503 SERVICE_UNAVAILABLE
+    /// (not 500 or a panic) when the credential audit engine is unreachable.
+    ///
+    /// This test wires a real `Orchestrator` backed by an in-memory SQLite DB
+    /// and an `EngineClient` pointed at a port where nothing is listening.
+    /// `start_scan` normalises the reqwest connection-refused error to
+    /// `"engine is not reachable"` (iter-34 fix). The handler maps that to 503.
+    #[tokio::test]
+    async fn credaudit_scan_start_returns_503_when_engine_unreachable() {
+        use crate::credential_audit::{
+            engine_client::EngineClient,
+            handlers::{scan_start, SharedOrch},
+            marker::Marker,
+            orchestrator::Orchestrator,
+            pass2::Pass2Engine,
+            vw_adapter::VwAdapter,
+        };
+        use axum::routing::post;
+        use rusqlite::Connection;
+        use std::sync::Mutex;
+
+        // Bind then drop immediately to get a free port that is definitely not
+        // listening when the scan call goes out.
+        let free_port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let dead_engine_url = format!("http://127.0.0.1:{}", free_port);
+
+        // Set up in-memory SQLite DB using the real migration path so the schema
+        // (including the `fail_reason` column added in migration 3) is correct.
+        let conn = Connection::open_in_memory().expect("in-memory DB");
+        crate::credential_audit::db::run_migrations(&conn)
+            .expect("run_migrations on in-memory DB");
+        let conn = Arc::new(Mutex::new(conn));
+
+        let engine = Arc::new(EngineClient::new(dead_engine_url.clone()));
+        let pass2 = Arc::new(Pass2Engine::new(
+            engine.clone(),
+            "/nonexistent/agent.py".to_string(),
+            None,
+        ));
+        let vault_mgr = Arc::new(VaultManager::new_stub());
+        let orch: SharedOrch = Arc::new(Orchestrator {
+            vault: Arc::new(VwAdapter::new(vault_mgr.clone())),
+            engine: EngineClient::new(dead_engine_url),
+            marker: Marker::new(vault_mgr),
+            conn,
+            pass2,
+        });
+
+        let app = Router::new()
+            .route("/audit/credaudit/scan/start", post(scan_start))
+            .with_state(orch);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{}/audit/credaudit/scan/start", addr))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(), 503,
+            "scan/start must return 503 SERVICE_UNAVAILABLE when the engine is unreachable \
+             (not 500 or a panic)"
         );
     }
 }

@@ -26,7 +26,7 @@ pub struct SessionState {
 
 /// Compute a stable fingerprint of credentials. Used to detect rotation.
 /// We hash rather than store the password so a post-mortem on a leaked
-/// SessionState doesn't expose the literal credential. A Vec<u8>
+/// SessionState doesn't expose the literal credential. A `Vec<u8>`
 /// comparison is enough — no need for a hex-encoded string.
 pub(crate) fn fingerprint_creds(username: &str, password: &str) -> Vec<u8> {
     use sha2::{Digest, Sha256};

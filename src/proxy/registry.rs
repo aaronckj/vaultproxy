@@ -1158,7 +1158,7 @@ impl ServiceRegistry {
         registry
     }
 
-    /// Same as [`from_toml_file`] but also returns the number of `[[service]]`
+    /// Same as `from_toml_file` but also returns the number of `[[service]]`
     /// entries present in the file (before validation).  The caller can compute
     /// `rejected = attempted - registry.list().len()`.
     ///

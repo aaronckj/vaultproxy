@@ -1330,8 +1330,8 @@ impl VaultManager {
     /// stays for 30 days before auto-purge. User can restore via VW UI.
     ///
     /// Vaultwarden's routing:
-    ///   DELETE /api/ciphers/<id>         → HARD delete (irreversible)
-    ///   PUT    /api/ciphers/<id>/delete  → soft delete (what we want)
+    ///   `DELETE /api/ciphers/<id>`         → HARD delete (irreversible)
+    ///   `PUT    /api/ciphers/<id>/delete`  → soft delete (what we want)
     ///
     /// We originally used the DELETE form here — which on 2026-04-18 caused
     /// an irrecoverable hard-delete of a live service credential. Now we go

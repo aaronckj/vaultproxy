@@ -2609,11 +2609,12 @@ pub async fn reload_services(
 ) -> (axum::http::StatusCode, Json<Value>) {
     use crate::proxy::registry::ServiceRegistry;
 
-    let config_dir = &state.vault_folder; // vault_folder is not config_dir — use env
-    // Config dir is not stored in AppState (only vault_folder is). Read it from
-    // the environment, the same source `main.rs` uses at startup.
-    let config_dir = std::env::var("CONFIG_DIR").unwrap_or_else(|_| "/config".to_string());
-    let services_path = std::path::Path::new(&config_dir).join("services.toml");
+    // iter-35: use the config_dir captured at startup (stored in AppState) rather
+    // than reading CONFIG_DIR from the environment at reload time. Container
+    // orchestrators can inject env var changes without restarting the process;
+    // reading from the environment here would cause the reload handler to read
+    // services.toml from a different path than the one used at startup.
+    let services_path = std::path::Path::new(&state.config_dir).join("services.toml");
 
     if !services_path.exists() {
         return (
