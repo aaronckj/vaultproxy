@@ -98,6 +98,32 @@ COPY --chown=vaultproxy:vaultproxy playwright/ /app/playwright/
 # iter-11: Added --chown.
 COPY --chown=vaultproxy:vaultproxy dashboard/ /app/dashboard/
 
+# NOTE: internal-token file permissions in multi-process deployments.
+#
+# vault-proxy generates $CONFIG_DIR/internal-token with 0o600 permissions
+# (owner read/write only). This is correct when vault-proxy and the TypeScript
+# Connecterr layer run as the *same* OS user (UID 1001 = vaultproxy).
+#
+# If your deployment runs the TypeScript side as a different user (e.g. the
+# default Node.js container user, UID 1000), that process cannot read the token
+# and all calls to /handshake, /vault/connecterr-secrets*, /rotate, and
+# /browser/* will return 401. To fix this:
+#
+#   Option A (recommended): run both processes as the same user (UID 1001):
+#     services:
+#       connecterr:
+#         user: "1001:1001"
+#
+#   Option B: use a shared group and 0o640 permissions. Add the Connecterr
+#   user to the vaultproxy group, then chmod 640 /config/internal-token
+#   in the container entrypoint or a startup script.
+#
+#   Option C: bind-mount the config dir so both containers share the same
+#   volume, then follow Option A or B for UID/GID alignment.
+#
+# vault-proxy does not currently expose a --internal-token-group flag (option B
+# above); if you need group-readable tokens, open an issue on the repository.
+
 USER vaultproxy
 
 # MCP proxy port (localhost-only; network_mode:host or explicit mapping needed)

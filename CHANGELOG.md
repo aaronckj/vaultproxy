@@ -3,7 +3,64 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — iteration-22 security hardening
+## [Unreleased] — iteration-23 audit fixes
+
+### Security fixes (iteration 23)
+
+- **`POST /vault/notes` moved to internal router (iter-23 — TODO 3/3)**:
+  `decrypt_notes` returns the full decrypted notes field (API tokens, SSH keys,
+  recovery codes, etc.). It was previously on the open router — accessible to
+  any localhost process without a bearer token. It is now on the internal router:
+  callers must present `Authorization: Bearer <token>` from
+  `$CONFIG_DIR/internal-token`. This closes the last open `TODO(public-release)`
+  about notes exfiltration surface.
+
+- **`require_internal_token` timing oracle via length short-circuit (iter-23)**:
+  The iter-22 implementation compared `provided.len() == expected.len()` before
+  the constant-time fold-XOR, leaking token length via response latency. An
+  attacker with microsecond timing precision could binary-search the 64-character
+  token length in O(log n) probes. Fixed: the accumulator now folds over exactly
+  `expected.len()` iterations regardless of `provided.len()`, with a branchless
+  length-difference flag OR'd into the same accumulator. No early return on
+  length mismatch.
+
+- **`resolve_vault_folder_id` thundering herd on resync (iter-23)**:
+  After `vault_resync` clears `cached_folder_id` to `None`, all concurrent
+  requests that observed `None` under the read lock would drop it and
+  independently call `find_folder_id_by_name_async` — a thundering herd against
+  the vault's folder-index read lock. Fixed with double-checked locking: the
+  slow path now acquires the write lock and re-checks the cache before calling
+  into the vault. Only the first writer resolves the folder ID; all others find
+  the cache warm on the re-check.
+
+- **`write_env` gated behind `--env-write-root` / `ENV_WRITE_ROOT` (iter-23 — TODO 2/3)**:
+  `POST /vault/write-env` previously hardcoded `/envs/` as the only allowed
+  target prefix — a homelab-specific convention that gave public users no
+  actionable error. The endpoint now returns `501 Not Implemented` when
+  `--env-write-root` is unset, explaining how to enable it. When the flag is
+  set, the prefix is normalised to end with `/` to prevent path-prefix bypass
+  (e.g. `/envs-evil/` matching a root of `/envs`).
+
+### Reliability fixes (iteration 23)
+
+- **Policy scheduler restart loop (iter-23 — TODO 1/3)**:
+  The policy scheduler `tokio::spawn` would silently lose all rotation
+  scheduling if the inner task panicked — the JoinHandle was dropped immediately
+  and the panic swallowed. The spawn is now wrapped in an outer restart loop
+  that `.await`s the inner JoinHandle, logs panics via `JoinError::is_panic()`,
+  and re-spawns the inner task after a 5-second delay. This closes the
+  `TODO(public-release)` in `main.rs`.
+
+### Documentation fixes (iteration 23)
+
+- **Dockerfile: `internal-token` cross-process permissions note (iter-23)**:
+  Added an inline comment in the `Dockerfile` explaining that `0o600` permissions
+  on `$CONFIG_DIR/internal-token` require vault-proxy and the TypeScript
+  Connecterr layer to run as the same UID (1001 / vaultproxy). Documents
+  Option A (same UID), Option B (shared group + 0o640), and Option C (shared
+  volume) for multi-process deployments.
+
+## [0.1.3] — iteration-22 security hardening
 
 ### Security fixes (iteration 22)
 

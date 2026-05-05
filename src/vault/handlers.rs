@@ -27,18 +27,40 @@ use super::types::{DuplicateGroup, FolderInfo, MaskedItem};
 ///
 /// Callers that get `None` back should treat it as "folder not found in the
 /// vault" (same semantics as `find_folder_id_by_name_async`).
+///
+/// # Thundering-herd prevention (iter-23)
+///
+/// The iter-22 implementation had a TOCTOU window: after dropping the read lock
+/// but before acquiring the write lock, N concurrent requests could all observe
+/// `None` and all call `find_folder_id_by_name_async` independently. This is a
+/// thundering herd against the vault's folder-index read lock.
+///
+/// Fix: after the read-lock miss, upgrade to a write lock and re-check the
+/// cache before populating it (double-checked locking). Only the first writer
+/// calls `find_folder_id_by_name_async`; all others find the cache warm on the
+/// re-check and return immediately without calling into the vault.
 pub async fn resolve_vault_folder_id(state: &Arc<AppState>) -> Option<String> {
-    // Fast path: cache hit.
+    // Fast path: cache hit under read lock.
     {
         let cached = state.cached_folder_id.read().await;
         if let Some(ref id) = *cached {
             return Some(id.clone());
         }
     }
-    // Slow path: resolve and populate the cache.
+    // Slow path: upgrade to write lock and re-check (double-checked locking).
+    // Between releasing the read lock and acquiring the write lock another task
+    // may have populated the cache — that's the common case after the first
+    // resolution. Only the winner of the write lock actually calls into the
+    // vault; all losers find the cache warm on re-check.
+    let mut write_guard = state.cached_folder_id.write().await;
+    if let Some(ref id) = *write_guard {
+        // Another task won the race and already populated the cache.
+        return Some(id.clone());
+    }
+    // We are the first writer — resolve and populate.
     let id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
     if let Some(ref resolved) = id {
-        *state.cached_folder_id.write().await = Some(resolved.clone());
+        *write_guard = Some(resolved.clone());
     }
     id
 }
@@ -1281,23 +1303,20 @@ pub async fn test_credential(
 /// over HTTP. The endpoint preserves unrelated lines, updates matching
 /// `KEY=` assignments in-place, and appends new ones at the end.
 ///
-/// `target_path` is allowlisted to `/envs/` (the canonical bind mount for
-/// service env files). Rejecting unknown prefixes stops this handler from
-/// being a write-anywhere primitive.
+/// `target_path` must begin with the `--env-write-root` / `ENV_WRITE_ROOT`
+/// prefix configured at startup. If `--env-write-root` is unset (default),
+/// this endpoint returns `501 Not Implemented` — it must be explicitly enabled
+/// by an operator who sets the allowed prefix.
 ///
-/// # Public-release note
+/// # iter-23 fix (was TODO(public-release))
 ///
-/// The hardcoded `/envs/` prefix is a homelab-specific convention (bind-mount
-/// path inside the Connecterr Docker Compose stack). Public users almost
-/// certainly do not have an `/envs/` directory.
+/// The previous implementation hardcoded `/envs/` as the only allowed prefix.
+/// This was a homelab-specific convention (Connecterr Docker Compose bind-mount
+/// path) that confused public users who called the endpoint and received a
+/// cryptic "target_path must begin with ['/envs/']" error with no explanation.
 ///
-/// TODO(public-release): This endpoint should either be removed entirely for
-/// the public release (it has no meaningful use outside the Connecterr Docker
-/// stack) or the allowed prefix should be made configurable via
-/// `--env-write-root` / `ENV_WRITE_ROOT` so operators can set a path that
-/// exists on their system. Until then, any public user calling this endpoint
-/// will receive a 400 "target_path must begin with ['/envs/']" error that
-/// gives no indication of how to fix it.
+/// The allowed prefix is now configurable via `--env-write-root` / `ENV_WRITE_ROOT`.
+/// When unset, the endpoint returns 501 with a message explaining the flag.
 pub async fn write_env(
     State(state): State<Arc<AppState>>,
     Json(req): Json<WriteEnvRequest>,
@@ -1305,14 +1324,37 @@ pub async fn write_env(
     use std::collections::{HashMap, HashSet};
     use zeroize::Zeroizing;
 
-    const ALLOWED_PREFIXES: &[&str] = &["/envs/"];
-    let ok_prefix = ALLOWED_PREFIXES.iter().any(|p| req.target_path.starts_with(p));
+    // iter-23: gate the endpoint behind --env-write-root.
+    // An empty env_write_root means the operator has not opted in — return 501.
+    if state.env_write_root.is_empty() {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "error": "POST /vault/write-env is disabled. \
+                          Set --env-write-root (or ENV_WRITE_ROOT) to the directory \
+                          prefix that vault-proxy is allowed to write env files into \
+                          (e.g. ENV_WRITE_ROOT=/envs). \
+                          Only paths beginning with that prefix will be accepted."
+            })),
+        );
+    }
+
+    // Normalise: ensure the prefix ends with '/' so a prefix of '/envs' cannot
+    // accidentally permit '/envs-evil/secret.env'.
+    let root = if state.env_write_root.ends_with('/') {
+        state.env_write_root.clone()
+    } else {
+        format!("{}/", state.env_write_root)
+    };
+
+    let ok_prefix = req.target_path.starts_with(&root);
     if !ok_prefix {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": format!(
-                    "target_path must begin with one of {:?}", ALLOWED_PREFIXES
+                    "target_path must begin with the configured env-write-root prefix '{}'",
+                    root
                 )
             })),
         );
@@ -2122,21 +2164,15 @@ pub async fn generate_totp(
 ///
 /// # Security note
 ///
-/// This endpoint returns the **full decrypted notes field** to any unauthenticated
-/// caller on localhost. Notes can contain arbitrary sensitive data (API tokens,
-/// SSH keys, recovery codes, etc.). Unlike passwords (which are never returned),
-/// notes are returned in full because `inject_creds` legitimately needs to read
-/// a long-lived HA token from the notes field of a vault item.
+/// This endpoint returns the **full decrypted notes field**. Notes can contain
+/// arbitrary sensitive data (API tokens, SSH keys, recovery codes, etc.).
+/// Unlike passwords (which are never returned), notes are returned in full
+/// because `inject_creds` legitimately needs to read a long-lived HA token
+/// from the notes field of a vault item.
 ///
-/// For the internal sidecar use case this is acceptable: only local processes
-/// can call it and all routes already go through the DNS-rebinding guard.
-///
-/// TODO(public-release): Evaluate whether this endpoint is needed at all in the
-/// public release. If the only consumer is `inject_creds` (which calls
-/// `decrypt_notes` internally), the HTTP endpoint can be removed — keeping it
-/// creates an unnecessarily wide surface for notes exfiltration via any local
-/// process that can call the sidecar. If retained, it should be gated by the
-/// same authentication layer added to other sensitive endpoints.
+/// iter-23 fix: This handler is now on the **internal router** — callers must
+/// present `Authorization: Bearer <token>` (from `$CONFIG_DIR/internal-token`).
+/// Previously it was on the open router, accessible to any localhost process.
 pub async fn decrypt_notes(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Value>,

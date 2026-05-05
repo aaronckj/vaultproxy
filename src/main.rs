@@ -118,6 +118,24 @@ struct Args {
     /// almost certainly do not; use a dedicated non-root user instead.
     #[arg(long)]
     allow_root: bool,
+
+    /// Root directory that `POST /vault/write-env` is allowed to write into.
+    ///
+    /// `write_env` decrypts credentials and writes them as env-var assignments
+    /// to a file on disk. The target path must begin with this prefix so the
+    /// endpoint cannot be used as a write-anywhere primitive.
+    ///
+    /// If unset, `POST /vault/write-env` returns `501 Not Implemented` with an
+    /// explanation of how to enable it. For the Connecterr Docker Compose stack
+    /// the conventional value is `/envs`.
+    ///
+    /// # Security
+    ///
+    /// Set this to the narrowest path that covers your legitimate use case. A
+    /// value of `/` would make the endpoint a write-anywhere primitive, which
+    /// defeats the purpose of the guard.
+    #[arg(long, env = "ENV_WRITE_ROOT", default_value = "")]
+    env_write_root: String,
 }
 
 // -------------------------------------------------------------------------- //
@@ -907,6 +925,8 @@ async fn start_server(
         // Populated lazily on the first vault mutation that needs the folder_id.
         // Cleared by POST /vault/resync to pick up any folder renames/recreations.
         cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
+        // iter-23: empty string = disabled (returns 501 Not Implemented).
+        env_write_root: args.env_write_root.clone(),
     });
 
     // Build router with rate limiting on sensitive endpoints.
@@ -943,6 +963,10 @@ async fn start_server(
     // iter-22: these were previously open to any localhost process; now they
     // require `Authorization: Bearer <token>` where <token> is read from
     // $CONFIG_DIR/internal-token (0o600 — owner read/write only).
+    //
+    // iter-23: added POST /vault/notes (decrypt_notes) here — it was previously
+    // on the open router despite returning raw decrypted notes (API tokens, SSH
+    // keys, recovery codes). See TODO(public-release) in handlers.rs.
     let internal_router = Router::new()
         .route("/handshake", get(handlers::handshake))
         .route("/vault/connecterr-secrets", get(handlers::connecterr_secrets))
@@ -956,6 +980,9 @@ async fn start_server(
         .route("/browser/status",     get(browser_status))
         .route("/browser/screenshot", get(browser_screenshot))
         .route("/browser/abort",      post(browser_abort))
+        // iter-23: decrypt_notes returns full plaintext notes (API tokens, SSH
+        // keys, recovery codes). Gate it behind the internal bearer token.
+        .route("/vault/notes",        post(handlers::decrypt_notes))
         // Gate the entire sub-router behind the internal bearer token.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -974,7 +1001,8 @@ async fn start_server(
         .route("/vault/write-env",    post(handlers::write_env))
         .route("/vault/items/untracked", get(handlers::list_untracked_items))
         .route("/vault/totp",         post(handlers::generate_totp))
-        .route("/vault/notes",        post(handlers::decrypt_notes))
+        // NOTE: POST /vault/notes is on the internal_router (bearer token required).
+        // Moved to internal_router in iter-23 — returns raw decrypted notes.
         .route("/vault/items",        post(handlers::create_item))
         .route("/vault/items/delete", post(handlers::delete_item))
         .route("/vault/items/update", post(handlers::update_item))
@@ -1055,79 +1083,102 @@ async fn start_server(
     // Issue (iter-8): A panic inside `tokio::spawn` silently terminates the
     // spawned task. The JoinHandle is dropped immediately (we don't `.await`
     // it), so the panic is swallowed with only a tokio runtime warning in
-    // debug builds.  The workaround is to wrap the inner loop body in a
-    // `std::panic::catch_unwind`-equivalent by catching per-iteration errors
-    // explicitly rather than letting any single bad policy propagate.
+    // debug builds.
     //
-    // The loop body already handles each iteration defensively:
-    //   - `load_policies` never panics (all paths return Vec)
-    //   - `save_policies` returns Result (logged on error, not propagated)
-    //   - `chrono` parsing is .ok()-guarded
+    // Fix (iter-23): The scheduler is now wrapped in an outer restart loop.
+    // Each iteration spawns a new task that runs the hourly scheduler body.
+    // If the inner task panics (JoinError::is_panic()), the outer loop logs
+    // the event and re-spawns after a 5-second delay so scheduling is never
+    // silently lost. Normal task completion (which cannot happen — the inner
+    // body is its own `loop {}`) would also trigger a re-spawn after the delay,
+    // which is safe.
     //
-    // The remaining risk is an unexpected panic from a dependency. We add a
-    // TODO noting this rather than using `catch_unwind` (which requires
-    // AssertUnwindSafe wrapping of every captured variable).
-    //
-    // TODO(public-release): Wrap the spawn future body in a restart loop so
-    // a panic in the scheduler re-spawns the task rather than silently losing
-    // all rotation scheduling. Pattern:
-    //   loop { tokio::spawn(async move { /* scheduler body */ }).await.ok(); }
+    // `AssertUnwindSafe` is NOT needed here because we use the JoinHandle
+    // approach: `tokio::spawn` catches panics automatically and returns them
+    // as `JoinError::is_panic()`. The outer loop `.await`s the handle and
+    // inspects the result, re-spawning unconditionally on error.
     {
         let policy_vault = vault_arc.clone();
         let _policy_notifier = state.notifier.clone();
         let policies_path = format!("{}/policies.json", config_dir);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; // every hour
+                // Inner task: runs the scheduler body. If it panics, the
+                // JoinHandle returns Err(JoinError) and we restart below.
+                let pv = policy_vault.clone();
+                let pp = policies_path.clone();
+                let inner = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; // every hour
 
-                // Load once at the top and save once at the bottom. The old
-                // shape reloaded the file for every due policy, producing
-                // quadratic I/O and visible file churn. `load_policies` now
-                // also drops interval_days==0 entries so the scheduler can't
-                // hot-loop on a malformed entry.
-                let mut policies = crate::policy::load_policies(&policies_path);
-                let now = chrono::Utc::now();
-                let mut mutated = false;
+                        // Load once at the top and save once at the bottom. The old
+                        // shape reloaded the file for every due policy, producing
+                        // quadratic I/O and visible file churn. `load_policies` now
+                        // also drops interval_days==0 entries so the scheduler can't
+                        // hot-loop on a malformed entry.
+                        let mut policies = crate::policy::load_policies(&pp);
+                        let now = chrono::Utc::now();
+                        let mut mutated = false;
 
-                for policy in policies.iter_mut() {
-                    if !policy.enabled {
-                        continue;
-                    }
+                        for policy in policies.iter_mut() {
+                            if !policy.enabled {
+                                continue;
+                            }
 
-                    let last_run = policy
-                        .last_run
-                        .as_deref()
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                            let last_run = policy
+                                .last_run
+                                .as_deref()
+                                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                                .map(|dt| dt.with_timezone(&chrono::Utc));
 
-                    let due = match last_run {
-                        Some(lr) => {
-                            let elapsed = now.signed_duration_since(lr);
-                            elapsed.num_days() >= policy.interval_days as i64
+                            let due = match last_run {
+                                Some(lr) => {
+                                    let elapsed = now.signed_duration_since(lr);
+                                    elapsed.num_days() >= policy.interval_days as i64
+                                }
+                                None => true, // never run
+                            };
+
+                            if due {
+                                tracing::info!(
+                                    "policy '{}' is due -- would trigger rotation for {:?}",
+                                    policy.name,
+                                    policy.target
+                                );
+                                policy.last_run = Some(now.to_rfc3339());
+                                policy.last_result = Some("checked".to_string());
+                                mutated = true;
+                            }
                         }
-                        None => true, // never run
-                    };
 
-                    if due {
-                        tracing::info!(
-                            "policy '{}' is due -- would trigger rotation for {:?}",
-                            policy.name,
-                            policy.target
+                        if mutated {
+                            if let Err(e) = crate::policy::save_policies(&pp, &policies) {
+                                tracing::warn!("failed to persist policy run times: {}", e);
+                            }
+                        }
+
+                        // Keep the vault reference alive to prove it compiles
+                        let _ = &pv;
+                    }
+                });
+
+                match inner.await {
+                    Ok(_) => {
+                        // The inner loop never returns normally; if it does,
+                        // restart it after a brief delay.
+                        tracing::warn!("policy scheduler task exited unexpectedly — restarting in 5s");
+                    }
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(
+                            "policy scheduler panicked — restarting in 5s. \
+                             This should not happen; please file a bug report. {:?}", e
                         );
-                        policy.last_run = Some(now.to_rfc3339());
-                        policy.last_result = Some("checked".to_string());
-                        mutated = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("policy scheduler task ended ({:?}) — restarting in 5s", e);
                     }
                 }
-
-                if mutated {
-                    if let Err(e) = crate::policy::save_policies(&policies_path, &policies) {
-                        tracing::warn!("failed to persist policy run times: {}", e);
-                    }
-                }
-
-                // Keep the vault reference alive to prove it compiles
-                let _ = &policy_vault;
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
     }
@@ -1623,10 +1674,36 @@ async fn require_internal_token(
         .unwrap_or("");
 
     // Constant-time comparison to prevent timing oracles.
+    //
+    // Issue (iter-23): The previous implementation short-circuited on
+    // `provided.len() == expected.len()` before the fold-XOR, leaking token
+    // length via a timing oracle (early return on length mismatch). An attacker
+    // who can measure response latency with microsecond precision could binary-
+    // search the token length in O(log n) probes.
+    //
+    // Fix: compare byte-at-a-time with a fixed iteration count equal to
+    // `expected.len()`. We pad the provided bytes with zeros when shorter and
+    // truncate when longer; the final `len_ok` check is OR'd into the same
+    // accumulator so no early return leaks length information.
+    //
+    // This is equivalent in effect to `subtle::ConstantTimeEq` without adding
+    // a dependency — the fold operates over exactly `expected.len()` iterations
+    // regardless of `provided.len()`.
     let expected = state.internal_token.as_str();
-    let valid = provided.len() == expected.len()
-        && provided.as_bytes().iter().zip(expected.as_bytes().iter())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+    let expected_bytes = expected.as_bytes();
+    let provided_bytes = provided.as_bytes();
+    // Accumulate differing bits across exactly `expected.len()` iterations.
+    let byte_diff = expected_bytes
+        .iter()
+        .enumerate()
+        .fold(0u8, |acc, (i, &eb)| {
+            let pb = provided_bytes.get(i).copied().unwrap_or(0);
+            acc | (eb ^ pb)
+        });
+    // Also flag length mismatches — done in a branchless way by treating
+    // any length difference as at least one differing "bit".
+    let len_diff: u8 = if provided_bytes.len() == expected_bytes.len() { 0 } else { 1 };
+    let valid = (byte_diff | len_diff) == 0;
 
     if !valid {
         tracing::warn!(

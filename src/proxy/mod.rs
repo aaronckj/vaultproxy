@@ -119,6 +119,15 @@ pub struct AppState {
     /// A `None` value means "not yet resolved or invalidated" — callers fall
     /// back to `find_folder_id_by_name_async` and populate the cache.
     pub cached_folder_id: Arc<tokio::sync::RwLock<Option<String>>>,
+
+    /// Allowed root directory for `POST /vault/write-env`.
+    ///
+    /// Set from `--env-write-root` / `ENV_WRITE_ROOT` at startup. An empty
+    /// string means the endpoint is disabled (returns 501). A non-empty value
+    /// (e.g. `/envs`) restricts writes to that prefix only.
+    ///
+    /// See `write_env` in `vault/handlers.rs` and the iter-23 TODO fix.
+    pub env_write_root: String,
 }
 
 // -------------------------------------------------------------------------- //
