@@ -63,7 +63,7 @@ pub async fn status(State(state): State<DashboardState>) -> Json<Value> {
         Err(e) => return e,
     };
     let items = app.vault.list_items().await;
-    let services = app.registry.list();
+    let services = app.registry.read().await.list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
     let cloud_sync = match &app.cloud_sync {
         Some(sync) => {

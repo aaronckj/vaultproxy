@@ -57,12 +57,19 @@ insecure_tls = true        # OPNsense uses a self-signed cert by default
 # against YOUR CA without disabling all TLS validation.
 # insecure_tls = true would skip all verification; ca_cert = ... is safer.
 #
+# The ca_cert path must be readable by the vault-proxy process at startup.
+# Common locations:
+#   Docker Compose (./config:/config mount):  /config/internal-ca.pem
+#   Bare metal:                               /etc/ssl/vaultproxy/ca.pem
+# Change this path to match your actual deployment; the example below is a
+# placeholder that will cause a startup error if used without modification.
+#
 # [[service]]
 # name = "internal_service"
 # base_url = "https://service.internal.corp/api"
 # auth = "bearer"
 # vault_item = "vault-proxy - Internal Service"
-# ca_cert = "/config/internal-ca.pem"   # path to PEM-encoded CA certificate
+# ca_cert = "/config/internal-ca.pem"   # CHANGE THIS: path to your PEM CA cert
 
 # ── Session login (POST credentials, use returned token) ────────────────────
 [[service]]

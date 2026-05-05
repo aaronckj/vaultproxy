@@ -41,7 +41,16 @@ pub struct ApprovalRequest {
 #[derive(Clone)]
 pub struct AppState {
     pub vault: Arc<VaultManager>,
-    pub registry: Arc<ServiceRegistry>,
+    /// Service registry — wrapped in RwLock to support live reload on SIGHUP.
+    ///
+    /// Issue (iter-28): SIGHUP reload. Previously `Arc<ServiceRegistry>` was
+    /// immutable after startup. Changing to `Arc<RwLock<ServiceRegistry>>`
+    /// lets the SIGHUP handler call `ServiceRegistry::from_toml_file` and
+    /// swap in a fresh registry without restarting the process. Read access
+    /// is via `.registry.read().await`; write access is only in the SIGHUP
+    /// handler (which also rebuilds `ca_cert_clients` and clears
+    /// `cached_folder_id`).
+    pub registry: Arc<tokio::sync::RwLock<ServiceRegistry>>,
     /// Default HTTP client with full TLS verification. Used for every downstream
     /// service except those explicitly documented to present self-signed certs
     /// (currently: UniFi UDM on the classic port).
@@ -59,10 +68,9 @@ pub struct AppState {
     /// call. These clients are now built once at startup and stored here, keyed
     /// by service name, so the connection pool is preserved across requests.
     ///
-    /// The map is read-only after startup (no hot-reload of CA certs without
-    /// restart), so no lock is needed — an `Arc<HashMap>` provides cheap
-    /// shared access from concurrent request handlers.
-    pub ca_cert_clients: Arc<std::collections::HashMap<String, reqwest::Client>>,
+    /// iter-28: wrapped in RwLock so the SIGHUP reload handler can atomically
+    /// swap in a fresh map after rebuilding the registry.
+    pub ca_cert_clients: Arc<tokio::sync::RwLock<std::collections::HashMap<String, reqwest::Client>>>,
     /// Per-service UniFi session cache (cookie jars + CSRF tokens).
     pub unifi_sessions: Arc<UnifiSessionCache>,
     /// Cached session tokens for `AuthPattern::Session` services (NPM, Duplicati).
@@ -213,12 +221,19 @@ pub async fn handle_proxy(
     // 1. Look up the service in the registry.
     // Use a generic "not found" message — echoing req.service verbatim would
     // let an attacker enumerate registered service names via trial-and-error.
-    let service = state.registry.get(&req.service).ok_or_else(|| {
-        proxy_error(
-            StatusCode::NOT_FOUND,
-            "unknown service".to_string(),
-        )
-    })?;
+    //
+    // iter-28: registry is now Arc<RwLock<ServiceRegistry>> to support SIGHUP
+    // hot-reload. Acquire a read lock for the duration of this lookup; the
+    // clone ensures we don't hold the lock across await points below.
+    let service = {
+        let reg = state.registry.read().await;
+        reg.get(&req.service).cloned().ok_or_else(|| {
+            proxy_error(
+                StatusCode::NOT_FOUND,
+                "unknown service".to_string(),
+            )
+        })?
+    };
 
     // 2. Build the target URL.
     // Reject path segments that could escape the registered base_url via
@@ -295,7 +310,15 @@ pub async fn handle_proxy(
     // should know when to wait vs. when to give up immediately; a 504 Gateway
     // Timeout with an explicit message gives them that signal. Internal details
     // (service name, upstream IP) are still not included in the 504 body.
-    let mut response = apply_auth_and_send(&state, service.auth.clone(), &target_url, method, &req)
+    // Resolve the per-service CA-cert client (if any) before calling
+    // apply_auth_and_send. The RwLock must be read in this async context; the
+    // sync helpers (build_request etc.) cannot await it directly.
+    let ca_client: Option<reqwest::Client> = {
+        let ca_map = state.ca_cert_clients.read().await;
+        ca_map.get(service.name.as_str()).cloned()
+    };
+
+    let mut response = apply_auth_and_send(&state, &service, ca_client, service.auth.clone(), &target_url, method, &req)
         .await
         .map_err(|e| {
             // Detect timeout: reqwest wraps its own Error type; check the
@@ -367,8 +390,15 @@ pub async fn handle_proxy(
 /// Decrypt credentials, apply the service's auth pattern, and send the HTTP
 /// request.  `SecureBuffer`s holding plaintext credentials are dropped
 /// (zeroized) as soon as they are no longer needed.
+///
+/// `service` is the resolved `ServiceEntry` for this request.
+/// `ca_client` is the pre-resolved per-service CA-cert client (if any),
+/// obtained from `state.ca_cert_clients` by the async caller before entering
+/// this function so the RwLock read is not needed inside the sync helpers.
 async fn apply_auth_and_send(
     state: &AppState,
+    service: &registry::ServiceEntry,
+    ca_client: Option<reqwest::Client>,
     auth: AuthPattern,
     url: &str,
     method: Method,
@@ -386,7 +416,7 @@ async fn apply_auth_and_send(
             // SecureBuffer `token` is dropped here (original reference ends).
             drop(token);
 
-            let request = build_request(state, method, url, req)?
+            let request = build_request(state, service, ca_client, method, url, req)?
                 .header(&header_name, &token_str);
 
             send_request(request).await
@@ -403,7 +433,7 @@ async fn apply_auth_and_send(
             drop(token);
 
             // Inject the param into the request builder's query list.
-            let mut request = build_request(state, method, url, req)?;
+            let mut request = build_request(state, service, ca_client, method, url, req)?;
             request = request.query(&[(&param_name, &token_str)]);
 
             send_request(request).await
@@ -419,7 +449,7 @@ async fn apply_auth_and_send(
                 .to_string();
             drop(token);
 
-            let request = build_request(state, method, url, req)?.bearer_auth(&token_str);
+            let request = build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token_str);
 
             send_request(request).await
         }
@@ -441,7 +471,7 @@ async fn apply_auth_and_send(
             drop(secret);
 
             let request =
-                build_request(state, method, url, req)?.basic_auth(&key_str, Some(&secret_str));
+                build_request(state, service, ca_client, method, url, req)?.basic_auth(&key_str, Some(&secret_str));
 
             send_request(request).await
         }
@@ -465,7 +495,7 @@ async fn apply_auth_and_send(
 
             // Step 2: send the actual request with the session token.
             let request =
-                build_request(state, method.clone(), url, req)?.bearer_auth(&session_token);
+                build_request(state, service, ca_client.clone(), method.clone(), url, req)?.bearer_auth(&session_token);
             let response = send_request(request).await?;
 
             // If the upstream rejects the cached token, refresh once and retry.
@@ -481,7 +511,7 @@ async fn apply_auth_and_send(
                 )
                 .await?;
                 let retry =
-                    build_request(state, method, url, req)?.bearer_auth(&fresh);
+                    build_request(state, service, ca_client, method, url, req)?.bearer_auth(&fresh);
                 return send_request(retry).await;
             }
 
@@ -494,12 +524,13 @@ async fn apply_auth_and_send(
         AuthPattern::UnifiDual { vault_item, login_path } => {
             // Resolve service name + root URL. The registry stores
             // base_url as "<root>/proxy/network"; login lives at <root>.
-            let (service_name, login_base) = state
-                .registry
-                .list()
-                .iter()
-                .find_map(|name| {
-                    let entry = state.registry.get(name)?;
+            // iter-28: acquire a short-lived read lock, collect the result,
+            // then release before the first await point.
+            let (service_name, login_base) = {
+                let reg = state.registry.read().await;
+                let names = reg.list();
+                let found = names.iter().find_map(|name| {
+                    let entry = reg.get(name)?;
                     if let AuthPattern::UnifiDual { vault_item: vi, .. } = &entry.auth {
                         if vi == &vault_item {
                             let root = entry
@@ -510,8 +541,9 @@ async fn apply_auth_and_send(
                         }
                     }
                     None
-                })
-                .ok_or_else(|| anyhow::anyhow!("cannot resolve base URL for unifi dual auth"))?;
+                });
+                found.ok_or_else(|| anyhow::anyhow!("cannot resolve base URL for unifi dual auth"))?
+            };
 
             // Decrypt credentials. Drop SecureBuffers as soon as we have
             // owned Strings.
@@ -679,12 +711,13 @@ async fn session_login(
     // The `login_path` is relative to the service's base_url.  We find the
     // matching registry entry by scanning for the vault item — there will be
     // exactly one match for each session service.
-    let base_url = state
-        .registry
-        .list()
-        .iter()
-        .find_map(|name| {
-            let entry = state.registry.get(name)?;
+    // iter-28: registry is RwLock — acquire read lock briefly, collect result,
+    // release before the async HTTP call below.
+    let base_url = {
+        let reg = state.registry.read().await;
+        let names = reg.list();
+        names.iter().find_map(|name| {
+            let entry = reg.get(name)?;
             if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
                 if vi == vault_item {
                     return Some(entry.base_url.clone());
@@ -692,7 +725,8 @@ async fn session_login(
             }
             None
         })
-        .ok_or_else(|| anyhow::anyhow!("cannot determine base URL for session login"))?;
+        .ok_or_else(|| anyhow::anyhow!("cannot determine base URL for session login"))?
+    };
 
     let login_url = format!(
         "{}{}",
@@ -790,17 +824,33 @@ fn build_session_login_body(
 /// Construct a `reqwest::RequestBuilder` with method, URL, optional body,
 /// optional extra headers, and optional extra query params from the caller's
 /// `ProxyRequest`.
+/// Build a reqwest RequestBuilder for a proxied request.
+///
+/// `entry` is the pre-looked-up ServiceEntry for this request. Passing it as a
+/// parameter (rather than reading it from the registry inside this function)
+/// avoids a second async registry read lock acquisition — the caller has
+/// already resolved the entry at the start of `handle_proxy`.
+///
+/// `ca_client` is an optional per-service CA-cert reqwest::Client, pre-resolved
+/// by the async caller from `AppState::ca_cert_clients` before calling this
+/// sync function (so the RwLock read happens outside the sync scope).
+///
+/// iter-28: signature changed from reading `state.registry` and
+/// `state.ca_cert_clients` directly to accepting pre-resolved values, because
+/// both are now `Arc<RwLock<...>>` and cannot be `.await`-ed in a sync fn.
 fn build_request(
     state: &AppState,
+    entry: &registry::ServiceEntry,
+    ca_client: Option<reqwest::Client>,
     method: Method,
     url: &str,
     req: &ProxyRequest,
 ) -> anyhow::Result<reqwest::RequestBuilder> {
     // Pick the right TLS client for this service:
     //   - insecure_tls = true  → http_permissive (no cert verification)
-    //   - ca_cert_path set     → use the pre-built per-service CA-cert client
-    //                            from AppState::ca_cert_clients (built once at
-    //                            startup so the connection pool is preserved)
+    //   - ca_client is Some    → use the pre-built per-service CA-cert client
+    //                            (built once at startup so connection pool is
+    //                            preserved; passed in by caller after SIGHUP)
     //   - neither              → http (strict system-root verification)
     //
     // Issue (iter-15 → iter-16 fix): the iter-15 implementation built a new
@@ -808,14 +858,12 @@ fn build_request(
     // maintains a connection pool; a fresh Client per request defeats connection
     // reuse and forces a TLS handshake on every call. CA-cert clients are now
     // built once in start_server() and stored in AppState::ca_cert_clients.
-    let service_name = req.service.as_str();
-    let service_entry = state.registry.get(service_name);
-    let insecure = service_entry.map(|s| s.insecure_tls).unwrap_or(false);
+    let insecure = entry.insecure_tls;
 
     let client: &reqwest::Client = if insecure {
         &state.http_permissive
-    } else if let Some(ca_client) = state.ca_cert_clients.get(service_name) {
-        ca_client
+    } else if let Some(ref cc) = ca_client {
+        cc
     } else {
         &state.http
     };

@@ -3,10 +3,26 @@
 #
 # Use `vault-proxy --launch <name>` to start a server with credentials injected.
 #
-# SECURITY NOTE: --launch injects credentials into the child process via fork/exec.
-# Credentials exist in the child's memory and are readable via /proc/<pid>/environ
-# by same-user processes. For stronger isolation, use an MCP server that supports
-# the native /proxy integration (check VAULT_PROXY_URL at runtime).
+# SECURITY NOTES:
+#
+#   1. /proc/<pid>/environ exposure: --launch injects credentials into the
+#      child process via fork/exec. On Linux, /proc/<pid>/environ is readable
+#      by any same-user process. vault-proxy emits a warning on every --launch
+#      invocation reminding operators of this risk. For stronger isolation, use
+#      an MCP server that supports the native /proxy integration instead.
+#
+#   2. Shell-interpreter denylist: the `command` field must NOT use a shell
+#      interpreter (bash, sh, zsh, python, node, etc.) as the executable.
+#      vault-proxy refuses to launch these to prevent arbitrary command execution
+#      with vault credentials in scope. Use a purpose-built binary or wrapper
+#      instead of `command = "/bin/bash -c <script>"`.
+#
+#   3. Sensitive env vars: setting LD_PRELOAD, LD_LIBRARY_PATH, or similar
+#      dynamic-linker control variables via the [[mcp_server.env]] block will
+#      trigger a startup warning — these can cause shared-library injection.
+#
+#   4. Env var name rules: var names must match [A-Za-z_][A-Za-z0-9_]*. Names
+#      containing '=', null bytes, or other special characters are rejected.
 
 # ── UniFi Network MCP (sirkirby/unifi-mcp) ──────────────────────────────────
 [[mcp_server]]

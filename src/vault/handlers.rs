@@ -397,7 +397,7 @@ pub struct MoveItemRequest {
 /// `GET /vault/health` — liveness + summary.
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     let items = state.vault.list_items().await;
-    let services = state.registry.list();
+    let services = state.registry.read().await.list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
     let cloud_sync_status = match &state.cloud_sync {
         Some(sync) => {
@@ -432,7 +432,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 /// `GET /vault/services` — list registered services with names and auth types,
-/// but WITHOUT vault item names or credential details.
+/// but WITHOUT vault item names, credential details, or internal service URLs.
 ///
 /// # Purpose (iter-26)
 ///
@@ -441,30 +441,35 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// directly. This endpoint supports debugging "why is my /proxy call returning
 /// 404?" by confirming whether the service name is registered at all.
 ///
-/// # Security
+/// # Security (iter-28 update)
 ///
-/// - Service `name` and `base_url` are returned (the base URL is already in
-///   services.toml which the caller can read, so this is not a secret).
-/// - Auth type is returned (bearer, header, query_param, basic, session,
-///   unifi_dual) so the developer knows what credential shape the service uses.
+/// - Service `name` is returned. Auth type is returned (bearer, header,
+///   query_param, basic, session, unifi_dual) so the developer knows what
+///   credential shape the service uses.
+/// - `base_url` is intentionally OMITTED (iter-28). Internal service URLs
+///   (`http://homeassistant.local:8123`, `https://unifi.local/proxy/network`)
+///   are sensitive network-topology information. An unauthenticated caller
+///   enumerating this open endpoint would learn exactly what internal services
+///   exist and where they live — enough to craft targeted attacks against those
+///   services independently of vault-proxy. The base URL is already known to
+///   the operator who wrote services.toml; it is not needed for "is my service
+///   registered?" debugging.
 /// - `vault_item` (the Vaultwarden item name) is intentionally OMITTED — it
-///   reveals vault credential naming conventions and is not needed for debugging
-///   service registration issues. The header_name / param_name are included
-///   because they are required to understand the auth wiring.
-/// - `login_path` is intentionally OMITTED for session / unifi_dual auth. An
-///   attacker enumerating this open endpoint could combine a known login_path
-///   with the exposed base_url to craft a targeted credential-stuffing or
-///   SSRF probe without the bearer token. Token field name and
-///   login_include_username are retained because they don't aid path enumeration.
+///   reveals vault credential naming conventions.
+/// - `login_path` is intentionally OMITTED for session / unifi_dual auth.
+///   Combined with `base_url` it would enable targeted credential-stuffing or
+///   SSRF probes.
+/// - `header_name` / `param_name` are retained because they describe the
+///   auth wiring and do not enable topology discovery.
 /// - This endpoint is on the open router (no bearer token required) because
-///   service names and auth types are not secrets — they are visible in
-///   services.toml and the startup logs. Equivalent security posture to
-///   `GET /vault/health`.
+///   service names and auth types are not secrets — they appear in startup
+///   logs. Equivalent security posture to `GET /vault/health`.
 pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
     use crate::proxy::registry::AuthPattern;
 
-    let services: Vec<Value> = state.registry.list().iter().map(|name| {
-        if let Some(entry) = state.registry.get(name) {
+    let reg = state.registry.read().await;
+    let services: Vec<Value> = reg.list().iter().map(|name| {
+        if let Some(entry) = reg.get(name) {
             let auth_type = match &entry.auth {
                 AuthPattern::Bearer { .. }    => "bearer",
                 AuthPattern::Header { .. }    => "header",
@@ -473,8 +478,11 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
                 AuthPattern::Session { .. }   => "session",
                 AuthPattern::UnifiDual { .. } => "unifi_dual",
             };
-            // Include header_name / param_name — needed to understand wiring.
+            // Include header_name / param_name — needed to understand auth wiring.
             // Do NOT include vault_item — exposes credential naming conventions.
+            // Do NOT include base_url — leaks internal network topology (iter-28).
+            // Do NOT include login_path — combined with base_url enables
+            //   credential-stuffing / SSRF probes (iter-27).
             let auth_detail: Value = match &entry.auth {
                 AuthPattern::Header { header_name, .. } => json!({ "header_name": header_name }),
                 AuthPattern::QueryParam { param_name, .. } => json!({ "param_name": param_name }),
@@ -491,7 +499,7 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
             };
             json!({
                 "name": entry.name,
-                "base_url": entry.base_url,
+                // base_url intentionally omitted — leaks internal topology (iter-28).
                 "auth": auth_type,
                 "auth_detail": auth_detail,
                 "insecure_tls": entry.insecure_tls,

@@ -167,32 +167,73 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
 
-    // Issue (iter-27): --check validates services.toml without a live Vaultwarden
-    // connection. Useful for CI, pre-deploy hooks, and debugging configuration
-    // errors. Exits 0 if all services parse and pass SSRF rules; exits 1 otherwise.
+    // Issue (iter-27/28): --check validates services.toml without a live
+    // Vaultwarden connection. Useful for CI, pre-deploy hooks, and Docker
+    // HEALTHCHECK CMD scripts.
+    //
+    // Exit codes (iter-28 clarification):
+    //   0 — services.toml parsed cleanly (zero or more valid services loaded).
+    //         A zero-service result is NOT an error — it is the first-run state
+    //         where the operator has not yet populated services.toml. The output
+    //         message tells them what to do next.
+    //   1 — services.toml exists but contains a TOML parse error or every
+    //         service entry was rejected by validation (all skipped). This is
+    //         an actionable error that must be fixed before deploying.
+    //   2 — services.toml does not exist and this is not a first-run scenario
+    //         (i.e. --config-dir was provided but the file is missing). In
+    //         practice, `from_toml_file` returns an empty registry with a
+    //         tracing::warn for NotFound; we treat that as exit 0 (first-run).
+    //
+    // The tracing output from from_toml_file is the authoritative per-service
+    // diagnostic. We emit a human-readable summary line on stdout for CI
+    // pipelines that capture stdout but not stderr/tracing.
+    //
+    // Interaction with other flags (iter-28):
+    //   --check --launch <name>: --check runs and exits before --launch is
+    //     evaluated. The two flags do NOT interact.
+    //   --check --setup: same — --check short-circuits before --setup.
+    //   --check is fully independent of all other flags.
     if args.check {
         let services_path = std::path::Path::new(&config_dir).join("services.toml");
+        // Detect missing file before calling from_toml_file so we can emit a
+        // clear first-run message and exit 0 (not an error).
+        let file_missing = !services_path.exists();
         let registry = proxy::registry::ServiceRegistry::from_toml_file(&services_path);
         let count = registry.list().len();
-        if count == 0 {
+
+        if file_missing {
+            // First-run: no services.toml yet. Not an error — give operator
+            // the actionable next step.
             eprintln!(
-                "vault-proxy --check: services.toml at {:?} is empty or missing. \
-                 No services registered.",
+                "vault-proxy --check: services.toml not found at {:?}. \
+                 This is normal on first run. \
+                 Copy services.example.toml to {:?} and add [[service]] blocks.",
+                services_path, services_path
+            );
+            std::process::exit(0);
+        }
+
+        if count == 0 {
+            // File exists but loaded zero services — either it is empty or
+            // every entry was rejected by validation (SSRF, missing fields, etc).
+            // The tracing output from from_toml_file contains the per-entry
+            // errors. Exit 1 so CI pipelines detect the misconfiguration.
+            eprintln!(
+                "vault-proxy --check: FAIL — 0 services loaded from {:?}. \
+                 Either the file is empty, every [[service]] block was rejected \
+                 (check the log output above for per-entry errors), or the file \
+                 failed to parse. Fix the TOML errors before deploying.",
                 services_path
             );
-        } else {
-            println!(
-                "vault-proxy --check: OK — {} service(s) registered from {:?}: {:?}",
-                count,
-                services_path,
-                registry.list()
-            );
+            std::process::exit(1);
         }
-        // ServiceRegistry::from_toml_file logs warnings/errors for every
-        // validation failure via tracing. A non-zero exit would mask those
-        // messages in piped contexts, so we exit 0 when services loaded (even
-        // if count is 0 — that is a first-run state, not a parse error).
-        // The tracing output from from_toml_file is the authoritative signal.
+
+        println!(
+            "vault-proxy --check: OK — {} service(s) registered from {:?}: {:?}",
+            count,
+            services_path,
+            registry.list()
+        );
         std::process::exit(0);
     }
 
@@ -689,8 +730,8 @@ async fn start_server(
     } else {
         tracing::info!(
             "registered {} services from {:?}: {:?} \
-             (services.toml is read once at startup — restart required to pick up changes; \
-             POST /vault/resync reloads credentials only)",
+             (services.toml is loaded at startup; send SIGHUP to reload without restart; \
+             POST /vault/resync reloads vault credentials only)",
             svc_count, services_path, registry.list()
         );
     }
@@ -962,10 +1003,10 @@ async fn start_server(
         _ => notify::Notifier::disabled(),
     });
 
-    // TODO 1 (iter-22): Load or generate the internal bearer token.
+    // Load or generate the internal bearer token (implemented in iter-22).
     //
     // All internal-only endpoints (/handshake, /vault/connecterr-secrets,
-    // /vault/connecterr-secrets/upsert, /rotate, /browser/*) are now gated by
+    // /vault/connecterr-secrets/upsert, /rotate, /browser/*) are gated by
     // `require_internal_token` middleware.  The token is a 32-byte random hex
     // string persisted to $CONFIG_DIR/internal-token with 0o600 permissions.
     //
@@ -986,10 +1027,10 @@ async fn start_server(
     // Assemble shared state.
     let state: Arc<AppState> = Arc::new(AppState {
         vault: vault_arc.clone(),
-        registry: Arc::new(registry),
+        registry: Arc::new(tokio::sync::RwLock::new(registry)),
         http,
         http_permissive,
-        ca_cert_clients: Arc::new(ca_cert_clients),
+        ca_cert_clients: Arc::new(tokio::sync::RwLock::new(ca_cert_clients)),
         unifi_sessions: Arc::new(crate::proxy::unifi_session::UnifiSessionCache::new()),
         session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         client_certs: Some(certs),
@@ -1505,15 +1546,12 @@ async fn start_server(
             );
         }
     }
-    // TODO 2 (iter-22): Per-connection HTTP/1 header-read timeout — Slowloris defence.
+    // Per-connection HTTP/1 header-read timeout — Slowloris defence (iter-22).
     //
-    // `axum::serve` uses `hyper_util::server::conn::auto::Builder` internally but
-    // intentionally does not expose HTTP/1 connection options — the axum 0.8
-    // source comments "Use hyper or hyper-util if you need configuration."
-    //
-    // We therefore switch the main API server from `axum::serve` to
-    // `axum_server::bind`, which wraps `hyper_util::server::conn::auto::Builder`
-    // and exposes `.http_builder()` — giving us access to the HTTP/1 builder:
+    // We use `axum_server::bind` (not `axum::serve`) because `axum::serve` does
+    // not expose HTTP/1 connection-level options. `axum_server::bind` wraps
+    // `hyper_util::server::conn::auto::Builder` and exposes `.http_builder()`,
+    // giving us access to the HTTP/1 builder:
     //   server.http_builder()
     //       .http1()
     //       .timer(TokioTimer::new())
@@ -1533,6 +1571,111 @@ async fn start_server(
     //
     // ConnectInfo<SocketAddr> is preserved: `into_make_service_with_connect_info`
     // is still used so the rate-limit middleware can key on client IP.
+    // Issue (iter-28): SIGHUP hot-reload of services.toml.
+    //
+    // Sending SIGHUP to a running vault-proxy reloads services.toml from disk
+    // without restarting the process. This allows operators to add, remove, or
+    // modify [[service]] entries while the proxy is live — useful for adding new
+    // services to a long-running container without incurring the full
+    // Vaultwarden reconnect + startup overhead.
+    //
+    // The reload steps are:
+    //   1. Re-read and parse services.toml with `ServiceRegistry::from_toml_file`.
+    //   2. Rebuild the per-service CA-cert client map (new services may have
+    //      ca_cert entries that need new reqwest::Clients).
+    //   3. Swap both into AppState under their respective write locks
+    //      (registry and ca_cert_clients).
+    //   4. Clear `cached_folder_id` so the next vault mutation re-resolves
+    //      the folder (in case services.toml was edited alongside a folder rename).
+    //
+    // In-flight requests continue using the old registry snapshot (they hold
+    // a cloned ServiceEntry from before the lock was acquired). New requests
+    // after the lock swap see the updated registry.
+    //
+    // The SIGHUP handler is only compiled on Unix; on non-Unix targets (Windows)
+    // the signal concept doesn't exist and this block is a no-op.
+    #[cfg(unix)]
+    {
+        let sighup_state = state.clone();
+        let sighup_config_dir = config_dir.to_string();
+        let sighup_proxy_timeout = args.proxy_timeout;
+        tokio::spawn(async move {
+            let mut sighup = match tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::hangup(),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("SIGHUP: failed to register signal handler: {} — hot-reload disabled", e);
+                    return;
+                }
+            };
+            loop {
+                sighup.recv().await;
+                tracing::info!("SIGHUP received — reloading services.toml");
+
+                let services_path = std::path::Path::new(&sighup_config_dir).join("services.toml");
+                let new_registry = proxy::registry::ServiceRegistry::from_toml_file(&services_path);
+                let svc_count = new_registry.list().len();
+
+                // Rebuild CA-cert clients for the new registry.
+                let mut new_ca_clients: std::collections::HashMap<String, reqwest::Client> =
+                    std::collections::HashMap::new();
+                for svc_name in new_registry.list() {
+                    if let Some(entry) = new_registry.get(svc_name) {
+                        if let Some(ref ca_path) = entry.ca_cert_path {
+                            match std::fs::read(ca_path)
+                                .ok()
+                                .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
+                            {
+                                Some(cert) => {
+                                    match reqwest::Client::builder()
+                                        .add_root_certificate(cert)
+                                        .timeout(std::time::Duration::from_secs(sighup_proxy_timeout))
+                                        .redirect(reqwest::redirect::Policy::none())
+                                        .build()
+                                    {
+                                        Ok(client) => {
+                                            tracing::info!(
+                                                "SIGHUP: service '{}': CA-cert client rebuilt from '{}'",
+                                                svc_name, ca_path
+                                            );
+                                            new_ca_clients.insert(svc_name.to_string(), client);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "SIGHUP: service '{}': CA-cert client rebuild failed: {} \
+                                                 — falling back to strict TLS",
+                                                svc_name, e
+                                            );
+                                        }
+                                    }
+                                }
+                                None => {
+                                    tracing::error!(
+                                        "SIGHUP: service '{}': ca_cert '{}' unreadable or unparseable \
+                                         — falling back to strict TLS",
+                                        svc_name, ca_path
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Atomically swap in the new registry and CA-cert clients.
+                *sighup_state.registry.write().await = new_registry;
+                *sighup_state.ca_cert_clients.write().await = new_ca_clients;
+                // Invalidate the folder-id cache so the next mutation re-resolves it.
+                *sighup_state.cached_folder_id.write().await = None;
+
+                tracing::info!(
+                    "SIGHUP: reload complete — {} service(s) now registered",
+                    svc_count
+                );
+            }
+        });
+    }
+
     let server_handle = axum_server::Handle::new();
     let shutdown_handle = server_handle.clone();
 
@@ -1721,12 +1864,12 @@ async fn browser_abort(
     AxumJson(serde_json::json!({"status": "aborted"}))
 }
 
-/// Bearer-token gate for internal-only endpoints.
+/// Bearer-token gate for internal-only endpoints (implemented iter-22).
 ///
-/// TODO 1/3 (iter-22): Any process on localhost can reach vault-proxy's
-/// `/handshake`, `/vault/connecterr-secrets*`, `/rotate`, and `/browser/*`
-/// endpoints — process isolation and the DNS-rebinding guard are the primary
-/// access controls, but a compromised container on the same host could abuse
+/// Any process on localhost can reach vault-proxy's `/handshake`,
+/// `/vault/connecterr-secrets*`, `/rotate`, and `/browser/*` endpoints —
+/// process isolation and the DNS-rebinding guard are the primary access
+/// controls, but a compromised container on the same host could abuse
 /// these endpoints.
 ///
 /// This middleware adds a shared-secret layer: callers must present

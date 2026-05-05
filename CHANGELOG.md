@@ -3,6 +3,63 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.5] — iteration-28 audit fixes
+
+### Security fixes (iteration 28)
+
+- **`GET /vault/services` exposed `base_url` on open router (iter-28)**:
+  The endpoint returned `base_url` for every registered service, leaking
+  internal network topology (`http://homeassistant.local:8123`,
+  `https://unifi.local/proxy/network`, etc.) to any unauthenticated caller
+  with localhost access. An attacker who can reach port 3201 (e.g. from a
+  compromised container on the same host) could enumerate all internal
+  services and their addresses without any credentials. `base_url` is now
+  omitted from the response. Service `name`, `auth` type, and wiring details
+  (`header_name`, `param_name`, `key_field`, `secret_field`) are retained for
+  debugging service registration — none of these enable topology discovery.
+
+### Features (iteration 28)
+
+- **SIGHUP hot-reload of `services.toml` (iter-28)**:
+  Sending `SIGHUP` to a running `vault-proxy` now reloads `services.toml`
+  from disk without restarting the process. The reload rebuilds the service
+  registry and all per-service CA-cert clients, then atomically swaps them
+  into `AppState` under write locks. In-flight requests complete against the
+  old registry; new requests after the swap see the updated services. The
+  folder-id cache (`cached_folder_id`) is cleared on reload so the next vault
+  mutation re-resolves the folder.
+  Implementation: `registry: Arc<RwLock<ServiceRegistry>>` and
+  `ca_cert_clients: Arc<RwLock<HashMap<...>>>` in `AppState`; SIGHUP handler
+  spawned in `start_server`.
+
+### Bug fixes (iteration 28)
+
+- **`--check` exit code: exit 1 on zero services loaded (iter-28)**:
+  Previously `vault-proxy --check` always exited 0, even when `services.toml`
+  existed but every entry was rejected by validation (parse error, SSRF
+  block, missing required fields). A CI pipeline using `vault-proxy --check`
+  as a gate could not distinguish "config is good, zero services" (first-run)
+  from "config is broken, all entries rejected". Exit codes now:
+  `0` = file missing (first-run hint emitted) or file parsed with ≥1 valid
+  service; `1` = file exists but loaded zero services (parse error or all
+  entries rejected).
+
+### Documentation (iteration 28)
+
+- **`mcp-servers.example.toml` documents shell-interpreter denylist and
+  `/proc/<pid>/environ` warning (iter-28)**: The example file now includes an
+  explicit security note about the `--launch` shell-interpreter denylist
+  (refusing bash, sh, python, node, etc. as `command` targets), the runtime
+  `/proc/<pid>/environ` exposure warning emitted on every launch, and the
+  sensitive-env-var warning for LD_PRELOAD etc.
+
+- **`services.example.toml` `ca_cert` path labeled as placeholder (iter-28)**:
+  The commented-out `ca_cert = "/config/internal-ca.pem"` example now clearly
+  states it must be changed to match the deployment (Docker Compose vs.
+  bare-metal paths differ) and will cause a startup error if used verbatim.
+
+- **`Cargo.toml` bumped to `0.1.5` (iter-28)**: Captures all iter-28 fixes.
+
 ## [0.1.4] — iteration-27 audit fixes
 
 ### Security fixes (iteration 27)
