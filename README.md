@@ -108,7 +108,7 @@ The `vault_item` string in `services.toml` is just a reference — credentials n
 ```yaml
 services:
   mcp-vault-proxy:
-    image: ghcr.io/ajarratt/mcp-vault-proxy:latest
+    image: ghcr.io/aaronckj/mcp-vault-proxy:latest
     restart: unless-stopped
     network_mode: host
     volumes:
