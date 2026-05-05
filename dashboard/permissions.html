@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Permissions</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .perm-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+        .perm-table th,
+        .perm-table td { padding: .5rem .75rem; text-align: left; border-bottom: 1px solid var(--border, #2a2a3a); }
+        .perm-table th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
+        .perm-table td { font-size: .875rem; }
+        .module-header { background: var(--surface, #1a1a2e); font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; }
+        .module-header td { padding: .75rem; color: var(--accent, #60a5fa); border-bottom: 2px solid var(--accent, #60a5fa); }
+        select.perm-select {
+            background: var(--surface, #1e1e2e);
+            color: inherit;
+            border: 1px solid var(--border, #333);
+            border-radius: 4px;
+            padding: .3rem .5rem;
+            font-size: .85rem;
+        }
+        .badge-default { display: inline-block; padding: .1rem .4rem; border-radius: 4px; font-size: .7rem; opacity: .6; }
+        .btn-bar { display: flex; gap: .75rem; margin-bottom: 1.5rem; }
+        .btn { padding: .5rem 1.25rem; border: none; border-radius: 6px; cursor: pointer; font-size: .85rem; font-weight: 600; }
+        .btn-primary { background: var(--accent, #3b82f6); color: #fff; }
+        .btn-primary:hover { opacity: .85; }
+        .btn-secondary { background: var(--surface, #1e1e2e); color: inherit; border: 1px solid var(--border, #333); }
+        .btn-secondary:hover { opacity: .85; }
+        .status-msg { margin-left: 1rem; font-size: .85rem; }
+        .status-msg.ok { color: #4ade80; }
+        .status-msg.err { color: #e94560; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions" class="active">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Tool Permissions</h1>
+        <p style="color:var(--text-muted, #a6adc8); margin-bottom:1.5rem;">
+            Control which MCP tools can execute freely, require confirmation, or are blocked entirely.
+        </p>
+
+        <div class="btn-bar">
+            <button class="btn btn-primary" id="save-btn">Save</button>
+            <button class="btn btn-secondary" id="reset-btn">Reset to Defaults</button>
+            <span class="status-msg" id="status-msg"></span>
+        </div>
+
+        <table class="perm-table">
+            <thead>
+                <tr>
+                    <th>Tool</th>
+                    <th>Permission</th>
+                    <th>Category Default</th>
+                </tr>
+            </thead>
+            <tbody id="perm-body">
+                <tr><td colspan="3" style="color:var(--text-muted)">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (function() {
+        var permData = null;
+
+        function getModule(toolName) {
+            var idx = toolName.indexOf('__');
+            return idx > 0 ? toolName.substring(0, idx) : 'other';
+        }
+
+        function renderTable(data) {
+            permData = data;
+            var tbody = document.getElementById('perm-body');
+            while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+            // Group tools by module
+            var groups = {};
+            var tools = data.tools || [];
+            for (var i = 0; i < tools.length; i++) {
+                var t = tools[i];
+                var mod = getModule(t.name);
+                if (!groups[mod]) groups[mod] = [];
+                groups[mod].push(t);
+            }
+
+            var moduleNames = Object.keys(groups).sort();
+            for (var m = 0; m < moduleNames.length; m++) {
+                var modName = moduleNames[m];
+                var headerRow = document.createElement('tr');
+                headerRow.className = 'module-header';
+                var headerCell = document.createElement('td');
+                headerCell.setAttribute('colspan', '3');
+                headerCell.textContent = modName;
+                headerRow.appendChild(headerCell);
+                tbody.appendChild(headerRow);
+
+                var modTools = groups[modName];
+                for (var j = 0; j < modTools.length; j++) {
+                    var tool = modTools[j];
+                    var row = document.createElement('tr');
+
+                    var nameCell = document.createElement('td');
+                    nameCell.textContent = tool.name;
+                    row.appendChild(nameCell);
+
+                    var permCell = document.createElement('td');
+                    var sel = document.createElement('select');
+                    sel.className = 'perm-select';
+                    sel.setAttribute('data-tool', tool.name);
+                    var options = ['allow', 'ask', 'block', 'log'];
+                    for (var k = 0; k < options.length; k++) {
+                        var opt = document.createElement('option');
+                        opt.value = options[k];
+                        opt.textContent = options[k].charAt(0).toUpperCase() + options[k].slice(1);
+                        if (options[k] === tool.permission) opt.selected = true;
+                        sel.appendChild(opt);
+                    }
+                    permCell.appendChild(sel);
+                    row.appendChild(permCell);
+
+                    var defaultCell = document.createElement('td');
+                    var badge = document.createElement('span');
+                    badge.className = 'badge-default';
+                    badge.textContent = tool.default_permission;
+                    defaultCell.appendChild(badge);
+                    row.appendChild(defaultCell);
+
+                    tbody.appendChild(row);
+                }
+            }
+        }
+
+        function showStatus(msg, ok) {
+            var el = document.getElementById('status-msg');
+            el.textContent = msg;
+            el.className = 'status-msg ' + (ok ? 'ok' : 'err');
+            setTimeout(function() { el.textContent = ''; }, 3000);
+        }
+
+        document.getElementById('save-btn').addEventListener('click', function() {
+            var selects = document.querySelectorAll('.perm-select');
+            var overrides = {};
+            for (var i = 0; i < selects.length; i++) {
+                var s = selects[i];
+                var toolName = s.getAttribute('data-tool');
+                var val = s.value;
+                // Only save overrides that differ from the default
+                var tool = null;
+                for (var j = 0; j < permData.tools.length; j++) {
+                    if (permData.tools[j].name === toolName) {
+                        tool = permData.tools[j];
+                        break;
+                    }
+                }
+                if (tool && val !== tool.default_permission) {
+                    overrides[toolName] = val;
+                }
+            }
+            fetch('/api/permissions', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({overrides: overrides})
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.ok) showStatus('Saved', true);
+                else showStatus('Error: ' + (d.error || 'unknown'), false);
+            })
+            .catch(function(e) { showStatus('Error: ' + e, false); });
+        });
+
+        document.getElementById('reset-btn').addEventListener('click', function() {
+            fetch('/api/permissions', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({overrides: {}})
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.ok) {
+                    showStatus('Reset to defaults', true);
+                    loadPerms();
+                }
+                else showStatus('Error: ' + (d.error || 'unknown'), false);
+            })
+            .catch(function(e) { showStatus('Error: ' + e, false); });
+        });
+
+        function loadPerms() {
+            api('/api/permissions').then(renderTable).catch(function() {});
+        }
+
+        loadPerms();
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Items</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items" class="active">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Vault Items</h1>
+
+        <div class="search-bar">
+            <input type="search" id="search" placeholder="Search items...">
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Username</th>
+                    <th>Password</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="items-body">
+                <tr><td colspan="5" style="color:var(--text-muted)">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    async function rotateItem(name) {
+        await fetch('/api/browser/rotate', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({item_name: name})
+        });
+        window.location = '/rotation';
+    }
+
+    (async function() {
+        var allItems = [];
+        var tbody = document.getElementById("items-body");
+
+        function clearElement(el) {
+            while (el.firstChild) { el.removeChild(el.firstChild); }
+        }
+
+        function renderItems(items) {
+            clearElement(tbody);
+            if (items.length === 0) {
+                var row = document.createElement("tr");
+                var cell = document.createElement("td");
+                cell.setAttribute("colspan", "5");
+                cell.style.color = "var(--text-muted)";
+                cell.textContent = "No items found.";
+                row.appendChild(cell);
+                tbody.appendChild(row);
+                return;
+            }
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                var tr = createRow([
+                    item.name,
+                    item.itemType || item.item_type || "",
+                    item.username || "",
+                    item.password || "********"
+                ]);
+                // Add Rotate button cell
+                var actionCell = document.createElement("td");
+                var rotateBtn = document.createElement("button");
+                rotateBtn.textContent = "Rotate";
+                rotateBtn.style.padding = "5px 14px";
+                rotateBtn.style.fontSize = "0.82rem";
+                (function(name) {
+                    rotateBtn.addEventListener("click", function() { rotateItem(name); });
+                })(item.name);
+                actionCell.appendChild(rotateBtn);
+                tr.appendChild(actionCell);
+                tbody.appendChild(tr);
+            }
+        }
+
+        try {
+            allItems = await api("/api/items");
+            renderItems(allItems);
+        } catch(e) { /* redirect handled by api() */ }
+
+        document.getElementById("search").addEventListener("input", function() {
+            var q = this.value.toLowerCase();
+            if (!q) {
+                renderItems(allItems);
+                return;
+            }
+            var filtered = allItems.filter(function(item) {
+                var name = (item.name || "").toLowerCase();
+                var user = (item.username || "").toLowerCase();
+                var type = (item.itemType || item.item_type || "").toLowerCase();
+                return name.indexOf(q) !== -1 || user.indexOf(q) !== -1 || type.indexOf(q) !== -1;
+            });
+            renderItems(filtered);
+        });
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Settings</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings" class="active">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Settings</h1>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- First-Time Setup Wizard                                              -->
+        <!-- ------------------------------------------------------------------ -->
+        <div id="setup-wizard" style="display:none;margin-bottom:32px;padding:24px;border:2px solid var(--warn, #ffa726);border-radius:12px;background:var(--card-bg, #1e1e1e)">
+            <h2 style="margin-top:0;color:var(--warn, #ffa726)">First-Time Setup</h2>
+            <p style="color:var(--text-muted);margin-bottom:20px">
+                No sealed credentials found. Enter your vault credentials below to get started.
+                Credentials are validated before being sealed to the TPM.
+            </p>
+
+            <!-- Vaultwarden Setup -->
+            <div id="setup-vw-section" style="margin-bottom:28px;padding:20px;border:1px solid var(--border, #333);border-radius:8px">
+                <h3 style="margin-top:0;display:flex;align-items:center;gap:8px">
+                    <span id="setup-vw-icon" style="font-size:1.2rem">&#9675;</span>
+                    Vaultwarden (Local Vault)
+                </h3>
+                <form id="setup-vw-form" style="max-width:480px">
+                    <div style="margin-bottom:14px">
+                        <label for="setup-vw-url" style="display:block;margin-bottom:6px;font-size:0.9rem">Vaultwarden URL</label>
+                        <input id="setup-vw-url" type="url" value="https://10.0.0.112:8343" placeholder="https://10.0.0.112:8343" style="width:100%;box-sizing:border-box">
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label for="setup-vw-email" style="display:block;margin-bottom:6px;font-size:0.9rem">Email</label>
+                        <input id="setup-vw-email" type="email" placeholder="you@example.com" style="width:100%;box-sizing:border-box">
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label for="setup-vw-password" style="display:block;margin-bottom:6px;font-size:0.9rem">Master Password</label>
+                        <input id="setup-vw-password" type="password" placeholder="master password" style="width:100%;box-sizing:border-box">
+                    </div>
+                    <button type="submit" id="setup-vw-btn">Connect</button>
+                    <span id="setup-vw-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+                </form>
+            </div>
+
+            <!-- Cloud Setup -->
+            <div id="setup-cloud-section" style="padding:20px;border:1px solid var(--border, #333);border-radius:8px">
+                <h3 style="margin-top:0;display:flex;align-items:center;gap:8px">
+                    <span id="setup-cloud-icon" style="font-size:1.2rem">&#9675;</span>
+                    Bitwarden Cloud Sync (Optional)
+                </h3>
+                <form id="setup-cloud-form" style="max-width:480px">
+                    <div style="margin-bottom:14px">
+                        <label for="setup-cloud-email" style="display:block;margin-bottom:6px;font-size:0.9rem">Email</label>
+                        <input id="setup-cloud-email" type="email" placeholder="you@example.com" style="width:100%;box-sizing:border-box">
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label for="setup-cloud-password" style="display:block;margin-bottom:6px;font-size:0.9rem">Master Password</label>
+                        <input id="setup-cloud-password" type="password" placeholder="cloud master password" style="width:100%;box-sizing:border-box">
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label for="setup-cloud-totp" style="display:block;margin-bottom:6px;font-size:0.9rem">TOTP Code <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
+                        <input id="setup-cloud-totp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" style="width:100%;box-sizing:border-box">
+                        <small style="display:block;margin-top:4px;color:var(--text-muted)">Required if 2FA is enabled on your account</small>
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label for="setup-cloud-kdf" style="display:block;margin-bottom:6px;font-size:0.9rem">KDF Iterations</label>
+                        <input id="setup-cloud-kdf" type="number" min="1" value="1567439" style="width:100%;box-sizing:border-box">
+                        <small style="display:block;margin-top:4px;color:var(--text-muted)">Only change if you know your account uses different iterations</small>
+                    </div>
+                    <button type="submit" id="setup-cloud-btn">Connect</button>
+                    <span id="setup-cloud-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+                </form>
+            </div>
+        </div>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Credential Management                                                -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2>Credentials</h2>
+        <div id="creds-section">
+            <div class="cards">
+                <div class="card">
+                    <div class="label">Vaultwarden URL</div>
+                    <div class="value" id="creds-vw-url" style="font-size:1rem">--</div>
+                </div>
+                <div class="card">
+                    <div class="label">Vaultwarden Email</div>
+                    <div class="value" id="creds-vw-email" style="font-size:1rem">--</div>
+                </div>
+                <div class="card">
+                    <div class="label">Bitwarden Cloud</div>
+                    <div class="value" id="creds-cloud-status" style="font-size:1rem">--</div>
+                </div>
+            </div>
+
+            <div class="setup-pw-bar">
+                <div class="field">
+                    <label>Setup Password <span style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:0.85em">— required to modify credentials</span></label>
+                    <input type="password" id="creds-setup-pw" placeholder="Your Connecterr setup password">
+                </div>
+            </div>
+
+            <div class="cred-block">
+                <h3>Vaultwarden Master Password</h3>
+                <p>Update the password stored in the keystore. This does not change it on Vaultwarden.</p>
+                <div class="field">
+                    <label>Master Password</label>
+                    <input type="password" id="vw-new-pw" placeholder="Your current Vaultwarden master password">
+                </div>
+                <button id="vw-update-btn">Save</button>
+                <span id="vw-update-msg" class="msg"></span>
+            </div>
+
+            <div class="cred-block">
+                <h3>Bitwarden Cloud Sync</h3>
+                <p>Connect using your Bitwarden API key (recommended) or email + password. Generate an API key at vault.bitwarden.com > Settings > Security > Keys.</p>
+                <div class="field">
+                    <label>Bitwarden Email</label>
+                    <input type="email" id="cloud-email" placeholder="you@example.com">
+                </div>
+                <div class="field">
+                    <label>Bitwarden Master Password</label>
+                    <input type="password" id="cloud-pw" placeholder="Your Bitwarden master password (needed for encryption)">
+                </div>
+                <hr>
+                <div class="field">
+                    <label>API Key — Client ID</label>
+                    <input type="text" id="cloud-client-id" placeholder="user.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+                </div>
+                <div class="field">
+                    <label>API Key — Client Secret</label>
+                    <input type="password" id="cloud-client-secret" placeholder="API client secret">
+                </div>
+                <div class="field">
+                    <label>KDF Iterations <span style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:0.85em">(check your Bitwarden security settings)</span></label>
+                    <input type="number" id="cloud-kdf" min="1" placeholder="e.g. 600000 or 1567439">
+                </div>
+                <button id="cloud-apikey-btn">Connect with API Key</button>
+                <button id="cloud-remove-btn" class="danger" style="margin-left:8px">Remove</button>
+                <span id="cloud-update-msg" class="msg"></span>
+            </div>
+        </div>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- TPM Status                                                           -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2>TPM Status</h2>
+        <div class="cards" style="margin-bottom:24px">
+            <div class="card">
+                <div class="label">TPM Available</div>
+                <div class="value" id="tpm-available">--</div>
+            </div>
+        </div>
+
+        <table id="sealed-table">
+            <thead>
+                <tr>
+                    <th>Credential</th>
+                    <th>Sealed File Present</th>
+                </tr>
+            </thead>
+            <tbody id="sealed-body">
+                <tr><td colspan="2" style="color:var(--text-muted)">Loading...</td></tr>
+            </tbody>
+        </table>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Cloud Setup                                                          -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2 style="margin-top:40px">Cloud Setup</h2>
+        <p style="color:var(--text-muted);margin-bottom:16px">
+            Provide credentials to enable cloud sync. These are forwarded to the
+            sidecar and sealed on disk.
+        </p>
+        <form id="cloud-form" style="max-width:480px">
+            <div style="margin-bottom:14px">
+                <label for="cloud-token" style="display:block;margin-bottom:6px;font-size:0.9rem">Refresh Token</label>
+                <input id="cloud-token" type="password" placeholder="refresh_token" style="width:100%;box-sizing:border-box">
+            </div>
+            <div style="margin-bottom:14px">
+                <label for="cloud-master" style="display:block;margin-bottom:6px;font-size:0.9rem">Master Password</label>
+                <input id="cloud-master" type="password" placeholder="master_password" style="width:100%;box-sizing:border-box">
+            </div>
+            <button type="submit" id="cloud-btn">Save Cloud Credentials</button>
+            <span id="cloud-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+        </form>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Change Cloud Master Password                                         -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2 style="margin-top:40px">Change Cloud Master Password</h2>
+        <p style="color:var(--text-muted);margin-bottom:16px">
+            Change your Bitwarden cloud master password. The vault's encryption
+            keys are re-wrapped with the new password and sent to the Bitwarden API.
+        </p>
+        <div id="cloud-pw-section" style="max-width:480px">
+            <div style="margin-bottom:14px">
+                <label style="display:block;margin-bottom:8px">
+                    <input type="radio" name="pw-mode" value="custom" checked id="pw-mode-custom">
+                    Enter my own password
+                </label>
+                <label style="display:block">
+                    <input type="radio" name="pw-mode" value="generate" id="pw-mode-generate">
+                    Generate a strong password
+                </label>
+            </div>
+
+            <div id="pw-custom-fields">
+                <div style="margin-bottom:14px">
+                    <label for="cloud-pw-new" style="display:block;margin-bottom:6px;font-size:0.9rem">New Master Password</label>
+                    <input id="cloud-pw-new" type="password" placeholder="min 12 characters" style="width:100%;box-sizing:border-box">
+                </div>
+                <div style="margin-bottom:14px">
+                    <label for="cloud-pw-confirm" style="display:block;margin-bottom:6px;font-size:0.9rem">Confirm New Password</label>
+                    <input id="cloud-pw-confirm" type="password" placeholder="confirm password" style="width:100%;box-sizing:border-box">
+                </div>
+            </div>
+
+            <div id="pw-generate-fields" style="display:none">
+                <div style="margin-bottom:14px">
+                    <label for="cloud-pw-length" style="display:block;margin-bottom:6px;font-size:0.9rem">Password Length</label>
+                    <input id="cloud-pw-length" type="number" value="32" min="16" max="128" style="width:80px">
+                </div>
+            </div>
+
+            <button type="button" id="cloud-pw-btn">Change Master Password</button>
+            <span id="cloud-pw-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+
+            <div id="cloud-pw-result" style="display:none;margin-top:20px;padding:16px;border:2px solid var(--ok, #4caf50);border-radius:8px;background:var(--card-bg, #1e1e1e)">
+                <p style="margin:0 0 8px;font-weight:600;color:var(--ok, #4caf50)">Password changed successfully!</p>
+                <p style="margin:0 0 12px;color:var(--err, #e57373);font-weight:600">Write this down — it will not be shown again.</p>
+                <div style="display:flex;align-items:center;gap:8px">
+                    <code id="cloud-pw-display" style="flex:1;padding:10px;background:#111;border-radius:4px;font-size:1rem;word-break:break-all;user-select:all"></code>
+                    <button type="button" id="cloud-pw-copy" style="white-space:nowrap">Copy</button>
+                </div>
+                <button type="button" id="cloud-pw-dismiss" style="margin-top:12px;width:100%">I have saved this password</button>
+            </div>
+        </div>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Notifications                                                         -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2 style="margin-top:40px">Notifications</h2>
+        <p style="color:var(--text-muted);margin-bottom:16px">
+            Configure how you receive push notifications for 2FA approvals,
+            password rotations, and alerts.
+        </p>
+        <div id="notify-section" style="max-width:480px">
+            <div style="margin-bottom:14px">
+                <label style="display:block;margin-bottom:8px">
+                    <input type="radio" name="notify-mode" value="disabled" id="notify-disabled" checked>
+                    Disabled
+                </label>
+                <label style="display:block;margin-bottom:8px">
+                    <input type="radio" name="notify-mode" value="ntfy" id="notify-ntfy">
+                    ntfy.sh
+                </label>
+                <label style="display:block">
+                    <input type="radio" name="notify-mode" value="email" id="notify-email">
+                    Email (via Gmail queue)
+                </label>
+            </div>
+
+            <div id="notify-ntfy-fields" style="display:none;margin-bottom:14px">
+                <label for="notify-ntfy-url" style="display:block;margin-bottom:6px;font-size:0.9rem">ntfy Topic URL</label>
+                <input id="notify-ntfy-url" type="url" placeholder="https://ntfy.sh/connecterr-alerts" style="width:100%;box-sizing:border-box" readonly>
+                <small style="display:block;margin-top:4px;color:var(--text-muted)">Set via NTFY_URL env var or --ntfy-url flag</small>
+            </div>
+
+            <div id="notify-email-fields" style="display:none;margin-bottom:14px">
+                <label for="notify-email-addr" style="display:block;margin-bottom:6px;font-size:0.9rem">Email Address</label>
+                <input id="notify-email-addr" type="email" placeholder="you@example.com" style="width:100%;box-sizing:border-box" readonly>
+                <small style="display:block;margin-top:4px;color:var(--text-muted)">Set via NOTIFY_EMAIL env var or --notify-email flag. Emails are queued for Connecterr to send via Gmail.</small>
+            </div>
+
+            <button type="button" id="notify-test-btn">Send Test Notification</button>
+            <span id="notify-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+        </div>
+
+        <!-- ------------------------------------------------------------------ -->
+        <!-- Dashboard Password                                                   -->
+        <!-- ------------------------------------------------------------------ -->
+        <h2 style="margin-top:40px">Dashboard Password</h2>
+        <p style="color:var(--text-muted);margin-bottom:16px">
+            Change the password used to log in to this dashboard.
+        </p>
+        <form id="pw-form" style="max-width:480px">
+            <div style="margin-bottom:14px">
+                <label for="pw-current" style="display:block;margin-bottom:6px;font-size:0.9rem">Current Password</label>
+                <input id="pw-current" type="password" placeholder="current password" style="width:100%;box-sizing:border-box">
+            </div>
+            <div style="margin-bottom:14px">
+                <label for="pw-new" style="display:block;margin-bottom:6px;font-size:0.9rem">New Password</label>
+                <input id="pw-new" type="password" placeholder="new password (min 8 chars)" style="width:100%;box-sizing:border-box">
+            </div>
+            <button type="submit" id="pw-btn">Change Password</button>
+            <span id="pw-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+        </form>
+    </div>
+
+    <div class="danger-zone">
+        <h3>Reset Keystore</h3>
+        <p>Erase all stored credentials and run setup again. Your Vaultwarden account is not affected.</p>
+        <button id="reconfigure-btn" class="danger">Reset &amp; Reconfigure</button>
+        <div class="error" id="reconfigure-error"></div>
+        <div id="reconfigure-info" style="display:none" class="msg ok"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (async function() {
+        var tpmEl    = document.getElementById("tpm-available");
+        var sealBody = document.getElementById("sealed-body");
+
+        function clearElement(el) {
+            while (el.firstChild) { el.removeChild(el.firstChild); }
+        }
+
+        // ------------------------------------------------------------------ //
+        // First-Time Setup Wizard                                              //
+        // ------------------------------------------------------------------ //
+
+        var setupWizard = document.getElementById("setup-wizard");
+        var setupVwIcon = document.getElementById("setup-vw-icon");
+        var setupCloudIcon = document.getElementById("setup-cloud-icon");
+
+        async function checkSetupStatus() {
+            try {
+                var resp = await fetch("/api/settings/setup-status", { credentials: "same-origin" });
+                if (resp.status === 401 || resp.status === 303) return;
+                var data = await resp.json();
+
+                if (data.vaultwarden_configured) {
+                    setupVwIcon.textContent = "\u2713";
+                    setupVwIcon.style.color = "var(--ok, #4caf50)";
+                    var form = document.getElementById("setup-vw-form");
+                    clearElement(form);
+                    var msg = document.createElement("p");
+                    msg.style.color = "var(--ok, #4caf50)";
+                    msg.style.fontWeight = "600";
+                    msg.textContent = "Configured";
+                    form.appendChild(msg);
+                }
+
+                if (data.cloud_configured) {
+                    setupCloudIcon.textContent = "\u2713";
+                    setupCloudIcon.style.color = "var(--ok, #4caf50)";
+                    var form = document.getElementById("setup-cloud-form");
+                    clearElement(form);
+                    var msg = document.createElement("p");
+                    msg.style.color = "var(--ok, #4caf50)";
+                    msg.style.fontWeight = "600";
+                    msg.textContent = "Configured";
+                    form.appendChild(msg);
+                }
+
+                // Show wizard if anything needs setup, or if either is unconfigured
+                if (data.needs_setup || !data.cloud_configured) {
+                    setupWizard.style.display = "";
+                }
+
+                // If everything is configured, still show it briefly as confirmation
+                if (data.vaultwarden_configured && data.cloud_configured) {
+                    setupWizard.style.display = "";
+                    setupWizard.style.borderColor = "var(--ok, #4caf50)";
+                    var heading = setupWizard.querySelector("h2");
+                    if (heading) {
+                        heading.textContent = "Setup Complete";
+                        heading.style.color = "var(--ok, #4caf50)";
+                    }
+                    var desc = setupWizard.querySelector("p");
+                    if (desc) {
+                        desc.textContent = "All vault credentials are sealed and ready.";
+                    }
+                }
+            } catch(e) {
+                // Silently ignore — setup status is optional
+            }
+        }
+
+        // Vaultwarden setup form
+        var setupVwForm = document.getElementById("setup-vw-form");
+        var setupVwBtn = document.getElementById("setup-vw-btn");
+        var setupVwMsg = document.getElementById("setup-vw-msg");
+
+        if (setupVwForm && setupVwBtn) {
+            setupVwForm.addEventListener("submit", async function(ev) {
+                ev.preventDefault();
+                var url = document.getElementById("setup-vw-url").value.trim();
+                var email = document.getElementById("setup-vw-email").value.trim();
+                var password = document.getElementById("setup-vw-password").value;
+
+                if (!url || !email || !password) {
+                    setupVwMsg.textContent = "All fields are required.";
+                    setupVwMsg.style.color = "var(--err, #e57373)";
+                    return;
+                }
+
+                setupVwBtn.disabled = true;
+                setupVwMsg.textContent = "Validating credentials...";
+                setupVwMsg.style.color = "var(--text-muted)";
+
+                try {
+                    var resp = await fetch("/api/settings/setup-vaultwarden", {
+                        method: "POST",
+                        credentials: "same-origin",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ url: url, email: email, master_password: password })
+                    });
+                    if (resp.status === 401 || resp.status === 303) {
+                        window.location.href = "/login";
+                        return;
+                    }
+                    var body = await resp.json();
+                    if (body.ok) {
+                        setupVwMsg.textContent = String(body.message || "Success!");
+                        setupVwMsg.style.color = "var(--ok, #4caf50)";
+                        setupVwIcon.textContent = "\u2713";
+                        setupVwIcon.style.color = "var(--ok, #4caf50)";
+                        // Clear password field
+                        document.getElementById("setup-vw-password").value = "";
+                        // Refresh TPM status
+                        setTimeout(loadTpm, 1000);
+                    } else {
+                        setupVwMsg.textContent = "Error: " + String(body.error || "unknown error");
+                        setupVwMsg.style.color = "var(--err, #e57373)";
+                    }
+                } catch(e) {
+                    setupVwMsg.textContent = "Request failed: " + String(e);
+                    setupVwMsg.style.color = "var(--err, #e57373)";
+                }
+                setupVwBtn.disabled = false;
+            });
+        }
+
+        // Cloud setup form
+        var setupCloudForm = document.getElementById("setup-cloud-form");
+        var setupCloudBtn = document.getElementById("setup-cloud-btn");
+        var setupCloudMsg = document.getElementById("setup-cloud-msg");
+
+        if (setupCloudForm && setupCloudBtn) {
+            setupCloudForm.addEventListener("submit", async function(ev) {
+                ev.preventDefault();
+                var email = document.getElementById("setup-cloud-email").value.trim();
+                var password = document.getElementById("setup-cloud-password").value;
+                var totp = document.getElementById("setup-cloud-totp").value.trim();
+                var kdfRaw = document.getElementById("setup-cloud-kdf").value;
+
+                if (!email || !password) {
+                    setupCloudMsg.textContent = "Email and master password are required.";
+                    setupCloudMsg.style.color = "var(--err, #e57373)";
+                    return;
+                }
+
+                setupCloudBtn.disabled = true;
+                setupCloudMsg.textContent = "Validating credentials...";
+                setupCloudMsg.style.color = "var(--text-muted)";
+
+                try {
+                    var payload = { email: email, master_password: password };
+                    if (totp) payload.totp_code = totp;
+                    if (kdfRaw) payload.kdf_iterations = parseInt(kdfRaw, 10);
+
+                    var resp = await fetch("/api/settings/setup-cloud", {
+                        method: "POST",
+                        credentials: "same-origin",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    var body = await resp.json();
+                    if (body.needs_2fa) {
+                        setupCloudMsg.textContent = "2FA required \u2014 enter your TOTP code and try again";
+                        setupCloudMsg.style.color = "#e76f51";
+                        document.getElementById("setup-cloud-totp").focus();
+                    } else if (body.ok) {
+                        setupCloudMsg.textContent = String(body.message || "Success!");
+                        setupCloudMsg.style.color = "var(--ok, #4caf50)";
+                        setupCloudIcon.textContent = "\u2713";
+                        setupCloudIcon.style.color = "var(--ok, #4caf50)";
+                        // Clear sensitive fields
+                        document.getElementById("setup-cloud-password").value = "";
+                        document.getElementById("setup-cloud-totp").value = "";
+                        // Refresh TPM status
+                        setTimeout(loadTpm, 1000);
+                    } else {
+                        setupCloudMsg.textContent = "Error: " + String(body.error || "unknown error");
+                        setupCloudMsg.style.color = "var(--err, #e57373)";
+                    }
+                } catch(e) {
+                    setupCloudMsg.textContent = "Request failed: " + String(e);
+                    setupCloudMsg.style.color = "var(--err, #e57373)";
+                }
+                setupCloudBtn.disabled = false;
+            });
+        }
+
+        // ------------------------------------------------------------------ //
+        // TPM Status                                                           //
+        // ------------------------------------------------------------------ //
+
+        async function loadTpm() {
+            try {
+                var data = await api("/api/settings/tpm");
+
+                tpmEl.textContent = data.tpm_available ? "Yes" : "No";
+                tpmEl.className = "value";
+                tpmEl.classList.add(data.tpm_available ? "ok" : "err");
+
+                clearElement(sealBody);
+                var creds = data.sealed_credentials || [];
+                if (creds.length === 0) {
+                    var row = document.createElement("tr");
+                    var cell = document.createElement("td");
+                    cell.setAttribute("colspan", "2");
+                    cell.style.color = "var(--text-muted)";
+                    cell.textContent = "No sealed credentials found.";
+                    row.appendChild(cell);
+                    sealBody.appendChild(row);
+                    return;
+                }
+                for (var i = 0; i < creds.length; i++) {
+                    var c = creds[i];
+                    var row = document.createElement("tr");
+
+                    var nameCell = document.createElement("td");
+                    nameCell.textContent = String(c.name);
+
+                    var statusCell = document.createElement("td");
+                    if (c.exists) {
+                        var tick = document.createElement("span");
+                        tick.textContent = "Yes";
+                        tick.style.color = "var(--ok, #4caf50)";
+                        tick.style.fontWeight = "600";
+                        statusCell.appendChild(tick);
+                    } else {
+                        var cross = document.createElement("span");
+                        cross.textContent = "No";
+                        cross.style.color = "var(--err, #e57373)";
+                        cross.style.fontWeight = "600";
+                        statusCell.appendChild(cross);
+                    }
+
+                    row.appendChild(nameCell);
+                    row.appendChild(statusCell);
+                    sealBody.appendChild(row);
+                }
+            } catch(e) {
+                /* redirect handled by api() */
+            }
+        }
+
+        // ------------------------------------------------------------------ //
+        // Cloud Setup                                                          //
+        // ------------------------------------------------------------------ //
+
+        var cloudForm = document.getElementById("cloud-form");
+        var cloudBtn  = document.getElementById("cloud-btn");
+        var cloudMsg  = document.getElementById("cloud-msg");
+
+        cloudForm.addEventListener("submit", async function(ev) {
+            ev.preventDefault();
+            var token  = document.getElementById("cloud-token").value.trim();
+            var master = document.getElementById("cloud-master").value;
+            if (!token || !master) {
+                cloudMsg.textContent = "Both fields are required.";
+                cloudMsg.style.color = "var(--err, #e57373)";
+                return;
+            }
+            cloudBtn.disabled = true;
+            cloudMsg.textContent = "Saving...";
+            cloudMsg.style.color = "var(--text-muted)";
+            try {
+                var resp = await fetch("/api/settings/cloud", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ refresh_token: token, master_password: master })
+                });
+                if (resp.status === 401 || resp.status === 303) {
+                    window.location.href = "/login";
+                    return;
+                }
+                var body = await resp.json();
+                if (body.error) {
+                    cloudMsg.textContent = "Error: " + String(body.error);
+                    cloudMsg.style.color = "var(--err, #e57373)";
+                } else {
+                    cloudMsg.textContent = "Saved. Reloading TPM status...";
+                    cloudMsg.style.color = "var(--ok, #4caf50)";
+                    document.getElementById("cloud-token").value = "";
+                    document.getElementById("cloud-master").value = "";
+                    setTimeout(loadTpm, 1500);
+                }
+            } catch(e) {
+                cloudMsg.textContent = "Request failed: " + String(e);
+                cloudMsg.style.color = "var(--err, #e57373)";
+            }
+            cloudBtn.disabled = false;
+        });
+
+        // ------------------------------------------------------------------ //
+        // Dashboard Password                                                   //
+        // ------------------------------------------------------------------ //
+
+        var pwForm = document.getElementById("pw-form");
+        var pwBtn  = document.getElementById("pw-btn");
+        var pwMsg  = document.getElementById("pw-msg");
+
+        pwForm.addEventListener("submit", async function(ev) {
+            ev.preventDefault();
+            var current = document.getElementById("pw-current").value;
+            var next    = document.getElementById("pw-new").value;
+            if (!current || !next) {
+                pwMsg.textContent = "Both fields are required.";
+                pwMsg.style.color = "var(--err, #e57373)";
+                return;
+            }
+            if (next.length < 8) {
+                pwMsg.textContent = "New password must be at least 8 characters.";
+                pwMsg.style.color = "var(--err, #e57373)";
+                return;
+            }
+            pwBtn.disabled = true;
+            pwMsg.textContent = "Updating...";
+            pwMsg.style.color = "var(--text-muted)";
+            try {
+                // Verify current password first by attempting login, then set new one.
+                // The /setup endpoint sets the password (overwrites if already set via
+                // the session store's set_password path — guarded by login below).
+                var loginResp = await fetch("/login", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: current })
+                });
+                if (loginResp.status === 401) {
+                    pwMsg.textContent = "Current password is incorrect.";
+                    pwMsg.style.color = "var(--err, #e57373)";
+                    pwBtn.disabled = false;
+                    return;
+                }
+                if (!loginResp.ok) {
+                    pwMsg.textContent = "Login check failed (" + String(loginResp.status) + ").";
+                    pwMsg.style.color = "var(--err, #e57373)";
+                    pwBtn.disabled = false;
+                    return;
+                }
+                // Current password verified — now set the new one.
+                var setResp = await fetch("/setup", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: next })
+                });
+                var setBody = await setResp.json().catch(function() { return {}; });
+                if (setResp.ok && setBody.ok) {
+                    pwMsg.textContent = "Password updated successfully.";
+                    pwMsg.style.color = "var(--ok, #4caf50)";
+                    document.getElementById("pw-current").value = "";
+                    document.getElementById("pw-new").value = "";
+                } else {
+                    pwMsg.textContent = "Failed: " + String(setBody.error || setResp.status);
+                    pwMsg.style.color = "var(--err, #e57373)";
+                }
+            } catch(e) {
+                pwMsg.textContent = "Request failed: " + String(e);
+                pwMsg.style.color = "var(--err, #e57373)";
+            }
+            pwBtn.disabled = false;
+        });
+
+        // ------------------------------------------------------------------ //
+        // Cloud Master Password Change                                        //
+        // ------------------------------------------------------------------ //
+
+        var modeCustom    = document.getElementById("pw-mode-custom");
+        var modeGenerate  = document.getElementById("pw-mode-generate");
+        var customFields  = document.getElementById("pw-custom-fields");
+        var genFields     = document.getElementById("pw-generate-fields");
+        var cloudPwBtn    = document.getElementById("cloud-pw-btn");
+        var cloudPwMsg    = document.getElementById("cloud-pw-msg");
+        var cloudPwResult = document.getElementById("cloud-pw-result");
+        var cloudPwDisplay = document.getElementById("cloud-pw-display");
+        var cloudPwCopy   = document.getElementById("cloud-pw-copy");
+        var cloudPwDismiss = document.getElementById("cloud-pw-dismiss");
+
+        function updateModeVisibility() {
+            if (modeCustom.checked) {
+                customFields.style.display = "";
+                genFields.style.display = "none";
+            } else {
+                customFields.style.display = "none";
+                genFields.style.display = "";
+            }
+        }
+        modeCustom.addEventListener("change", updateModeVisibility);
+        modeGenerate.addEventListener("change", updateModeVisibility);
+
+        cloudPwBtn.addEventListener("click", async function() {
+            cloudPwMsg.textContent = "";
+            cloudPwResult.style.display = "none";
+            var mode = modeGenerate.checked ? "generate" : "custom";
+            var body = { mode: mode };
+
+            if (mode === "custom") {
+                var pw1 = document.getElementById("cloud-pw-new").value;
+                var pw2 = document.getElementById("cloud-pw-confirm").value;
+                if (!pw1 || !pw2) {
+                    cloudPwMsg.textContent = "Both password fields are required.";
+                    cloudPwMsg.style.color = "var(--err, #e57373)";
+                    return;
+                }
+                if (pw1 !== pw2) {
+                    cloudPwMsg.textContent = "Passwords do not match.";
+                    cloudPwMsg.style.color = "var(--err, #e57373)";
+                    return;
+                }
+                if (pw1.length < 12) {
+                    cloudPwMsg.textContent = "Password must be at least 12 characters.";
+                    cloudPwMsg.style.color = "var(--err, #e57373)";
+                    return;
+                }
+                body.new_password = pw1;
+            } else {
+                var len = parseInt(document.getElementById("cloud-pw-length").value, 10);
+                if (isNaN(len) || len < 16) len = 32;
+                body.length = len;
+            }
+
+            cloudPwBtn.disabled = true;
+            cloudPwMsg.textContent = "Changing password...";
+            cloudPwMsg.style.color = "var(--text-muted)";
+
+            try {
+                var resp = await fetch("/api/settings/change-password", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body)
+                });
+                if (resp.status === 401 || resp.status === 303) {
+                    window.location.href = "/login";
+                    return;
+                }
+                var result = await resp.json();
+                if (!result.ok) {
+                    cloudPwMsg.textContent = "Error: " + String(result.error || "unknown error");
+                    cloudPwMsg.style.color = "var(--err, #e57373)";
+                } else {
+                    cloudPwMsg.textContent = "";
+                    if (result.new_password) {
+                        // Generated mode: show the password
+                        cloudPwDisplay.textContent = String(result.new_password);
+                        cloudPwResult.style.display = "";
+                    } else {
+                        cloudPwMsg.textContent = "Password changed successfully.";
+                        cloudPwMsg.style.color = "var(--ok, #4caf50)";
+                    }
+                    // Clear input fields
+                    document.getElementById("cloud-pw-new").value = "";
+                    document.getElementById("cloud-pw-confirm").value = "";
+                }
+            } catch(e) {
+                cloudPwMsg.textContent = "Request failed: " + String(e);
+                cloudPwMsg.style.color = "var(--err, #e57373)";
+            }
+            cloudPwBtn.disabled = false;
+        });
+
+        cloudPwCopy.addEventListener("click", function() {
+            var pw = cloudPwDisplay.textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(pw).then(function() {
+                    cloudPwCopy.textContent = "Copied!";
+                    setTimeout(function() { cloudPwCopy.textContent = "Copy"; }, 2000);
+                });
+            } else {
+                // Fallback: select the text
+                var range = document.createRange();
+                range.selectNodeContents(cloudPwDisplay);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        });
+
+        cloudPwDismiss.addEventListener("click", function() {
+            cloudPwDisplay.textContent = "";
+            cloudPwResult.style.display = "none";
+        });
+
+        // ------------------------------------------------------------------ //
+        // Notifications                                                       //
+        // ------------------------------------------------------------------ //
+
+        var notifyDisabled = document.getElementById("notify-disabled");
+        var notifyNtfy     = document.getElementById("notify-ntfy");
+        var notifyEmail    = document.getElementById("notify-email");
+        var ntfyFields     = document.getElementById("notify-ntfy-fields");
+        var emailFields    = document.getElementById("notify-email-fields");
+        var notifyTestBtn  = document.getElementById("notify-test-btn");
+        var notifyMsg      = document.getElementById("notify-msg");
+
+        function updateNotifyVisibility() {
+            ntfyFields.style.display  = notifyNtfy.checked  ? "" : "none";
+            emailFields.style.display = notifyEmail.checked ? "" : "none";
+        }
+        notifyDisabled.addEventListener("change", updateNotifyVisibility);
+        notifyNtfy.addEventListener("change", updateNotifyVisibility);
+        notifyEmail.addEventListener("change", updateNotifyVisibility);
+
+        async function loadNotifyStatus() {
+            try {
+                var data = await api("/api/settings/notifications");
+                var ch = data.channel || "disabled";
+                if (ch === "ntfy") {
+                    notifyNtfy.checked = true;
+                    document.getElementById("notify-ntfy-url").value = String(data.detail || "");
+                } else if (ch === "email") {
+                    notifyEmail.checked = true;
+                    document.getElementById("notify-email-addr").value = String(data.detail || "");
+                } else {
+                    notifyDisabled.checked = true;
+                }
+                updateNotifyVisibility();
+            } catch(e) {
+                /* ignore */
+            }
+        }
+
+        notifyTestBtn.addEventListener("click", async function() {
+            notifyTestBtn.disabled = true;
+            notifyMsg.textContent = "Sending...";
+            notifyMsg.style.color = "var(--text-muted)";
+            try {
+                var resp = await fetch("/api/settings/notifications/test", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: "{}"
+                });
+                if (resp.status === 401 || resp.status === 303) {
+                    window.location.href = "/login";
+                    return;
+                }
+                var body = await resp.json();
+                if (body.ok) {
+                    notifyMsg.textContent = "Test sent via " + String(body.channel) + ".";
+                    notifyMsg.style.color = "var(--ok, #4caf50)";
+                } else {
+                    notifyMsg.textContent = "Error: " + String(body.error || "unknown");
+                    notifyMsg.style.color = "var(--err, #e57373)";
+                }
+            } catch(e) {
+                notifyMsg.textContent = "Request failed: " + String(e);
+                notifyMsg.style.color = "var(--err, #e57373)";
+            }
+            notifyTestBtn.disabled = false;
+        });
+
+        // ------------------------------------------------------------------ //
+        // Credentials                                                        //
+        // ------------------------------------------------------------------ //
+        async function loadCredentials() {
+            try {
+                var resp = await fetch("/api/credentials");
+                if (resp.status === 401) return; // not logged in
+                var data = await resp.json();
+                if (data.configured && !data.locked) {
+                    document.getElementById("creds-vw-url").textContent = data.vaultwarden.url;
+                    document.getElementById("creds-vw-email").textContent = data.vaultwarden.email;
+                    document.getElementById("creds-cloud-status").textContent =
+                        data.cloud ? data.cloud.email : "Not configured";
+                    if (data.cloud) {
+                        document.getElementById("cloud-email").value = data.cloud.email;
+                    }
+                } else if (data.configured) {
+                    // Locked (no TPM) — we know creds exist but can't read them without setup password
+                    document.getElementById("creds-vw-url").textContent = "Configured (use forms below to update)";
+                    document.getElementById("creds-vw-email").textContent = "Configured";
+                    document.getElementById("creds-cloud-status").textContent = "Enter setup password to update";
+                } else {
+                    document.getElementById("creds-vw-url").textContent = "Not configured";
+                    document.getElementById("creds-vw-email").textContent = "--";
+                    document.getElementById("creds-cloud-status").textContent = "--";
+                }
+            } catch(e) { /* ignore */ }
+        }
+
+        function getSetupPw() {
+            var pw = document.getElementById("creds-setup-pw").value;
+            if (!pw) return null;
+            return pw;
+        }
+
+        document.getElementById("vw-update-btn").addEventListener("click", async function() {
+            var msg = document.getElementById("vw-update-msg");
+            msg.textContent = "";
+            msg.style.color = "";
+            var setupPw = getSetupPw();
+            var newPw = document.getElementById("vw-new-pw").value;
+            if (!setupPw) { msg.textContent = "Enter setup password above"; msg.style.color = "var(--err, #e57373)"; return; }
+            if (!newPw) { msg.textContent = "Enter master password"; msg.style.color = "var(--err, #e57373)"; return; }
+            try {
+                var resp = await fetch("/api/credentials/vaultwarden", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ current_setup_password: setupPw, new_master_password: newPw }),
+                });
+                var data = await resp.json();
+                msg.textContent = data.ok ? data.message : data.error;
+                msg.style.color = data.ok ? "var(--ok, #4caf50)" : "var(--err, #e57373)";
+                if (data.ok) document.getElementById("vw-new-pw").value = "";
+            } catch(e) { msg.textContent = "Request failed"; msg.style.color = "var(--err, #e57373)"; }
+        });
+
+        document.getElementById("cloud-apikey-btn").addEventListener("click", async function() {
+            var msg = document.getElementById("cloud-update-msg");
+            msg.textContent = "";
+            msg.style.color = "";
+            var email = document.getElementById("cloud-email").value.trim();
+            var pw = document.getElementById("cloud-pw").value;
+            var clientId = document.getElementById("cloud-client-id").value.trim();
+            var clientSecret = document.getElementById("cloud-client-secret").value.trim();
+            if (!email || !pw || !clientId || !clientSecret) {
+                msg.textContent = "All fields required";
+                msg.style.color = "var(--err, #e57373)";
+                return;
+            }
+
+            this.disabled = true;
+            this.textContent = "Connecting...";
+            msg.textContent = "Authenticating with Bitwarden API key...";
+            msg.style.color = "var(--text-muted)";
+
+            try {
+                var kdf = document.getElementById("cloud-kdf").value;
+                var setupPw = getSetupPw();
+                var payload = { email: email, master_password: pw, client_id: clientId, client_secret: clientSecret };
+                if (kdf) { payload.kdf_iterations = parseInt(kdf, 10); }
+                if (setupPw) { payload.setup_password = setupPw; }
+                var resp = await fetch("/api/credentials/cloud/apikey", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                var data = await resp.json();
+                if (data.ok) {
+                    msg.textContent = data.message || "Connected!";
+                    msg.style.color = "var(--green, #34d399)";
+                    document.getElementById("cloud-pw").value = "";
+                    document.getElementById("cloud-client-secret").value = "";
+                    loadCredentials();
+                } else {
+                    msg.textContent = data.error || "Authentication failed";
+                    msg.style.color = "var(--err, #e57373)";
+                }
+            } catch(e) { msg.textContent = "Request failed"; msg.style.color = "var(--err, #e57373)"; }
+
+            this.disabled = false;
+            this.textContent = "Connect with API Key";
+        });
+
+        document.getElementById("cloud-remove-btn").addEventListener("click", async function() {
+            if (!confirm("Remove Bitwarden cloud credentials?")) return;
+            var msg = document.getElementById("cloud-update-msg");
+            msg.textContent = "";
+            var setupPw = getSetupPw();
+            if (!setupPw) { msg.textContent = "Enter setup password above"; msg.style.color = "var(--err, #e57373)"; return; }
+            try {
+                var resp = await fetch("/api/credentials/cloud/remove", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: setupPw }),
+                });
+                var data = await resp.json();
+                msg.textContent = data.ok ? data.message : data.error;
+                msg.style.color = data.ok ? "var(--ok, #4caf50)" : "var(--err, #e57373)";
+                if (data.ok) loadCredentials();
+            } catch(e) { msg.textContent = "Request failed"; msg.style.color = "var(--err, #e57373)"; }
+        });
+
+        // Initial load
+        checkSetupStatus();
+        loadTpm();
+        loadNotifyStatus();
+        loadCredentials();
+
+        // Reconfigure credentials
+        document.getElementById("reconfigure-btn").addEventListener("click", async function() {
+            if (!confirm("This will erase local credentials. You will need to set up again. Continue?")) return;
+
+            var errEl = document.getElementById("reconfigure-error");
+            var infoEl = document.getElementById("reconfigure-info");
+            errEl.textContent = "";
+
+            try {
+                var resp = await fetch("/api/setup/reset", { method: "POST" });
+                var data = await resp.json();
+                if (data.ok) {
+                    infoEl.textContent = "Keystore reset. Redirecting to setup...";
+                    infoEl.style.display = "block";
+                    setTimeout(function() { window.location.href = "/setup"; }, 2000);
+                } else {
+                    errEl.textContent = data.error || "Reset failed";
+                }
+            } catch(e) {
+                errEl.textContent = "Network error";
+            }
+        });
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Overview</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/" class="active">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Overview</h1>
+
+        <div class="cards">
+            <div class="card">
+                <div class="label">Vault Items</div>
+                <div class="value" id="vault-count">--</div>
+            </div>
+            <div class="card">
+                <div class="label">Cloud Sync</div>
+                <div class="value" id="sync-state">--</div>
+            </div>
+            <div class="card">
+                <div class="label">Registered Services</div>
+                <div class="value" id="service-count">--</div>
+            </div>
+        </div>
+
+        <h2>Recent Activity</h2>
+        <div class="card">
+            <p style="color:var(--text-muted)">Activity log coming soon.</p>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (async function() {
+        try {
+            const data = await api("/api/status");
+
+            const countEl = document.getElementById("vault-count");
+            countEl.textContent = String(data.vault_items);
+
+            const syncEl = document.getElementById("sync-state");
+            var syncState = data.cloud_sync ? data.cloud_sync.state : "unknown";
+            syncEl.textContent = syncState;
+            if (syncState === "idle") syncEl.classList.add("ok");
+            else if (syncState === "syncing") syncEl.classList.add("warn");
+            else if (syncState === "error") syncEl.classList.add("err");
+
+            var svcEl = document.getElementById("service-count");
+            svcEl.textContent = String(data.services ? data.services.length : 0);
+        } catch(e) {
+            /* redirect handled by api() */
+        }
+    })();
+    </script>
+</body>
+</html>

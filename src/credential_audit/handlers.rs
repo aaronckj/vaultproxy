@@ -1,0 +1,54 @@
+use crate::credential_audit::orchestrator::{ApplyOutcome, Orchestrator};
+use crate::credential_audit::types::ItemResult;
+use crate::credential_audit::vw_adapter::VwAdapter;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use serde::Deserialize;
+use std::sync::Arc;
+
+pub type SharedOrch = Arc<Orchestrator<VwAdapter>>;
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyBody {
+    pub run_id: String,
+    #[serde(default = "default_dry_run")]
+    pub dry_run: bool,
+    pub item_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub confirm_bulk: bool,
+}
+
+fn default_dry_run() -> bool {
+    true
+}
+
+pub async fn scan_start(
+    State(orch): State<SharedOrch>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    match orch.start_scan().await {
+        Ok(run_id) => Ok(Json(serde_json::json!({"run_id": run_id}))),
+        Err(_) => Err(StatusCode::CONFLICT),
+    }
+}
+
+pub async fn review_pending(
+    State(orch): State<SharedOrch>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Vec<ItemResult>>, StatusCode> {
+    orch.list_pending(&run_id)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub async fn apply(
+    State(orch): State<SharedOrch>,
+    Json(body): Json<ApplyBody>,
+) -> Result<Json<ApplyOutcome>, StatusCode> {
+    orch.apply(&body.run_id, body.item_ids, body.dry_run, body.confirm_bulk)
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::BAD_REQUEST)
+}

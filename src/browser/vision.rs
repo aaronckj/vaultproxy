@@ -1,0 +1,190 @@
+//! LiteLLM (OpenAI-compatible) vision model integration — screenshot
+//! analysis for browser navigation. Targets the MLbox local stack
+//! (Qwen3-VL-32B by default) so credentials/screenshots never leave
+//! the homelab network.
+
+use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action")]
+pub enum VisionAction {
+    #[serde(rename = "click")]
+    Click { selector: String, reason: Option<String> },
+    #[serde(rename = "fill")]
+    Fill { field: String, credential: String, selector: String },
+    #[serde(rename = "wait")]
+    Wait { condition: String },
+    #[serde(rename = "done")]
+    Done { success: bool, reason: Option<String> },
+    #[serde(rename = "need_2fa")]
+    Need2FA { r#type: String, reason: Option<String> },
+    #[serde(rename = "stuck")]
+    Stuck { reason: String },
+}
+
+pub struct VisionModel {
+    litellm_url: String,
+    api_key: String,
+    model_name: String,
+    http: reqwest::Client,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatMessage {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+
+impl VisionModel {
+    pub fn new(litellm_url: &str, api_key: &str, model_name: &str) -> Self {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("failed to build LiteLLM HTTP client");
+        Self {
+            litellm_url: litellm_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            model_name: model_name.to_string(),
+            http,
+        }
+    }
+
+    pub async fn analyze(&self, screenshot_b64: &str, task: &str, step: &str) -> Result<VisionAction> {
+        let prompt = format!(
+"Look at this screenshot of a web page. You are helping automate a task.\n\
+\n\
+Task: {task}\n\
+Step: {step}\n\
+\n\
+Reply with exactly ONE JSON object on a single line. Pick the BEST next action:\n\
+\n\
+{{\"action\":\"click\",\"selector\":\".css-selector\",\"reason\":\"why\"}}\n\
+{{\"action\":\"fill\",\"field\":\"username\",\"credential\":\"current_password\",\"selector\":\".css-selector\"}}\n\
+{{\"action\":\"done\",\"success\":true,\"reason\":\"why\"}}\n\
+{{\"action\":\"need_2fa\",\"type\":\"totp\",\"reason\":\"2FA prompt shown\"}}\n\
+{{\"action\":\"stuck\",\"reason\":\"cannot find expected element\"}}\n\
+\n\
+Rules:\n\
+- Return EXACTLY ONE JSON object, nothing else\n\
+- No markdown, no code blocks, no explanation\n\
+- Use CSS selectors like .class, input[type=password], button[type=submit]\n\
+- For credentials use ONLY \"current_password\" or \"new_password\" as values\n\
+- If the page has no login form, respond: {{\"action\":\"stuck\",\"reason\":\"no login form found\"}}"
+        );
+
+        let body = serde_json::json!({
+            "model": self.model_name,
+            "max_tokens": 256,
+            "stream": false,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {
+                        "url": format!("data:image/png;base64,{}", screenshot_b64)
+                    }}
+                ]
+            }]
+        });
+
+        let mut req = self
+            .http
+            .post(format!("{}/v1/chat/completions", self.litellm_url))
+            .json(&body);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .context("Failed to send request to LiteLLM")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("LiteLLM returned {status}: {body}"));
+        }
+
+        let parsed: ChatResponse = resp
+            .json()
+            .await
+            .context("Failed to parse LiteLLM response")?;
+
+        let raw = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .ok_or_else(|| anyhow!("LiteLLM response had no choices"))?;
+        let raw = raw.trim();
+
+        // Strip <think>...</think> reasoning blocks emitted by thinking
+        // models (e.g. Qwen3-VL when reasoning is enabled).
+        let raw = strip_think_blocks(raw);
+        let raw = raw.trim();
+
+        // Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+        let json_str = if let Some(inner) = raw
+            .strip_prefix("```json")
+            .or_else(|| raw.strip_prefix("```"))
+        {
+            inner.trim_end_matches("```").trim()
+        } else {
+            raw
+        };
+
+        if let Ok(action) = serde_json::from_str::<VisionAction>(json_str) {
+            return Ok(action);
+        }
+
+        for line in json_str.lines() {
+            let line = line.trim().trim_matches(',');
+            if line.starts_with('{') {
+                if let Ok(action) = serde_json::from_str::<VisionAction>(line) {
+                    return Ok(action);
+                }
+            }
+        }
+
+        if let Some(start) = json_str.find('{') {
+            if let Some(end) = json_str[start..].find('}') {
+                let candidate = &json_str[start..=start + end];
+                if let Ok(action) = serde_json::from_str::<VisionAction>(candidate) {
+                    return Ok(action);
+                }
+            }
+        }
+
+        Ok(VisionAction::Stuck {
+            reason: raw.to_string(),
+        })
+    }
+}
+
+fn strip_think_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        if let Some(end) = rest[start..].find("</think>") {
+            rest = &rest[start + end + "</think>".len()..];
+        } else {
+            // Unterminated <think> — drop everything from there on.
+            return out;
+        }
+    }
+    out.push_str(rest);
+    out
+}

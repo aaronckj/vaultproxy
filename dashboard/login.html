@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connecterr — Login</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="login-wrap">
+        <div class="login-box">
+            <h1>Connecterr</h1>
+            <p class="subtitle">Dashboard login</p>
+
+            <div id="login-form">
+                <div class="field">
+                    <input type="password" id="password" placeholder="Setup password" autofocus>
+                </div>
+                <button id="login-btn" style="width:100%">Log in</button>
+                <div class="error" id="error"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (async function() {
+        // Check setup status — redirect to setup or unlock if needed
+        try {
+            var resp = await fetch("/api/setup/status");
+            var data = await resp.json();
+            if (!data.configured) {
+                window.location.href = "/setup";
+                return;
+            }
+        } catch(e) { /* proceed to login */ }
+
+        // Login handler
+        document.getElementById("login-btn").addEventListener("click", async function() {
+            var pw = document.getElementById("password").value;
+            var errEl = document.getElementById("error");
+            errEl.textContent = "";
+            try {
+                var resp = await fetch("/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: pw }),
+                });
+                var data = await resp.json();
+                if (data.ok) {
+                    window.location.href = "/";
+                } else {
+                    errEl.textContent = data.error || "Login failed";
+                }
+            } catch(e) {
+                errEl.textContent = "Network error";
+            }
+        });
+
+        document.getElementById("password").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") document.getElementById("login-btn").click();
+        });
+    })();
+    </script>
+</body>
+</html>

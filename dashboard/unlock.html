@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connecterr — Unlock</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="login-wrap">
+        <div class="login-box">
+            <h1>Connecterr</h1>
+            <p class="subtitle">Vault is locked. Enter your setup password to unlock.</p>
+
+            <div class="field">
+                <input type="password" id="password" placeholder="Setup password" autofocus>
+            </div>
+            <button id="unlock-btn" style="width:100%">Unlock</button>
+            <div class="error" id="error"></div>
+
+            <div style="margin-top:24px;text-align:center">
+                <a href="/reset" style="font-size:0.8rem;opacity:0.5">Lost your password? Reset &amp; reconfigure</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        var btn = document.getElementById("unlock-btn");
+        var errEl = document.getElementById("error");
+
+        btn.addEventListener("click", async function() {
+            errEl.textContent = "";
+            var pw = document.getElementById("password").value;
+            btn.disabled = true;
+            btn.textContent = "Unlocking...";
+
+            try {
+                var resp = await fetch("/api/setup/unlock", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: pw }),
+                });
+                var data = await resp.json();
+                if (data.ok) {
+                    window.location.href = "/";
+                } else {
+                    errEl.textContent = data.error || "Unlock failed";
+                    btn.disabled = false;
+                    btn.textContent = "Unlock";
+                }
+            } catch(e) {
+                errEl.textContent = "Network error";
+                btn.disabled = false;
+                btn.textContent = "Unlock";
+            }
+        });
+
+        document.getElementById("password").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") btn.click();
+        });
+    })();
+    </script>
+</body>
+</html>

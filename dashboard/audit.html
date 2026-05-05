@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Security Audit</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .summary-cards {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 2rem;
+        }
+        .summary-card {
+            flex: 1;
+            min-width: 150px;
+            background: var(--surface, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 8px;
+            padding: 1.2rem 1.5rem;
+            text-align: center;
+        }
+        .summary-card .card-value {
+            font-size: 2.2rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.3rem;
+        }
+        .summary-card .card-label {
+            font-size: 0.85rem;
+            color: var(--text-muted, #888);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .card-value.ok    { color: var(--green,  #a6e3a1); }
+        .card-value.warn  { color: var(--yellow, #f9e2af); }
+        .card-value.danger { color: var(--red,   #f38ba8); }
+
+        .section-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin: 2rem 0 0.8rem;
+            border-bottom: 1px solid var(--border, #333);
+            padding-bottom: 0.4rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15em 0.6em;
+            border-radius: 4px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .badge-weak   { background: var(--red,   #f38ba8); color: #1e1e2e; }
+        .badge-fair   { background: var(--yellow, #f9e2af); color: #1e1e2e; }
+        .badge-strong { background: var(--green,  #a6e3a1); color: #1e1e2e; }
+
+        .reuse-group {
+            background: var(--surface, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-left: 3px solid var(--yellow, #f9e2af);
+            border-radius: 6px;
+            padding: 0.8rem 1rem;
+            margin-bottom: 0.8rem;
+        }
+        .reuse-group .group-header {
+            font-size: 0.8rem;
+            color: var(--text-muted, #888);
+            margin-bottom: 0.5rem;
+        }
+        .reuse-group table {
+            width: 100%;
+            margin: 0;
+        }
+
+        .empty-note {
+            color: var(--text-muted, #888);
+            font-style: italic;
+            padding: 0.5rem 0;
+        }
+        .loading-note {
+            color: var(--text-muted, #888);
+        }
+        .run-btn {
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit" class="active">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Security Audit</h1>
+
+        <button class="run-btn" id="run-btn">Run Audit</button>
+
+        <!-- Summary cards -->
+        <div class="summary-cards" id="summary-cards" style="display:none">
+            <div class="summary-card">
+                <div class="card-value" id="total-value">—</div>
+                <div class="card-label">Total Items</div>
+            </div>
+            <div class="summary-card">
+                <div class="card-value" id="weak-value">—</div>
+                <div class="card-label">Weak Passwords</div>
+            </div>
+            <div class="summary-card">
+                <div class="card-value" id="reuse-value">—</div>
+                <div class="card-label">Reused Password Groups</div>
+            </div>
+        </div>
+
+        <!-- Weak passwords -->
+        <div id="weak-section" style="display:none">
+            <div class="section-title">Weak Passwords</div>
+            <div id="weak-body"></div>
+        </div>
+
+        <!-- Reused passwords -->
+        <div id="reuse-section" style="display:none">
+            <div class="section-title">Reused Passwords</div>
+            <div id="reuse-body"></div>
+        </div>
+
+        <p id="status-note" class="loading-note"></p>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (function() {
+        var runBtn      = document.getElementById("run-btn");
+        var summaryEl   = document.getElementById("summary-cards");
+        var totalVal    = document.getElementById("total-value");
+        var weakVal     = document.getElementById("weak-value");
+        var reuseVal    = document.getElementById("reuse-value");
+        var weakSection = document.getElementById("weak-section");
+        var weakBody    = document.getElementById("weak-body");
+        var reuseSection = document.getElementById("reuse-section");
+        var reuseBody   = document.getElementById("reuse-body");
+        var statusNote  = document.getElementById("status-note");
+
+        function clearEl(el) {
+            while (el.firstChild) { el.removeChild(el.firstChild); }
+        }
+
+        function badge(strength) {
+            var span = document.createElement("span");
+            span.className = "badge badge-" + strength;
+            span.textContent = strength;
+            return span;
+        }
+
+        function buildWeakTable(items) {
+            if (items.length === 0) {
+                var p = document.createElement("p");
+                p.className = "empty-note";
+                p.textContent = "No weak passwords detected.";
+                return p;
+            }
+            var tbl = document.createElement("table");
+            var thead = document.createElement("thead");
+            var hr = document.createElement("tr");
+            ["Name", "Username", "Type", "Strength"].forEach(function(h) {
+                var th = document.createElement("th");
+                th.textContent = h;
+                hr.appendChild(th);
+            });
+            thead.appendChild(hr);
+            tbl.appendChild(thead);
+
+            var tbody = document.createElement("tbody");
+            items.forEach(function(item) {
+                var tr = document.createElement("tr");
+
+                var tdName = document.createElement("td");
+                tdName.textContent = item.name || "";
+                tr.appendChild(tdName);
+
+                var tdUser = document.createElement("td");
+                tdUser.textContent = item.username || "";
+                tr.appendChild(tdUser);
+
+                var tdType = document.createElement("td");
+                tdType.textContent = item.item_type || "";
+                tr.appendChild(tdType);
+
+                var tdStrength = document.createElement("td");
+                tdStrength.appendChild(badge(item.password_strength || ""));
+                tr.appendChild(tdStrength);
+
+                tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            return tbl;
+        }
+
+        function buildReuseGroups(groups) {
+            if (groups.length === 0) {
+                var p = document.createElement("p");
+                p.className = "empty-note";
+                p.textContent = "No reused passwords detected.";
+                return [p];
+            }
+            return groups.map(function(group, idx) {
+                var card = document.createElement("div");
+                card.className = "reuse-group";
+
+                var hdr = document.createElement("div");
+                hdr.className = "group-header";
+                hdr.textContent = "Group " + (idx + 1) + " — " + group.length + " items share this password";
+                card.appendChild(hdr);
+
+                var tbl = document.createElement("table");
+                var thead = document.createElement("thead");
+                var hr = document.createElement("tr");
+                ["Name", "Username", "Type", "Strength"].forEach(function(h) {
+                    var th = document.createElement("th");
+                    th.textContent = h;
+                    hr.appendChild(th);
+                });
+                thead.appendChild(hr);
+                tbl.appendChild(thead);
+
+                var tbody = document.createElement("tbody");
+                group.forEach(function(item) {
+                    var tr = document.createElement("tr");
+
+                    var tdName = document.createElement("td");
+                    tdName.textContent = item.name || "";
+                    tr.appendChild(tdName);
+
+                    var tdUser = document.createElement("td");
+                    tdUser.textContent = item.username || "";
+                    tr.appendChild(tdUser);
+
+                    var tdType = document.createElement("td");
+                    tdType.textContent = item.item_type || "";
+                    tr.appendChild(tdType);
+
+                    var tdStrength = document.createElement("td");
+                    tdStrength.appendChild(badge(item.password_strength || ""));
+                    tr.appendChild(tdStrength);
+
+                    tbody.appendChild(tr);
+                });
+                tbl.appendChild(tbody);
+                card.appendChild(tbl);
+                return card;
+            });
+        }
+
+        function render(data) {
+            // Summary cards
+            totalVal.textContent = data.total_items;
+            totalVal.className = "card-value ok";
+
+            var weakCount = data.weak_passwords ? data.weak_passwords.length : 0;
+            weakVal.textContent = weakCount;
+            weakVal.className = "card-value " + (weakCount === 0 ? "ok" : "danger");
+
+            var reuseCount = data.reused_passwords ? data.reused_passwords.length : 0;
+            reuseVal.textContent = reuseCount;
+            reuseVal.className = "card-value " + (reuseCount === 0 ? "ok" : "warn");
+
+            summaryEl.style.display = "flex";
+
+            // Weak passwords section
+            clearEl(weakBody);
+            weakBody.appendChild(buildWeakTable(data.weak_passwords || []));
+            weakSection.style.display = "block";
+
+            // Reused passwords section
+            clearEl(reuseBody);
+            var reuseNodes = buildReuseGroups(data.reused_passwords || []);
+            reuseNodes.forEach(function(node) { reuseBody.appendChild(node); });
+            reuseSection.style.display = "block";
+
+            statusNote.textContent = "";
+        }
+
+        runBtn.addEventListener("click", async function() {
+            runBtn.disabled = true;
+            statusNote.textContent = "Running audit…";
+            summaryEl.style.display = "none";
+            weakSection.style.display = "none";
+            reuseSection.style.display = "none";
+
+            try {
+                var data = await api("/api/audit");
+                render(data);
+            } catch(e) {
+                statusNote.textContent = "Audit failed — see console.";
+            } finally {
+                runBtn.disabled = false;
+            }
+        });
+    })();
+    </script>
+</body>
+</html>

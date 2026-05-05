@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Sync</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync" class="active">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Cloud Sync</h1>
+
+        <div class="cards">
+            <div class="card">
+                <div class="label">State</div>
+                <div class="value" id="sync-state">--</div>
+            </div>
+            <div class="card">
+                <div class="label">Last Sync</div>
+                <div class="value" style="font-size:1.1rem;font-weight:400" id="sync-last">--</div>
+            </div>
+            <div class="card">
+                <div class="label">Items Synced</div>
+                <div class="value" id="sync-items">--</div>
+            </div>
+        </div>
+
+        <div style="margin-bottom:32px">
+            <button id="sync-btn" type="button">Sync Now</button>
+            <span id="sync-msg" style="margin-left:14px;font-size:0.9rem;color:var(--text-muted)"></span>
+        </div>
+
+        <h2>Errors</h2>
+        <table id="errors-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody id="errors-body">
+                <tr><td colspan="2" style="color:var(--text-muted)">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (async function() {
+        var stateEl   = document.getElementById("sync-state");
+        var lastEl    = document.getElementById("sync-last");
+        var itemsEl   = document.getElementById("sync-items");
+        var errBody   = document.getElementById("errors-body");
+        var syncBtn   = document.getElementById("sync-btn");
+        var syncMsg   = document.getElementById("sync-msg");
+
+        function clearElement(el) {
+            while (el.firstChild) { el.removeChild(el.firstChild); }
+        }
+
+        function renderErrors(errors) {
+            clearElement(errBody);
+            if (!errors || errors.length === 0) {
+                var row = document.createElement("tr");
+                var cell = document.createElement("td");
+                cell.setAttribute("colspan", "2");
+                cell.style.color = "var(--text-muted)";
+                cell.textContent = "No errors.";
+                row.appendChild(cell);
+                errBody.appendChild(row);
+                return;
+            }
+            for (var i = 0; i < errors.length; i++) {
+                var row = document.createElement("tr");
+                var numCell = document.createElement("td");
+                numCell.textContent = String(i + 1);
+                var msgCell = document.createElement("td");
+                msgCell.textContent = String(errors[i]);
+                row.appendChild(numCell);
+                row.appendChild(msgCell);
+                errBody.appendChild(row);
+            }
+        }
+
+        function applyState(state) {
+            stateEl.textContent = state;
+            stateEl.className = "value";
+            if (state === "idle") {
+                stateEl.classList.add("ok");
+            } else if (state === "syncing") {
+                stateEl.classList.add("warn");
+            } else if (state === "error" || state === "idle_with_errors") {
+                stateEl.classList.add("err");
+            }
+        }
+
+        function formatDate(isoStr) {
+            if (!isoStr) return "Never";
+            try {
+                var d = new Date(isoStr);
+                return d.toLocaleString();
+            } catch(e) {
+                return isoStr;
+            }
+        }
+
+        async function loadStatus() {
+            try {
+                var data = await api("/api/sync");
+                applyState(data.state || "unknown");
+                lastEl.textContent = formatDate(data.last_sync);
+                itemsEl.textContent = String(data.items_synced != null ? data.items_synced : 0);
+                renderErrors(data.errors);
+            } catch(e) {
+                /* redirect handled by api() */
+            }
+        }
+
+        syncBtn.addEventListener("click", async function() {
+            syncBtn.disabled = true;
+            syncMsg.textContent = "Triggering sync...";
+            try {
+                var resp = await fetch("/api/sync-trigger", {
+                    method: "POST",
+                    credentials: "same-origin"
+                });
+                if (resp.status === 401 || resp.status === 303) {
+                    window.location.href = "/login";
+                    return;
+                }
+                if (resp.status === 503) {
+                    syncMsg.textContent = "Cloud sync is not configured.";
+                    syncBtn.disabled = false;
+                    return;
+                }
+                syncMsg.textContent = "Sync started — refreshing in 3s...";
+                setTimeout(function() {
+                    window.location.reload();
+                }, 3000);
+            } catch(e) {
+                syncMsg.textContent = "Request failed: " + String(e);
+                syncBtn.disabled = false;
+            }
+        });
+
+        loadStatus();
+    })();
+    </script>
+</body>
+</html>

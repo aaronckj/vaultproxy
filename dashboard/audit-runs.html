@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Credential Audit Runs</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .status-pill {
+            display: inline-block;
+            padding: 0.15em 0.6em;
+            border-radius: 4px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #1e1e2e;
+        }
+        .status-running   { background: var(--yellow, #f9e2af); }
+        .status-completed { background: var(--green,  #a6e3a1); }
+        .status-aborted   { background: var(--red,    #f38ba8); }
+
+        .run-detail {
+            margin-top: 1.5rem;
+            padding: 1rem 1.2rem;
+            background: var(--surface, #1e1e2e);
+            border: 1px solid var(--border, #333);
+            border-radius: 6px;
+        }
+        .run-detail h3 {
+            margin: 0 0 0.6rem;
+            font-size: 1.1rem;
+        }
+        .summary-cards {
+            display: flex;
+            gap: 0.8rem;
+            flex-wrap: wrap;
+            margin: 1rem 0;
+        }
+        .summary-card {
+            flex: 1;
+            min-width: 110px;
+            background: var(--surface-2, #252533);
+            border: 1px solid var(--border, #333);
+            border-radius: 6px;
+            padding: 0.8rem 1rem;
+            text-align: center;
+        }
+        .summary-card .v {
+            font-size: 1.6rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+        .summary-card .l {
+            font-size: 0.75rem;
+            color: var(--text-muted, #888);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .v.danger { color: var(--red, #f38ba8); }
+        .v.warn   { color: var(--yellow, #f9e2af); }
+        .v.ok     { color: var(--green, #a6e3a1); }
+
+        .actions { margin-top: 1rem; display: flex; gap: 0.6rem; }
+        .actions button {
+            padding: 0.4rem 0.9rem;
+            border: 1px solid var(--border, #333);
+            background: var(--surface-2, #252533);
+            color: inherit;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .actions button.primary { background: var(--accent, #74c0fc); color: #1e1e2e; }
+        .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs" class="active">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Credential Audit Runs</h1>
+
+        <div class="actions">
+            <button id="start-btn" class="primary">Start New Scan</button>
+            <span id="scan-status" style="align-self:center;color:var(--text-muted)"></span>
+        </div>
+
+        <h2>Recent runs</h2>
+        <table id="runs-table" style="width:100%;margin-top:0.6rem">
+            <thead>
+                <tr>
+                    <th>Run ID</th>
+                    <th>Status</th>
+                    <th>Started</th>
+                    <th>Finished</th>
+                    <th>Applied</th>
+                </tr>
+            </thead>
+            <tbody id="runs-body"></tbody>
+        </table>
+
+        <div id="detail-panel" class="run-detail" style="display:none">
+            <h3 id="detail-title">Run detail</h3>
+            <div class="summary-cards" id="detail-summary"></div>
+            <h4>Items flagged for delete</h4>
+            <table style="width:100%;margin-top:0.4rem">
+                <thead>
+                    <tr>
+                        <th style="width:1.4rem"><input type="checkbox" id="select-all" title="Select all"></th>
+                        <th>Item</th>
+                        <th>Category</th>
+                        <th>Status</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody id="detail-flagged-body"></tbody>
+            </table>
+            <div class="actions">
+                <button id="verify-btn">Verify pending logins (Pass 2)</button>
+                <button id="dryrun-btn">Dry-run apply</button>
+                <button id="apply-btn" class="primary">Apply (move to _review-delete)</button>
+                <span id="apply-status" style="align-self:center;color:var(--text-muted)"></span>
+            </div>
+            <h4 style="margin-top:1.2rem">LLM telemetry</h4>
+            <div id="detail-telemetry" style="font-size:0.9rem;color:var(--text-muted)"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    let currentRunId = null;
+
+    function collectSelectedItemIds() {
+        const cbs = document.querySelectorAll("input.flagged-cb:checked");
+        return Array.from(cbs).map((c) => c.value);
+    }
+
+    function statusPill(status) {
+        const span = document.createElement("span");
+        span.className = "status-pill";
+        if (status === "running") span.classList.add("status-running");
+        else if (status === "completed") span.classList.add("status-completed");
+        else span.classList.add("status-aborted");
+        span.textContent = String(status || "");
+        return span;
+    }
+
+    async function loadRuns() {
+        const data = await api("/api/credaudit/runs");
+        const body = document.getElementById("runs-body");
+        body.replaceChildren();
+        if (data && data.error) {
+            document.getElementById("scan-status").textContent = "error: " + data.error;
+            return;
+        }
+        const runs = (data && data.runs) || [];
+        if (runs.length === 0) {
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.colSpan = 5;
+            td.style.color = "var(--text-muted)";
+            td.style.textAlign = "center";
+            td.textContent = "No runs yet — click Start New Scan above.";
+            tr.appendChild(td);
+            body.appendChild(tr);
+            return;
+        }
+        for (const r of runs) {
+            const tr = document.createElement("tr");
+            tr.style.cursor = "pointer";
+            tr.addEventListener("click", () => loadDetail(r.run_id));
+            const idCell = document.createElement("td");
+            idCell.textContent = r.run_id.slice(0, 8) + "…";
+            tr.appendChild(idCell);
+            const statusCell = document.createElement("td");
+            statusCell.appendChild(statusPill(r.status));
+            tr.appendChild(statusCell);
+            const startedCell = document.createElement("td");
+            startedCell.textContent = r.started_at || "";
+            tr.appendChild(startedCell);
+            const finishedCell = document.createElement("td");
+            finishedCell.textContent = r.finished_at || "—";
+            tr.appendChild(finishedCell);
+            const appliedCell = document.createElement("td");
+            appliedCell.textContent = r.applied_at || "—";
+            tr.appendChild(appliedCell);
+            body.appendChild(tr);
+        }
+    }
+
+    async function loadDetail(runId) {
+        currentRunId = runId;
+        const data = await api("/api/credaudit/runs/" + encodeURIComponent(runId));
+        const panel = document.getElementById("detail-panel");
+        if (data && data.error) {
+            panel.style.display = "none";
+            document.getElementById("scan-status").textContent = "error: " + data.error;
+            return;
+        }
+        panel.style.display = "block";
+        document.getElementById("detail-title").textContent = "Run " + runId.slice(0, 8) + "…";
+
+        const items = (data && data.items) || [];
+        const counts = { alive: 0, dead: 0, dup_loser: 0, untestable: 0, needs_pass_2: 0, marked: 0 };
+        for (const it of items) {
+            if (counts[it.status] != null) counts[it.status]++;
+            if (it.marked_for_delete) counts.marked++;
+        }
+        const summary = document.getElementById("detail-summary");
+        summary.replaceChildren();
+        function card(label, value, cls) {
+            const c = document.createElement("div");
+            c.className = "summary-card";
+            const v = document.createElement("div");
+            v.className = "v " + (cls || "");
+            v.textContent = String(value);
+            const l = document.createElement("div");
+            l.className = "l";
+            l.textContent = label;
+            c.appendChild(v); c.appendChild(l);
+            summary.appendChild(c);
+        }
+        card("Total", items.length, "");
+        card("Alive", counts.alive, "ok");
+        card("Dead", counts.dead, "danger");
+        card("Duplicate", counts.dup_loser, "warn");
+        card("Untestable", counts.untestable, "warn");
+        card("Needs Pass 2", counts.needs_pass_2, "warn");
+        card("Marked for delete", counts.marked, "danger");
+
+        const fbody = document.getElementById("detail-flagged-body");
+        fbody.replaceChildren();
+        const flagged = items.filter(i => i.marked_for_delete);
+        if (flagged.length === 0) {
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.colSpan = 5;
+            td.style.color = "var(--text-muted)";
+            td.style.textAlign = "center";
+            td.textContent = "Nothing to apply — no items flagged.";
+            tr.appendChild(td);
+            fbody.appendChild(tr);
+        } else {
+            for (const it of flagged) {
+                const tr = document.createElement("tr");
+                const cbCell = document.createElement("td");
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.className = "flagged-cb";
+                cb.value = it.item_id;
+                cb.checked = true;
+                cbCell.appendChild(cb);
+                tr.appendChild(cbCell);
+                const id = document.createElement("td");
+                id.textContent = it.item_id.slice(0, 12) + "…";
+                tr.appendChild(id);
+                const cat = document.createElement("td");
+                cat.textContent = it.category;
+                tr.appendChild(cat);
+                const st = document.createElement("td");
+                st.textContent = it.status;
+                tr.appendChild(st);
+                const reason = document.createElement("td");
+                reason.textContent = it.reason || "";
+                tr.appendChild(reason);
+                fbody.appendChild(tr);
+            }
+        }
+
+        const selectAll = document.getElementById("select-all");
+        selectAll.checked = true;
+        selectAll.onchange = null;
+        selectAll.addEventListener("change", () => {
+            const cbs = document.querySelectorAll("input.flagged-cb");
+            cbs.forEach((c) => { c.checked = selectAll.checked; });
+        });
+
+        const applyBtn = document.getElementById("apply-btn");
+        applyBtn.disabled = flagged.length === 0;
+        document.getElementById("dryrun-btn").disabled = flagged.length === 0;
+        document.getElementById("apply-status").textContent = "";
+
+        try {
+            const tdata = await api("/api/credaudit/telemetry/" + encodeURIComponent(runId));
+            const tbox = document.getElementById("detail-telemetry");
+            tbox.replaceChildren();
+            if (tdata && tdata.error) {
+                tbox.textContent = "telemetry unavailable: " + tdata.error;
+                return;
+            }
+            const summary = (tdata && tdata.summary) || {};
+            const rows = [
+                ["Total LLM calls", summary.total ?? 0],
+                ["Successful", summary.success ?? 0],
+                ["Schema-validation failures", summary.schema_fail ?? 0],
+                ["Refusals", summary.refusal ?? 0],
+                ["Timeouts", summary.timeout ?? 0],
+                ["Other errors", summary.other ?? 0],
+            ];
+            for (const [label, value] of rows) {
+                const line = document.createElement("div");
+                line.textContent = label + ": " + value;
+                tbox.appendChild(line);
+            }
+        } catch (e) {
+            const tbox = document.getElementById("detail-telemetry");
+            tbox.textContent = "telemetry fetch failed: " + e.message;
+        }
+    }
+
+    document.getElementById("start-btn").addEventListener("click", async () => {
+        const btn = document.getElementById("start-btn");
+        const status = document.getElementById("scan-status");
+        btn.disabled = true;
+        status.textContent = "starting…";
+        try {
+            const resp = await fetch("/api/credaudit/scan_start", {
+                method: "POST",
+                credentials: "same-origin",
+            });
+            const data = await resp.json();
+            if (data.error) {
+                status.textContent = "error: " + data.error;
+            } else {
+                status.textContent = "started run " + (data.run_id || "").slice(0, 8) + "…";
+                await loadRuns();
+                if (data.run_id) await loadDetail(data.run_id);
+            }
+        } catch (e) {
+            status.textContent = "error: " + e.message;
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    async function postApply(dryRun) {
+        if (!currentRunId) return;
+        const status = document.getElementById("apply-status");
+        status.textContent = dryRun ? "dry-running…" : "applying…";
+        try {
+            const resp = await fetch("/api/credaudit/apply", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    run_id: currentRunId,
+                    dry_run: dryRun,
+                    confirm_bulk: true,
+                    item_ids: collectSelectedItemIds(),
+                }),
+            });
+            const data = await resp.json();
+            if (data.error) {
+                status.textContent = "error: " + data.error;
+            } else if (dryRun) {
+                status.textContent = "dry-run: would apply " + data.would_apply + " items";
+            } else {
+                status.textContent = "applied " + data.applied + ", failed " + data.failed;
+                await loadRuns();
+                await loadDetail(currentRunId);
+            }
+        } catch (e) {
+            status.textContent = "error: " + e.message;
+        }
+    }
+
+    document.getElementById("dryrun-btn").addEventListener("click", () => postApply(true));
+    document.getElementById("apply-btn").addEventListener("click", async () => {
+        const n = collectSelectedItemIds().length;
+        if (n === 0) { alert("Select at least one item to apply."); return; }
+        if (!confirm(`Move ${n} selected item(s) to the _review-delete folder? This is reversible (items are not deleted).`)) return;
+        await postApply(false);
+    });
+
+    document.getElementById("verify-btn").addEventListener("click", async () => {
+        if (!currentRunId) return;
+        const status = document.getElementById("apply-status");
+        status.textContent = "starting Pass 2…";
+        try {
+            const resp = await fetch("/api/credaudit/verify_start", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ run_id: currentRunId }),
+            });
+            const data = await resp.json();
+            if (data.error) {
+                status.textContent = "Pass 2 error: " + data.error;
+            } else {
+                const n = data.verify_started_for ?? 0;
+                status.textContent = n === 0
+                    ? "Pass 2: no items need verification"
+                    : "Pass 2 queued for " + n + " items";
+                await loadDetail(currentRunId);
+            }
+        } catch (e) {
+            status.textContent = "Pass 2 error: " + e.message;
+        }
+    });
+
+    loadRuns().catch((e) => {
+        console.error(e);
+        document.getElementById("scan-status").textContent = "error: " + e.message;
+    });
+    </script>
+</body>
+</html>

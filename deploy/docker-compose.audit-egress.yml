@@ -1,0 +1,40 @@
+# audit-egress-proxy — gluetun WireGuard egress for credential-audit Pass-2.
+#
+# Bring up on the homelab (Docker host) with:
+#   docker compose -f deploy/docker-compose.audit-egress.yml up -d
+#
+# Requires deploy/audit-egress-config/wg.env to exist with the OPNsense
+# peer credentials (see deploy/audit-egress-README.md).
+
+services:
+  audit-egress-proxy:
+    image: qmcgaw/gluetun:latest
+    container_name: audit-egress-proxy
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file:
+      - ./audit-egress-config/wg.env
+    environment:
+      VPN_SERVICE_PROVIDER: custom
+      VPN_TYPE: wireguard
+      HTTPPROXY: "on"
+      HTTPPROXY_LISTENING_ADDRESS: ":8888"
+      HTTPPROXY_LOG: "on"
+      SOCKS5: "off"
+      # Allow LAN-side reach so vault-proxy on the dev box can talk to the
+      # HTTP proxy port without itself being routed through the tunnel.
+      FIREWALL_OUTBOUND_SUBNETS: "10.0.0.0/24"
+    ports:
+      # Bound to LAN-facing IP so the dev-box vault-proxy can reach it as
+      # http://10.0.0.207:8888. Keep this restricted at the OS firewall
+      # (ufw / nftables) to the dev-box address.
+      - "10.0.0.207:8888:8888"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--timeout=5", "https://api.ipify.org"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped

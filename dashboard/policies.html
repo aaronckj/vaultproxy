@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Policies</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .policy-table { width: 100%; border-collapse: collapse; margin-bottom: 2rem; }
+        .policy-table th,
+        .policy-table td { padding: .55rem .75rem; text-align: left; border-bottom: 1px solid var(--border, #2a2a3a); }
+        .policy-table th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
+        .policy-table td { font-size: .875rem; }
+        .badge { display: inline-block; padding: .15rem .5rem; border-radius: 99px; font-size: .75rem; font-weight: 600; }
+        .badge-api { background: #1a3a5c; color: #60a5fa; }
+        .badge-browser { background: #2d1f4a; color: #a78bfa; }
+        .toggle { cursor: pointer; font-size: 1.1rem; background: none; border: none; color: inherit; padding: 0 .25rem; }
+        .toggle:hover { opacity: .7; }
+        .btn-danger { background: #7f1d1d; color: #fca5a5; border: none; border-radius: 4px; padding: .3rem .7rem; cursor: pointer; font-size: .8rem; }
+        .btn-danger:hover { background: #991b1b; }
+        .form-card { background: var(--card-bg, #16162a); border: 1px solid var(--border, #2a2a3a); border-radius: 8px; padding: 1.5rem; }
+        .form-card h2 { margin: 0 0 1.25rem; font-size: 1rem; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-bottom: .75rem; }
+        .form-row.single { grid-template-columns: 1fr; }
+        label { display: block; font-size: .75rem; margin-bottom: .3rem; opacity: .7; }
+        input, select { width: 100%; box-sizing: border-box; background: var(--input-bg, #0d0d1a); border: 1px solid var(--border, #2a2a3a); color: inherit; border-radius: 4px; padding: .45rem .6rem; font-size: .875rem; }
+        .btn-primary { background: #1d4ed8; color: #fff; border: none; border-radius: 4px; padding: .5rem 1.25rem; cursor: pointer; font-size: .875rem; margin-top: .5rem; }
+        .btn-primary:hover { background: #2563eb; }
+        #policy-error { color: #f87171; font-size: .8rem; margin-top: .5rem; display: none; }
+        .empty-msg { opacity: .5; padding: .75rem 0; font-size: .875rem; }
+        #target-value-row { display: none; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies" class="active">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log">Audit Log</a>
+    </nav>
+    <div class="container">
+        <h1>Rotation Policies</h1>
+
+        <div id="policies-wrap">
+            <table class="policy-table" id="policy-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Target</th>
+                        <th>Interval</th>
+                        <th>Strategy</th>
+                        <th>Enabled</th>
+                        <th>Last Run</th>
+                        <th>Last Result</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="policy-tbody"></tbody>
+            </table>
+        </div>
+
+        <div class="form-card">
+            <h2>Create / Update Policy</h2>
+            <div class="form-row">
+                <div>
+                    <label for="f-name">Name</label>
+                    <input type="text" id="f-name" placeholder="My rotation policy">
+                </div>
+                <div>
+                    <label for="f-target-type">Target Type</label>
+                    <select id="f-target-type">
+                        <option value="all">All credentials</option>
+                        <option value="folder">Folder</option>
+                        <option value="tag">Tag</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-row single" id="target-value-row">
+                <div>
+                    <label for="f-target-value" id="target-value-label">Value</label>
+                    <input type="text" id="f-target-value" placeholder="e.g. Production">
+                </div>
+            </div>
+            <div class="form-row">
+                <div>
+                    <label for="f-interval">Interval (days)</label>
+                    <input type="number" id="f-interval" min="1" value="30">
+                </div>
+                <div>
+                    <label for="f-strategy">Strategy</label>
+                    <select id="f-strategy">
+                        <option value="api">API</option>
+                        <option value="browser">Browser</option>
+                    </select>
+                </div>
+            </div>
+            <div id="policy-error"></div>
+            <button class="btn-primary" id="f-submit">Add Policy</button>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        'use strict';
+
+        const tbody = document.getElementById('policy-tbody');
+        const targetTypeEl = document.getElementById('f-target-type');
+        const targetValueRow = document.getElementById('target-value-row');
+        const targetValueLabel = document.getElementById('target-value-label');
+        const errEl = document.getElementById('policy-error');
+
+        // Show/hide target value input based on target type selection
+        function updateTargetValueRow() {
+            const t = targetTypeEl.value;
+            if (t === 'folder' || t === 'tag') {
+                targetValueRow.style.display = '';
+                targetValueLabel.textContent = t === 'folder' ? 'Folder name' : 'Tag name';
+            } else {
+                targetValueRow.style.display = 'none';
+            }
+        }
+        targetTypeEl.addEventListener('change', updateTargetValueRow);
+        updateTargetValueRow();
+
+        // Render table
+        function renderTable(policies) {
+            while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+
+            if (!policies || policies.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 8;
+                td.className = 'empty-msg';
+                td.textContent = 'No policies configured.';
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+                return;
+            }
+
+            policies.forEach(function (p) {
+                const tr = document.createElement('tr');
+
+                // Name
+                const tdName = document.createElement('td');
+                tdName.textContent = p.name;
+                tr.appendChild(tdName);
+
+                // Target
+                const tdTarget = document.createElement('td');
+                let targetText = p.target.type;
+                if (p.target.value) { targetText += ': ' + p.target.value; }
+                tdTarget.textContent = targetText;
+                tr.appendChild(tdTarget);
+
+                // Interval
+                const tdInterval = document.createElement('td');
+                tdInterval.textContent = p.interval_days + 'd';
+                tr.appendChild(tdInterval);
+
+                // Strategy badge
+                const tdStrategy = document.createElement('td');
+                const badge = document.createElement('span');
+                badge.className = 'badge badge-' + p.strategy;
+                badge.textContent = p.strategy;
+                tdStrategy.appendChild(badge);
+                tr.appendChild(tdStrategy);
+
+                // Enabled toggle
+                const tdEnabled = document.createElement('td');
+                const toggleBtn = document.createElement('button');
+                toggleBtn.className = 'toggle';
+                toggleBtn.title = p.enabled ? 'Disable' : 'Enable';
+                toggleBtn.textContent = p.enabled ? '✅' : '⏸';
+                toggleBtn.addEventListener('click', function () {
+                    const updated = Object.assign({}, p, { enabled: !p.enabled });
+                    postPolicy(updated);
+                });
+                tdEnabled.appendChild(toggleBtn);
+                tr.appendChild(tdEnabled);
+
+                // Last run
+                const tdLastRun = document.createElement('td');
+                tdLastRun.textContent = p.last_run || '—';
+                tr.appendChild(tdLastRun);
+
+                // Last result
+                const tdLastResult = document.createElement('td');
+                tdLastResult.textContent = p.last_result || '—';
+                tr.appendChild(tdLastResult);
+
+                // Delete
+                const tdDel = document.createElement('td');
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn-danger';
+                delBtn.textContent = 'Delete';
+                delBtn.addEventListener('click', function () {
+                    if (!window.confirm('Delete policy "' + p.name + '"?')) { return; }
+                    deletePolicy(p.id);
+                });
+                tdDel.appendChild(delBtn);
+                tr.appendChild(tdDel);
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Fetch and render
+        function loadPolicies() {
+            fetch('/api/policies')
+                .then(function (r) { return r.json(); })
+                .then(function (data) { renderTable(Array.isArray(data) ? data : []); })
+                .catch(function () { renderTable([]); });
+        }
+
+        // POST (create or update)
+        function postPolicy(policy) {
+            fetch('/api/policies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(policy),
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (res) {
+                    if (res.error) { showError(res.error); } else { loadPolicies(); }
+                })
+                .catch(function (e) { showError(e.toString()); });
+        }
+
+        // DELETE
+        function deletePolicy(id) {
+            fetch('/api/policies/' + encodeURIComponent(id), { method: 'DELETE' })
+                .then(function (r) { return r.json(); })
+                .then(function (res) {
+                    if (res.error) { showError(res.error); } else { loadPolicies(); }
+                })
+                .catch(function (e) { showError(e.toString()); });
+        }
+
+        function showError(msg) {
+            errEl.textContent = msg;
+            errEl.style.display = 'block';
+            setTimeout(function () { errEl.style.display = 'none'; }, 5000);
+        }
+
+        // Generate a simple UUID-like ID
+        function generateId() {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            // Fallback: timestamp + random hex
+            return Date.now().toString(16) + '-' + Math.random().toString(16).slice(2, 10);
+        }
+
+        // Form submit
+        document.getElementById('f-submit').addEventListener('click', function () {
+            errEl.style.display = 'none';
+            const name = document.getElementById('f-name').value.trim();
+            const targetType = targetTypeEl.value;
+            const targetValue = document.getElementById('f-target-value').value.trim();
+            const intervalDays = parseInt(document.getElementById('f-interval').value, 10);
+            const strategy = document.getElementById('f-strategy').value;
+
+            if (!name) { showError('Name is required.'); return; }
+            if (isNaN(intervalDays) || intervalDays < 1) { showError('Interval must be at least 1 day.'); return; }
+            if ((targetType === 'folder' || targetType === 'tag') && !targetValue) {
+                showError('Target value is required for folder/tag targets.'); return;
+            }
+
+            const policy = {
+                id: generateId(),
+                name: name,
+                target: {
+                    type: targetType,
+                    value: (targetType === 'all') ? null : targetValue,
+                },
+                interval_days: intervalDays,
+                strategy: strategy,
+                enabled: true,
+                last_run: null,
+                last_result: null,
+            };
+
+            postPolicy(policy);
+
+            // Reset form
+            document.getElementById('f-name').value = '';
+            document.getElementById('f-target-value').value = '';
+            document.getElementById('f-interval').value = '30';
+            targetTypeEl.value = 'all';
+            updateTargetValueRow();
+        });
+
+        loadPolicies();
+    }());
+    </script>
+</body>
+</html>

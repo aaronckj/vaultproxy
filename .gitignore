@@ -1,0 +1,6 @@
+/target/
+/config/
+*.sqlite
+*.key
+*.pem
+.env

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vault Proxy — Audit Log</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .log-table { width: 100%; border-collapse: collapse; }
+        .log-table th,
+        .log-table td { padding: .5rem .75rem; text-align: left; border-bottom: 1px solid var(--border, #2a2a3a); }
+        .log-table th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .6; position: sticky; top: 0; background: var(--bg, #0f0f1a); }
+        .log-table td { font-size: .85rem; }
+        .log-table td.args,
+        .log-table td.result { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .badge-perm { display: inline-block; padding: .1rem .4rem; border-radius: 4px; font-size: .7rem; font-weight: 600; }
+        .badge-allow { background: rgba(74,222,128,0.15); color: #4ade80; }
+        .badge-ask   { background: rgba(251,191,36,0.15); color: #fbbf24; }
+        .badge-block { background: rgba(233,69,96,0.15);  color: #e94560; }
+        .badge-log   { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .auto-refresh { color: var(--text-muted, #a6adc8); font-size: .8rem; margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+    <nav>
+        <span class="brand">Vault Proxy</span>
+        <a href="/">Overview</a>
+        <a href="/items">Items</a>
+        <a href="/sync">Sync</a>
+        <a href="/audit">Audit</a>
+        <a href="/audit-runs">Credential Audit</a>
+        <a href="/policies">Policies</a>
+        <a href="/approvals">Approvals</a>
+        <a href="/settings">Settings</a>
+        <a href="/permissions">Permissions</a>
+        <a href="/audit-log" class="active">Audit Log</a>
+    </nav>
+
+    <div class="container">
+        <h1>Audit Log</h1>
+        <p class="auto-refresh">Auto-refreshes every 5 seconds</p>
+
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Tool</th>
+                    <th>Args</th>
+                    <th>Result</th>
+                    <th>Permission</th>
+                    <th>Trigger</th>
+                </tr>
+            </thead>
+            <tbody id="log-body">
+                <tr><td colspan="6" style="color:var(--text-muted)">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script>
+    (function() {
+        function renderLog(entries) {
+            var tbody = document.getElementById('log-body');
+            while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+            if (!entries || entries.length === 0) {
+                var emptyRow = document.createElement('tr');
+                var emptyCell = document.createElement('td');
+                emptyCell.setAttribute('colspan', '6');
+                emptyCell.style.color = 'var(--text-muted)';
+                emptyCell.textContent = 'No audit entries yet.';
+                emptyRow.appendChild(emptyCell);
+                tbody.appendChild(emptyRow);
+                return;
+            }
+
+            for (var i = 0; i < entries.length; i++) {
+                var e = entries[i];
+                var row = document.createElement('tr');
+
+                var tsCell = document.createElement('td');
+                tsCell.textContent = e.timestamp || '';
+                row.appendChild(tsCell);
+
+                var toolCell = document.createElement('td');
+                toolCell.textContent = e.tool_name || '';
+                row.appendChild(toolCell);
+
+                var argsCell = document.createElement('td');
+                argsCell.className = 'args';
+                argsCell.textContent = e.args_summary || '';
+                argsCell.title = e.args_summary || '';
+                row.appendChild(argsCell);
+
+                var resultCell = document.createElement('td');
+                resultCell.className = 'result';
+                resultCell.textContent = e.result_summary || '';
+                resultCell.title = e.result_summary || '';
+                row.appendChild(resultCell);
+
+                var permCell = document.createElement('td');
+                var badge = document.createElement('span');
+                badge.className = 'badge-perm badge-' + (e.permission || 'log');
+                badge.textContent = e.permission || '';
+                permCell.appendChild(badge);
+                row.appendChild(permCell);
+
+                var triggerCell = document.createElement('td');
+                triggerCell.textContent = e.trigger || '';
+                row.appendChild(triggerCell);
+
+                tbody.appendChild(row);
+            }
+        }
+
+        function loadLog() {
+            api('/api/audit-log?limit=200').then(renderLog).catch(function() {});
+        }
+
+        loadLog();
+        setInterval(loadLog, 5000);
+    })();
+    </script>
+</body>
+</html>

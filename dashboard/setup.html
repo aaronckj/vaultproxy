@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connecterr — Setup</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="login-wrap">
+        <div class="login-box" style="max-width: 460px">
+            <h1>Connecterr</h1>
+            <p class="subtitle">Configure your Vaultwarden credentials.<br>They will be encrypted and stored locally.</p>
+
+            <div id="setup-form">
+                <div class="field">
+                    <label>Vaultwarden URL</label>
+                    <input type="url" id="vault-url" placeholder="https://vault.example.com" autofocus>
+                </div>
+                <div class="field">
+                    <label>Email</label>
+                    <input type="email" id="vault-email" placeholder="you@example.com">
+                </div>
+                <div class="field">
+                    <label>Master Password</label>
+                    <input type="password" id="vault-password" placeholder="Vaultwarden master password">
+                </div>
+
+                <hr>
+
+                <div class="field">
+                    <label>Setup Password</label>
+                    <input type="password" id="setup-password" placeholder="Min 8 chars — used to unlock &amp; access dashboard">
+                </div>
+                <div class="field">
+                    <label>Confirm Setup Password</label>
+                    <input type="password" id="confirm-password" placeholder="Confirm setup password">
+                </div>
+                <button id="setup-btn" style="width:100%">Initialize</button>
+                <div class="error" id="error"></div>
+                <div class="info" id="info" style="display:none"></div>
+            </div>
+
+            <p class="subtitle" style="margin-top:24px;font-size:0.78rem;opacity:0.5">
+                Your Vaultwarden master password is your recovery path.
+            </p>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        var btn = document.getElementById("setup-btn");
+        var errEl = document.getElementById("error");
+        var infoEl = document.getElementById("info");
+
+        btn.addEventListener("click", async function() {
+            errEl.textContent = "";
+            infoEl.style.display = "none";
+
+            var url = document.getElementById("vault-url").value.trim();
+            var email = document.getElementById("vault-email").value.trim();
+            var masterPw = document.getElementById("vault-password").value;
+            var setupPw = document.getElementById("setup-password").value;
+            var confirmPw = document.getElementById("confirm-password").value;
+
+            if (!url || !email || !masterPw) { errEl.textContent = "All Vaultwarden fields are required"; return; }
+            if (setupPw.length < 8) { errEl.textContent = "Setup password must be at least 8 characters"; return; }
+            if (setupPw !== confirmPw) { errEl.textContent = "Setup passwords do not match"; return; }
+
+            btn.disabled = true;
+            btn.textContent = "Validating...";
+
+            try {
+                var resp = await fetch("/api/setup/configure", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ vault_url: url, vault_email: email, master_password: masterPw, setup_password: setupPw }),
+                });
+                var data = await resp.json();
+                if (data.ok) {
+                    infoEl.textContent = "Setup complete. Redirecting...";
+                    infoEl.style.display = "block";
+                    setTimeout(function() { window.location.href = "/"; }, 1500);
+                } else {
+                    errEl.textContent = data.error || "Setup failed";
+                    btn.disabled = false;
+                    btn.textContent = "Initialize";
+                }
+            } catch(e) {
+                errEl.textContent = "Network error";
+                btn.disabled = false;
+                btn.textContent = "Initialize";
+            }
+        });
+
+        document.getElementById("confirm-password").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") btn.click();
+        });
+    })();
+    </script>
+</body>
+</html>
