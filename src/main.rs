@@ -122,6 +122,22 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
 
+    // Issue (iter-10): Create --config-dir if it does not exist.
+    // Previously, a non-existent config_dir caused `safe_write_config()` to
+    // fail with an obscure OS error ("open tmp file /nonexistent/keystore.json.tmp.NNN:
+    // No such file or directory") deep inside the setup flow, with no indication
+    // that the *directory* was the missing piece. Creating it here (at startup,
+    // with a clear log message) allows operators to mount a new volume or specify
+    // a fresh path without pre-creating it manually.
+    if !std::path::Path::new(&config_dir).exists() {
+        std::fs::create_dir_all(&config_dir)
+            .map_err(|e| anyhow::anyhow!(
+                "--config-dir '{}' does not exist and could not be created: {}",
+                config_dir, e
+            ))?;
+        tracing::info!("created config directory '{}'", config_dir);
+    }
+
     // Issue-3 (iter-4): Validate --vault-folder early so a bad value produces
     // a clear startup error instead of silently returning zero credentials.
     // The folder name is passed to Vaultwarden folder-lookup; an empty name
@@ -579,12 +595,26 @@ async fn start_server(
     // - `http`: strict TLS verification (default) — for every module except UniFi.
     // - `http_permissive`: accepts invalid certs — only for UniFi UDM, which
     //   presents a self-signed cert on its classic HTTPS port by design.
+    //
+    // Issue (iter-10): SSRF via redirect following.
+    // reqwest follows HTTP redirects automatically by default. If an upstream
+    // service returns a `301 Moved Permanently` pointing at `http://127.0.0.1:3201/vault/items`
+    // (or any other internal endpoint), reqwest would follow it — bypassing the
+    // SSRF guard that only runs at service registration time. Setting
+    // `redirect::Policy::none()` on both clients means a 3xx response is
+    // returned to vault-proxy as-is (the upstream status is forwarded to the
+    // MCP caller), and no redirect is ever followed. This is the correct
+    // posture for a JSON API bridge: all downstream URLs are pre-validated at
+    // registration time, and the caller controls the path — vault-proxy should
+    // never silently follow a server-side redirect to an unvalidated URL.
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(args.proxy_timeout))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let http_permissive = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(args.proxy_timeout))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     // Initialize browser agent.

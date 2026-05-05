@@ -575,6 +575,31 @@ impl ServiceRegistry {
                 continue;
             }
 
+            // Issue (iter-10): Reject service names that contain ASCII control
+            // characters (U+0001..U+001F and U+007F, including tab \t, newline
+            // \n, and carriage return \r). These characters:
+            //
+            //   1. Log injection: a name like "foo\nERROR: vault unlocked"
+            //      injects fake log lines into structured text logs, which can
+            //      confuse log-aggregation pipelines (Loki, Splunk, CloudWatch)
+            //      and trigger false alerts.
+            //
+            //   2. HTTP header injection: if the service name appears in a
+            //      response header or audit entry that is forwarded as an HTTP
+            //      header, CRLF injection (\r\n) can split the response and
+            //      inject arbitrary headers.
+            //
+            // Unicode multi-byte names (CJK, Arabic, etc.) are intentionally
+            // ALLOWED because they have no security impact and blocking them
+            // would exclude valid non-ASCII service names. The null-byte check
+            // above already covers the most dangerous single-byte case.
+            if svc.name.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
+                tracing::error!(
+                    "services.toml: service name contains ASCII control character (tab, newline, etc.) — skipping"
+                );
+                continue;
+            }
+
             // Issue-7 (iter-5): Validate vault_item name.
             //
             // The vault_item string is used as an exact-match key against the
@@ -1480,6 +1505,52 @@ vault_item = ""
         assert!(
             registry.list().is_empty(),
             "vault_item with null byte should be rejected"
+        );
+    }
+
+    // Issue (iter-10): Control character validation in service names.
+
+    #[test]
+    fn test_service_name_with_newline_is_rejected() {
+        // A newline in a service name enables log injection:
+        //   name = "foo\nERROR: vault unlocked" writes a fake ERROR line into logs.
+        let toml = "[[service]]\nname = \"foo\\nbar\"\nbase_url = \"http://192.0.2.1:8123\"\nauth = \"bearer\"\nvault_item = \"x\"\n";
+        let toml_with_ctrl = toml.replace("\\n", "\n");
+        let f = write_toml(&toml_with_ctrl);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.list().is_empty(),
+            "name with newline (log injection vector) should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_service_name_with_tab_is_rejected() {
+        // Tab characters can break structured log parsers that use TSV format.
+        let toml_with_tab = "[[service]]\nname = \"foo\tbar\"\nbase_url = \"http://192.0.2.1:8123\"\nauth = \"bearer\"\nvault_item = \"x\"\n";
+        let f = write_toml(toml_with_tab);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.list().is_empty(),
+            "name with tab should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_unicode_service_name_is_allowed() {
+        // Multi-byte Unicode names (CJK, Arabic, emoji) have no security
+        // impact and should not be blocked. Only ASCII control chars are banned.
+        let f = write_toml(r#"
+[[service]]
+name = "my_服务"
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "vault-proxy - CJK Service"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.list().contains(&"my_服务"),
+            "Unicode service name should be accepted"
         );
     }
 }

@@ -11,6 +11,12 @@ use serde_json::{Map, Value};
 
 use super::VaultManager;
 
+/// Default Vaultwarden folder name that vault-proxy uses when `--vault-folder`
+/// is not specified. The live value at runtime comes from `AppState::vault_folder`
+/// (set from the CLI flag / env var), so this constant is kept for reference and
+/// documentation only — it is intentionally not wired into runtime code paths
+/// to avoid the constant silently overriding the operator-configured value.
+#[allow(dead_code)]
 pub const DEFAULT_VAULT_FOLDER: &str = "vault-proxy";
 
 /// Pure helper — build the nested JSON object from a list of

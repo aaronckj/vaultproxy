@@ -99,6 +99,20 @@ pub struct VaultManager {
     /// syncs. Keying by name (as we did before) silently collapsed duplicates
     /// and made vault-proxy's view diverge from the upstream by thousands of
     /// items.
+    ///
+    /// # Cache staleness (iter-10)
+    ///
+    /// This map is loaded once at startup (in `new()`) and refreshed only
+    /// when `sync()` is explicitly called — either via `POST /vault/resync`
+    /// or after a write operation (create/update/move/delete cipher). There is
+    /// NO automatic TTL or background refresh timer for the common read path.
+    ///
+    /// Consequence: if an operator updates a credential in Vaultwarden after
+    /// vault-proxy has started, the old encrypted blob is served until
+    /// `sync()` runs. For most homelab use cases this is acceptable (credentials
+    /// change infrequently). If live credential refresh is needed, call
+    /// `POST /vault/resync` after each Vaultwarden update, or implement a
+    /// background refresh task (TODO).
     items: RwLock<HashMap<String, (String, EncryptedCipher)>>,
     /// Folder name → folder ID index, populated during sync. Deduped by name
     /// (HashMap semantics), so not suitable for surfacing duplicate-name
@@ -1235,6 +1249,9 @@ impl VaultManager {
     }
 
     /// Return the Vaultwarden base URL.
+    ///
+    /// Kept for introspection and test helpers; not currently used by any
+    /// runtime code path (all callers have the URL from their own state).
     #[allow(dead_code)]
     pub fn base_url(&self) -> &str {
         &self.vaultwarden_url

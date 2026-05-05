@@ -1567,6 +1567,42 @@ pub async fn check_permission(
     }))
 }
 
+/// `POST /vault/resync` — re-fetch all ciphers from Vaultwarden and replace
+/// the in-memory cache.
+///
+/// # Cache staleness (iter-10)
+///
+/// vault-proxy loads vault items into a `RwLock<HashMap>` at startup and does
+/// NOT automatically re-fetch them on a TTL or timer. If a user updates a
+/// credential in Vaultwarden (e.g. rotates a password), vault-proxy continues
+/// to serve the old encrypted blob until either:
+///   a. The process restarts, or
+///   b. A caller POSTs to this endpoint.
+///
+/// This is the *only* mechanism for live credential refresh (besides restart).
+/// The cloud-sync path (`POST /sync/trigger`) calls `VaultManager::sync()` on
+/// cipher-change notifications but only for cloud→self-hosted mirroring; it
+/// does not help when the operator edits the self-hosted Vaultwarden directly.
+///
+/// # Cost
+///
+/// `sync()` performs two authenticated HTTP requests to Vaultwarden
+/// (`GET /api/sync` which returns all ciphers and folders) and holds the
+/// `items` write lock for the duration of the map rebuild. On a vault with
+/// ~900 items this takes ~200 ms; during that window `decrypt_password()`
+/// calls block at `try_read()`. Callers should not hammer this endpoint.
+///
+/// # Rate limiting
+///
+/// This endpoint goes through the global 60 req/60s rate limiter (shared with
+/// all other routes). It does NOT have its own per-endpoint rate limit. An MCP
+/// caller who can reach vault-proxy could trigger a full Vaultwarden sync up
+/// to 60 times per minute, causing ~60 full-vault fetches against the local
+/// Vaultwarden instance.
+///
+/// TODO(public-release): Add a per-endpoint cooldown (e.g. minimum 30 s
+/// between resync calls) to prevent an MCP client from using this as a
+/// denial-of-service amplifier against a shared Vaultwarden instance.
 pub async fn vault_resync(State(state): State<Arc<AppState>>) -> Json<Value> {
     match state.vault.sync().await {
         Ok(()) => {
