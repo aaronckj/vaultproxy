@@ -124,6 +124,27 @@ async fn main() -> anyhow::Result<()> {
 
     // CLI setup mode (headless/Docker) — interactive wizard, then start server
     if args.setup {
+        // Guard against silent overwrite of an existing, working keystore.
+        // An operator who accidentally passes --setup on a running deployment
+        // would destroy the encrypted keystore (and any sealed TPM blob),
+        // requiring full re-setup. Make them confirm before proceeding.
+        if keystore::is_configured(&config_dir) {
+            println!();
+            println!("WARNING: A keystore already exists in '{}'.", config_dir);
+            println!("Running --setup will OVERWRITE it, destroying the current");
+            println!("encrypted credentials (including any TPM-sealed key).");
+            println!();
+            print!("Type 'overwrite' to confirm, or press Enter to abort: ");
+            std::io::Write::flush(&mut std::io::stdout())?;
+            let mut confirm = String::new();
+            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut confirm)?;
+            if confirm.trim() != "overwrite" {
+                println!("Aborted — existing keystore preserved.");
+                return Ok(());
+            }
+            println!();
+        }
+
         tracing::info!("running CLI setup wizard (--setup flag)");
         let creds = setup::run_cli_setup(&config_dir).await?;
         tracing::info!("connecting to Vaultwarden at {}", creds.vaultwarden.url);

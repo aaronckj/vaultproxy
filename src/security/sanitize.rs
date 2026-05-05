@@ -56,8 +56,15 @@ const INJECTION_PHRASES: &[&str] = &[
 const MARKUP_PATTERNS: &[&str] = &[
     "<system",
     "</system>",
+    // Anthropic tool-use tags (both spellings used in the wild)
+    "<tool_call>",
+    "</tool_call>",
+    "<tool_calls>",
+    "</tool_calls>",
     "<tool_use>",
     "</tool_use>",
+    "<tool_result",
+    "</tool_result",
     "<function_call>",
     "</function_call>",
     "<function_result",
@@ -78,6 +85,12 @@ const MARKUP_PATTERNS: &[&str] = &[
     "</SYS>",
     "```tool_code",
     "```function",
+    // Raw-text prompt injection prefixes (case-insensitive check handles
+    // capitalisation variants; the prefix form catches trailing content too)
+    "SYSTEM:",
+    "SYSTEM PROMPT:",
+    "USER:",
+    "ASSISTANT:",
 ];
 
 /// Zero-width and invisible Unicode characters to remove.

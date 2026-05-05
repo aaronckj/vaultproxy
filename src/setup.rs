@@ -81,6 +81,21 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
         return Err(anyhow!("URL cannot be empty"));
     }
 
+    // Warn if the operator enters a plain HTTP URL. Vaultwarden traffic
+    // contains the master password hash; transmitting it over unencrypted
+    // HTTP allows any LAN observer to capture and replay it. We do NOT
+    // hard-reject HTTP here because some self-hosted setups run on an
+    // isolated LAN segment and terminate TLS at the router — but the
+    // operator must make that choice consciously.
+    if url.starts_with("http://") {
+        println!();
+        println!("WARNING: You entered an http:// URL.");
+        println!("  Vaultwarden traffic (including your master password hash) will");
+        println!("  be sent in plaintext. Use https:// unless your network is fully");
+        println!("  isolated and you understand the risk.");
+        println!();
+    }
+
     print!("Vaultwarden email: ");
     io::stdout().flush()?;
     let mut email = String::new();

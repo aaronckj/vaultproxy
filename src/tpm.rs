@@ -281,9 +281,21 @@ pub fn generate_mtls_certs() -> anyhow::Result<CertMaterial> {
         SanType::DnsName("vault-proxy".try_into().unwrap()),
         SanType::DnsName("localhost".try_into().unwrap()),
     ];
-    // 1 year validity — regenerated on each container restart anyway
-    server_params.not_before = rcgen::date_time_ymd(2025, 1, 1);
-    server_params.not_after = rcgen::date_time_ymd(2026, 12, 31);
+    // Broad validity window: 1975-01-01 to 2099-12-31.
+    // Previously hardcoded to 2025-01-01..2026-12-31 — those certs will be
+    // rejected by rustls as expired after Dec 2026 (and any restart after that
+    // date would have silently generated an already-expired cert). These certs
+    // are ephemeral (regenerated on every restart), so a long window is safe.
+    // The 1975 not_before follows rcgen's own default and provides generous
+    // clock-skew tolerance.
+    //
+    // HSTS: we intentionally do NOT set Strict-Transport-Security on the
+    // dashboard because (a) the cert is self-signed and cannot be trusted by
+    // a standard browser, and (b) the dashboard is localhost-only. The
+    // effective MITM defence is the mTLS client-cert requirement — an attacker
+    // would need the client cert in addition to intercepting the connection.
+    server_params.not_before = rcgen::date_time_ymd(1975, 1, 1);
+    server_params.not_after  = rcgen::date_time_ymd(2099, 12, 31);
     server_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
 
     let server_cert = server_params

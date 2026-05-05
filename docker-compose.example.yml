@@ -7,12 +7,29 @@
 #   4. Once setup completes, comment out `command:` again and restart
 #
 # The encrypted keystore is stored in ./config/ — back it up.
+#
+# NETWORK MODE:
+#   network_mode: host is required so that vault-proxy binds to 127.0.0.1:3201
+#   on the *host*, making it reachable by MCP clients running on the host (e.g.
+#   Claude Desktop, Cursor).  Without host networking, the container has its own
+#   network namespace and 127.0.0.1 inside the container is NOT the host's
+#   loopback — MCP clients on the host cannot connect.
+#
+#   If host networking is unavailable (Docker Desktop, Podman rootless, Swarm):
+#     - Replace `network_mode: host` with a port mapping:
+#         ports:
+#           - "127.0.0.1:3201:3201"
+#           - "127.0.0.1:3202:3202"
+#     - This works but only on Linux — macOS/Windows Docker Desktop does NOT
+#       honour the 127.0.0.1 bind address on port mappings, which means the
+#       ports will be reachable from the LAN. Use a firewall rule to block
+#       external access on those ports in that case.
 
 services:
   vaultproxy:
     image: ghcr.io/aaronckj/vaultproxy:latest
     restart: unless-stopped
-    network_mode: host          # Required: proxy must bind to 127.0.0.1:3201
+    network_mode: host          # Required: proxy must bind to 127.0.0.1:3201 on the host
     volumes:
       - ./config:/config        # Encrypted keystore lives here
     environment:
@@ -21,3 +38,9 @@ services:
       # NTFY_URL: https://ntfy.sh/your-topic    # Optional: push alert notifications
       # LITELLM_URL: http://localhost:4000       # Optional: browser rotation feature only
     # command: ["--setup"]      # Uncomment for first-run setup wizard
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3201/vault/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

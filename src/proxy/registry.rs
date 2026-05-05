@@ -574,6 +574,19 @@ impl ServiceRegistry {
                             continue;
                         }
                     };
+                    // Reject login_path values that contain path traversal
+                    // segments. `login_path` is concatenated with `base_url` to
+                    // form the login URL (e.g. "http://host/api" + "/tokens" →
+                    // "http://host/api/tokens"). A crafted value like
+                    // "/../admin/delete" would cause the login POST to target an
+                    // unintended endpoint on the upstream service.
+                    if login_path_has_traversal(&login_path) {
+                        tracing::error!(
+                            "service '{}': login_path '{}' contains path traversal segments — skipping",
+                            svc.name, login_path
+                        );
+                        continue;
+                    }
                     let token_field = match svc.token_field {
                         Some(t) => t,
                         None => {
@@ -595,6 +608,14 @@ impl ServiceRegistry {
                             continue;
                         }
                     };
+                    // Same traversal check as session auth above.
+                    if login_path_has_traversal(&login_path) {
+                        tracing::error!(
+                            "service '{}': login_path '{}' contains path traversal segments — skipping",
+                            svc.name, login_path
+                        );
+                        continue;
+                    }
                     AuthPattern::UnifiDual {
                         vault_item: svc.vault_item,
                         login_path,
@@ -627,6 +648,16 @@ impl Default for ServiceRegistry {
 // -------------------------------------------------------------------------- //
 // Helpers                                                                      //
 // -------------------------------------------------------------------------- //
+
+/// Return `true` if `path` contains a `..` or `.` path segment, indicating
+/// a traversal attempt. Used to validate `login_path` values from
+/// `services.toml` before they are concatenated with a base URL.
+///
+/// Examples that return `true`: `"/../admin"`, `"/./tokens"`, `"/api/../../secret"`.
+/// Examples that return `false`: `"/tokens"`, `"/api/v1/login"`, `"/auth/login"`.
+fn login_path_has_traversal(path: &str) -> bool {
+    path.split('/').any(|seg| seg == ".." || seg == ".")
+}
 
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
 /// types.
@@ -1096,6 +1127,54 @@ vault_item = "myproxy - Evil"
 "#);
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.get("evil6").is_none(), "fe80:: link-local base_url should be rejected");
+    }
+
+    #[test]
+    fn test_login_path_traversal_rejects_session_service() {
+        // A crafted login_path with .. segments must be rejected at registry
+        // load time so it cannot be used to target an unintended endpoint on
+        // the upstream service during the login step.
+        let f = write_toml(r#"
+[[service]]
+name = "evil_session"
+base_url = "http://192.0.2.1:81/api"
+auth = "session"
+vault_item = "myproxy - Evil"
+login_path = "/../admin/delete"
+token_field = "token"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("evil_session").is_none(),
+            "session service with traversal login_path must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_login_path_traversal_rejects_unifi_dual_service() {
+        let f = write_toml(r#"
+[[service]]
+name = "evil_unifi"
+base_url = "https://192.0.2.2/proxy/network"
+auth = "unifi_dual"
+vault_item = "myproxy - Evil"
+login_path = "/api/./../../secret"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("evil_unifi").is_none(),
+            "unifi_dual service with traversal login_path must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_login_path_traversal_helper() {
+        assert!(login_path_has_traversal("/../admin"), ".. segment must be detected");
+        assert!(login_path_has_traversal("/./tokens"), ". segment must be detected");
+        assert!(login_path_has_traversal("/api/../../secret"), "interior .. must be detected");
+        assert!(!login_path_has_traversal("/tokens"), "normal path must pass");
+        assert!(!login_path_has_traversal("/api/v1/login"), "deep normal path must pass");
+        assert!(!login_path_has_traversal("/auth/login"), "normal login path must pass");
     }
 
     #[test]

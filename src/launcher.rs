@@ -102,6 +102,47 @@ pub async fn launch(
     }
     let program = parts.remove(0);
 
+    // Guard against shell interpreters and other dangerous binaries being used
+    // as the launch target. A crafted mcp-servers.toml with
+    // `command = "/usr/bin/bash -c <evil>"` would execute arbitrary commands
+    // with vault credentials in scope — shell_words::split() prevents injection
+    // through argument splitting, but not through the program itself being a
+    // shell. Block the most obvious vectors; operators with a legitimate need
+    // to wrap a script should use a dedicated non-shell wrapper.
+    //
+    // TODO: Consider an explicit allowlist (`allowed_commands`) in
+    // mcp-servers.toml so operators can lock down which binaries are
+    // launchable — a denylist is inherently incomplete.
+    let program_lower = program.to_lowercase();
+    let dangerous_programs: &[&str] = &[
+        "bash", "sh", "zsh", "fish", "ksh", "csh", "tcsh", "dash",
+        "python", "python2", "python3",
+        "perl", "ruby", "node", "nodejs", "php",
+        "lua", "tclsh", "wish",
+        "powershell", "pwsh",
+    ];
+    // Check both the bare name and absolute-path tail (e.g. "/usr/bin/bash" → "bash").
+    let program_basename = std::path::Path::new(&program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&program)
+        .to_lowercase();
+    // Strip version suffixes: "python3.11" → "python3", "python3" → "python3" (match)
+    let program_stem: &str = program_basename
+        .split(|c: char| c == '-' || c == '.')
+        .next()
+        .unwrap_or(&program_basename);
+    if dangerous_programs.contains(&program_lower.as_str())
+        || dangerous_programs.contains(&program_basename.as_str())
+        || dangerous_programs.contains(&program_stem)
+    {
+        anyhow::bail!(
+            "mcp_server '{}': refusing to launch dangerous binary '{}' — \
+             use a purpose-built wrapper instead of a shell interpreter",
+            server_name, program
+        );
+    }
+
     tracing::info!(
         "launching '{}': {} (injecting {} env vars)",
         server_name,
@@ -224,5 +265,52 @@ command = "cmd-b"
         let toml = "";
         let parsed: super::McpServersFile = toml::from_str(toml).unwrap();
         assert!(parsed.mcp_server.is_empty());
+    }
+
+    /// Helper that replicates the dangerous-binary check inline for unit testing.
+    /// The real check lives in `launch()` which is async and needs a VaultManager.
+    fn is_dangerous_program(command: &str) -> bool {
+        let parts = shell_words::split(command).unwrap_or_default();
+        if parts.is_empty() { return false; }
+        let program = &parts[0];
+        let dangerous: &[&str] = &[
+            "bash", "sh", "zsh", "fish", "ksh", "csh", "tcsh", "dash",
+            "python", "python2", "python3",
+            "perl", "ruby", "node", "nodejs", "php",
+            "lua", "tclsh", "wish",
+            "powershell", "pwsh",
+        ];
+        let lower = program.to_lowercase();
+        let basename = std::path::Path::new(program)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(program)
+            .to_lowercase();
+        let stem: &str = basename
+            .split(|c: char| c == '-' || c == '.')
+            .next()
+            .unwrap_or(&basename);
+        dangerous.contains(&lower.as_str())
+            || dangerous.contains(&basename.as_str())
+            || dangerous.contains(&stem)
+    }
+
+    #[test]
+    fn test_dangerous_programs_blocked() {
+        assert!(is_dangerous_program("bash"), "bare 'bash' must be blocked");
+        assert!(is_dangerous_program("/usr/bin/bash"), "absolute path bash must be blocked");
+        assert!(is_dangerous_program("/bin/sh"), "absolute path sh must be blocked");
+        assert!(is_dangerous_program("python3"), "python3 must be blocked");
+        assert!(is_dangerous_program("/usr/bin/python3.11"), "versioned python must be blocked");
+        assert!(is_dangerous_program("node"), "node must be blocked");
+        assert!(is_dangerous_program("perl"), "perl must be blocked");
+    }
+
+    #[test]
+    fn test_safe_programs_allowed() {
+        assert!(!is_dangerous_program("uvx"), "'uvx' must be allowed");
+        assert!(!is_dangerous_program("/usr/local/bin/my-mcp-server"), "custom binary must be allowed");
+        assert!(!is_dangerous_program("npx"), "'npx' must be allowed");
+        assert!(!is_dangerous_program("docker"), "'docker' must be allowed");
     }
 }
