@@ -59,7 +59,29 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         }
 
         // Engine precondition.
-        if !self.engine.health().await? {
+        //
+        // iter-34: `engine.health()` returns Err when the engine is not
+        // reachable (connection refused, DNS failure, etc.), not Ok(false).
+        // The `?` operator previously propagated this as a cryptic reqwest
+        // error message that the handler in handlers.rs could not match on
+        // "engine is not reachable" → the caller received a 500 with the raw
+        // reqwest error string instead of a 503.
+        //
+        // Fix: treat both Err(_) and Ok(false) as "engine unreachable" and
+        // normalise to the bail message the handler expects. The actual reqwest
+        // error is logged at debug level so operators who check logs can see
+        // whether it is "connection refused" (engine never started) vs. a
+        // transient DNS failure.
+        let engine_reachable = match self.engine.health().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    "credaudit: engine health check failed (engine likely not running): {:#}", e
+                );
+                false
+            }
+        };
+        if !engine_reachable {
             self.fail_run(&run_id, "engine_unreachable")?;
             anyhow::bail!("engine is not reachable");
         }

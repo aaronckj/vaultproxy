@@ -418,6 +418,31 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     // on POST /vault/resync), NOT a live query to Vaultwarden.
     let service_count = services.len();
 
+    // iter-34: Include TPM status so operators can confirm at a glance whether
+    // hardware sealing is possible on this host.
+    //
+    // Two facts are reportable without requiring config_dir (which is not stored
+    // in AppState):
+    //
+    //   tpm_feature_compiled — true when the binary was built with `--features tpm`.
+    //     A false value means TPM sealing is architecturally impossible for this
+    //     binary regardless of hardware.
+    //
+    //   tpm_chip_available — true when /dev/tpm0 exists at runtime. Does not prove
+    //     the keystore is sealed; only that a TPM chip is present. The startup log
+    //     line "unlocking keystore via TPM" is the authoritative confirmation that
+    //     the keystore is hardware-sealed.
+    //
+    // Whether the keystore is *actually* sealed is stored in
+    // keystore::has_tpm_key(config_dir), which requires config_dir — a path not
+    // stored in AppState to avoid widening the state surface. Operators who need
+    // this confirmation should check the startup log.
+    let tpm_chip_available = crate::tpm::tpm_available();
+    #[cfg(feature = "tpm")]
+    let tpm_feature_compiled = true;
+    #[cfg(not(feature = "tpm"))]
+    let tpm_feature_compiled = false;
+
     Json(json!({
         "status": "ok",
         // iter-33: include binary version so monitoring systems and operators
@@ -428,6 +453,13 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "service_count": service_count,
         "services": services,
         "cloud_sync": cloud_sync_status,
+        // iter-34: TPM status — lets operators confirm hardware sealing is active.
+        // tpm_feature_compiled: true when built with --features tpm (binary supports TPM).
+        // tpm_chip_available: true when /dev/tpm0 exists on this host at runtime.
+        // To confirm the keystore is actually TPM-sealed, check the startup log for
+        // "unlocking keystore via TPM" or re-run with --setup.
+        "tpm_feature_compiled": tpm_feature_compiled,
+        "tpm_chip_available": tpm_chip_available,
         // vault_item_count is from the in-memory cache, not a live VW query.
         // Call POST /vault/resync to refresh.
         "cache_note": "vault_item_count reflects last sync; call POST /vault/resync to refresh",
@@ -2541,6 +2573,161 @@ pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::St
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()})))
         }
     }
+}
+
+/// `POST /vault/reload-services` — reload `services.toml` synchronously and
+/// return a JSON response confirming the new service count.
+///
+/// # iter-34 motivation
+///
+/// SIGHUP is the existing mechanism for hot-reloading `services.toml`, but it
+/// has two usability gaps in production:
+///
+/// 1. **No synchronous response** — the operator must watch container logs to
+///    confirm the reload succeeded. There is no machine-readable signal.
+/// 2. **No HTTP trigger** — operators using deployment scripts or health-check
+///    loops cannot trigger a reload without shelling into the container to send
+///    a signal.
+///
+/// This endpoint performs exactly what the SIGHUP handler does (re-parse
+/// `services.toml`, rebuild CA-cert clients, atomically swap the registry)
+/// and returns a JSON body with the before/after service counts.
+///
+/// # Rollback safety
+///
+/// If the reloaded file would produce zero services but the previous registry
+/// was non-empty, the swap is refused (same rollback guard as SIGHUP) and the
+/// endpoint returns `409 Conflict`.
+///
+/// # Security
+///
+/// This endpoint is on the internal router (requires `Authorization: Bearer
+/// <internal-token>`). It does not accept any request body. The reload reads
+/// only `$CONFIG_DIR/services.toml` — the same path used at startup.
+pub async fn reload_services(
+    State(state): State<Arc<AppState>>,
+) -> (axum::http::StatusCode, Json<Value>) {
+    use crate::proxy::registry::ServiceRegistry;
+
+    let config_dir = &state.vault_folder; // vault_folder is not config_dir — use env
+    // Config dir is not stored in AppState (only vault_folder is). Read it from
+    // the environment, the same source `main.rs` uses at startup.
+    let config_dir = std::env::var("CONFIG_DIR").unwrap_or_else(|_| "/config".to_string());
+    let services_path = std::path::Path::new(&config_dir).join("services.toml");
+
+    if !services_path.exists() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "error": format!(
+                    "services.toml not found at '{}' — set CONFIG_DIR or use --config-dir",
+                    services_path.display()
+                ),
+            })),
+        );
+    }
+
+    let new_registry = ServiceRegistry::from_toml_file(&services_path);
+    let new_count = new_registry.list().len();
+    let prev_count = state.registry.read().await.list().len();
+
+    // Rollback guard: refuse to swap in an empty registry when the current one
+    // is non-empty — same rule as the SIGHUP handler.
+    if new_count == 0 && prev_count > 0 {
+        tracing::warn!(
+            "reload-services: reload produced 0 services (was {}) — refusing swap. \
+             Check services.toml for TOML errors or SSRF violations.",
+            prev_count
+        );
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": "reload produced 0 services — rolling back to prevent outage",
+                "prev_service_count": prev_count,
+                "new_service_count": 0,
+                "hint": "check container logs for per-service rejection reasons \
+                         (SSRF violations, missing fields, bad base_url)",
+            })),
+        );
+    }
+
+    // Rebuild CA-cert clients for any services that specify ca_cert_path.
+    // We read proxy_timeout from the environment for consistency with startup.
+    let proxy_timeout_secs: u64 = std::env::var("PROXY_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+
+    let mut new_ca_clients = std::collections::HashMap::new();
+    for svc_name in new_registry.list() {
+        if let Some(entry) = new_registry.get(svc_name) {
+            if let Some(ref ca_path) = entry.ca_cert_path {
+                match std::fs::read(ca_path)
+                    .ok()
+                    .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
+                {
+                    Some(cert) => {
+                        match reqwest::Client::builder()
+                            .add_root_certificate(cert)
+                            .timeout(std::time::Duration::from_secs(proxy_timeout_secs))
+                            .redirect(reqwest::redirect::Policy::none())
+                            .build()
+                        {
+                            Ok(client) => {
+                                tracing::info!(
+                                    "reload-services: service '{}': CA-cert client rebuilt from '{}'",
+                                    svc_name, ca_path
+                                );
+                                new_ca_clients.insert(svc_name.to_string(), client);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "reload-services: service '{}': CA-cert client rebuild failed: {} \
+                                     — falling back to strict TLS",
+                                    svc_name, e
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::error!(
+                            "reload-services: service '{}': ca_cert '{}' unreadable or unparseable \
+                             — falling back to strict TLS",
+                            svc_name, ca_path
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let new_services: Vec<String> = new_registry.list().iter().map(|s| s.to_string()).collect();
+
+    // Atomically swap registry and CA-cert clients.
+    *state.registry.write().await = new_registry;
+    *state.ca_cert_clients.write().await = new_ca_clients;
+    // Invalidate cached folder_id so the next vault mutation re-resolves it.
+    *state.cached_folder_id.write().await = None;
+
+    tracing::info!(
+        "reload-services: complete — {} service(s) registered (was {})",
+        new_count, prev_count
+    );
+
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "prev_service_count": prev_count,
+            "new_service_count": new_count,
+            "services": new_services,
+            "note": "services.toml reloaded synchronously; CA-cert clients rebuilt. \
+                     Vault credentials (items) are NOT refreshed — call POST /vault/resync \
+                     to reload credentials from Vaultwarden.",
+        })),
+    )
 }
 
 pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {

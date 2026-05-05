@@ -1130,6 +1130,11 @@ async fn start_server(
         // iter-23: decrypt_notes returns full plaintext notes (API tokens, SSH
         // keys, recovery codes). Gate it behind the internal bearer token.
         .route("/vault/notes",        post(handlers::decrypt_notes))
+        // iter-34: reload-services performs a hot-reload of services.toml and
+        // returns a synchronous JSON confirmation. Gated behind the internal
+        // bearer token because it modifies live routing state (the registry and
+        // CA-cert client map). Equivalent to sending SIGHUP but HTTP-accessible.
+        .route("/vault/reload-services", post(handlers::reload_services))
         // Gate the entire sub-router behind the internal bearer token.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

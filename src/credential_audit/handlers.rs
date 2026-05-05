@@ -40,8 +40,23 @@ pub async fn scan_start(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("another audit run is in progress") {
+                // 409 Conflict — caller should poll the existing run_id.
                 Err(StatusCode::CONFLICT)
             } else if msg.contains("engine is not reachable") {
+                // iter-34: 503 with an actionable body. A plain StatusCode
+                // return carries no body, so the caller gets a cryptic empty
+                // response. Return JSON with a help message instead.
+                //
+                // Note: the return type is Result<Json<Value>, StatusCode> so
+                // we cannot return a body on the Err path without changing the
+                // signature. Emit a structured warning that shows up in logs,
+                // and return the 503 status. Operators should check logs or
+                // the CRED_AUDIT_ENGINE_URL env var.
+                tracing::warn!(
+                    "credaudit: scan/start rejected — credential audit engine is not reachable. \
+                     Set CRED_AUDIT_ENGINE_URL to the engine's base URL (default http://127.0.0.1:8765). \
+                     If the engine is not deployed, this endpoint will always return 503."
+                );
                 Err(StatusCode::SERVICE_UNAVAILABLE)
             } else {
                 Err(StatusCode::INTERNAL_SERVER_ERROR)

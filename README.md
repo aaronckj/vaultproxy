@@ -70,6 +70,30 @@ vault-proxy will:
 
 **Rollback safety:** if the reloaded file would produce zero services (parse error, all entries rejected), vault-proxy keeps the previous registry and logs a `SIGHUP: rolling back` warning. Fix the file and send SIGHUP again.
 
+### HTTP reload (alternative to SIGHUP)
+
+If you prefer a synchronous HTTP trigger over sending a Unix signal, use:
+
+```bash
+TOKEN=$(cat ./config/internal-token)
+curl -X POST http://127.0.0.1:3201/vault/reload-services \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Returns JSON confirming the before/after service counts:
+
+```json
+{
+  "ok": true,
+  "prev_service_count": 3,
+  "new_service_count": 4,
+  "services": ["ha_home", "sonarr", "radarr", "plex"],
+  "note": "services.toml reloaded synchronously; CA-cert clients rebuilt. ..."
+}
+```
+
+Returns `409 Conflict` if the reload would drop to zero services (rollback safety, same as SIGHUP). Requires the internal bearer token (`Authorization: Bearer <token>` from `$CONFIG_DIR/internal-token`).
+
 ```toml
 # Each [[service]] block registers one downstream service.
 # `name` is what you pass as "service" in POST /proxy calls.
@@ -198,6 +222,7 @@ cargo build --release --features tpm
 | `--vault-folder` | `VAULT_FOLDER` | `vault-proxy` | Vaultwarden folder name |
 | `--setup` | — | — | Run interactive setup wizard |
 | `--check` | — | — | Validate services.toml (parse + SSRF rules) and exit. No Vaultwarden connection required. Exit 0 = ok. |
+| `--launch <name>` | — | — | Resolve credentials from Vaultwarden and exec the named MCP server (configured in `mcp-servers.toml`). Process is replaced — vault-proxy does not stay running. |
 | `--proxy-timeout` | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
 | `--ntfy-url` | `NTFY_URL` | — | ntfy.sh topic URL for push alerts |
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
@@ -286,6 +311,23 @@ docker run --rm -it -v ./config:/config vaultproxy --setup
 ```
 
 Or use the web dashboard (`--features dashboard`) to complete setup via browser.
+
+### MCP server launched with `--launch` exits immediately
+
+Launcher mode (`--launch <name>`) resolves credentials from Vaultwarden and `exec`s the configured command, replacing the vault-proxy process. If the launched process exits immediately, check the logs for:
+
+- **`WARN vault_proxy::launcher: command not found`** — the `command` in `mcp-servers.toml` is not on `PATH` or is misspelled. Verify with `which <command>` inside the container.
+- **`WARN vault_proxy::launcher`** — any other launcher warning. Run with `RUST_LOG=debug` for detailed output.
+- **`vault item '...' not found`** — the `vault_item` in `mcp-servers.toml` does not match an item name in Vaultwarden. Check for typos and confirm the item is in the correct `vault_folder`.
+- **MCP server itself crashes** — the MCP server process exited non-zero. Its stdout/stderr appears in the container log immediately after the `vault-proxy` output. Check for missing dependencies (`pip install`, `npm install`, etc.).
+
+```bash
+# Check launcher logs
+docker logs <container_name> 2>&1 | grep -E "launcher|WARN|ERROR"
+
+# Validate mcp-servers.toml syntax (--check only validates services.toml; mcp-servers.toml has no --check flag)
+docker run --rm -v ./config:/config vaultproxy --launch <name>  # run interactively to see errors
+```
 
 ## Building
 

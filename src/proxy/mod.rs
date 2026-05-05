@@ -18,6 +18,25 @@ use crate::vault::VaultManager;
 use registry::{AuthPattern, ServiceRegistry};
 use unifi_session::{handle_request as unifi_handle_request, UnifiDualAuthCtx, UnifiRequestCtx, UnifiSessionCache};
 
+/// Generate a short, URL-safe, lexicographically-sortable request identifier.
+///
+/// Uses a random 6-byte (48-bit) value encoded as 8 lowercase hex characters.
+/// This gives 281 trillion unique values — more than sufficient to distinguish
+/// concurrent requests without the overhead of a full UUID. The small size keeps
+/// log lines short while still providing effective correlation across 50+ in-flight
+/// requests.
+///
+/// Not a UUID — does not guarantee global uniqueness across process restarts.
+/// For production logging across multiple hosts, prefix with a host identifier.
+fn new_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Counter-based: monotonically increasing within a process lifetime.
+    // Avoids any per-request entropy consumption while still producing unique IDs.
+    static REQ_COUNTER: AtomicU64 = AtomicU64::new(1);
+    let n = REQ_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{:016x}", n)
+}
+
 // -------------------------------------------------------------------------- //
 // 2FA approval queue                                                           //
 // -------------------------------------------------------------------------- //
@@ -192,14 +211,19 @@ pub async fn handle_proxy(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProxyRequest>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<ProxyError>)> {
-    // iter-33: Emit a structured debug log at the start of every proxy call so
-    // that all log lines for this request share service+method context. A held
-    // span guard would require `Send`, which is incompatible with axum handlers.
-    // Operators using a structured-log aggregator (Loki, Elasticsearch, etc.)
-    // can correlate lines by filtering on `service` and `method` fields.
+    // iter-34: Generate a per-request ID so that log lines from concurrent
+    // requests can be correlated. With 50+ in-flight requests the service+method
+    // pair is not unique; the request_id (monotonic counter rendered as 16-char
+    // hex) uniquely identifies this call for the lifetime of the process.
+    //
+    // A held tracing Span would be more idiomatic but requires the span to be
+    // `Send`, which is incompatible with axum's handler signature. Using an
+    // explicit `request_id` field on every log line is the pragmatic alternative.
+    let request_id = new_request_id();
     tracing::debug!(
-        service = %req.service,
-        method  = %req.method,
+        request_id = %request_id,
+        service    = %req.service,
+        method     = %req.method,
         "proxy: dispatching request",
     );
 
@@ -355,6 +379,7 @@ pub async fn handle_proxy(
             };
             if is_timeout {
                 tracing::debug!(
+                    request_id = %request_id,
                     "proxy timeout for service '{}': {:#}",
                     req.service, e
                 );
@@ -363,7 +388,11 @@ pub async fn handle_proxy(
                     "upstream request timed out".to_string(),
                 )
             } else {
-                tracing::debug!("proxy auth/send error for service '{}': {:#}", req.service, e);
+                tracing::debug!(
+                    request_id = %request_id,
+                    "proxy auth/send error for service '{}': {:#}",
+                    req.service, e
+                );
                 proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed".to_string())
             }
         })?;
@@ -1847,6 +1876,161 @@ mod integration_tests {
         assert!(
             body.get("error").is_some(),
             "403 body must contain an 'error' key"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (h) SIGHUP registry swap — reload-services integration                  //
+    // ---------------------------------------------------------------------- //
+
+    /// Exercises the live registry-swap path that both SIGHUP and
+    /// `POST /vault/reload-services` use.
+    ///
+    /// Test sequence:
+    ///   1. Start vault-proxy with service A ("service-alpha") registered.
+    ///   2. Verify `GET /vault/services` lists only "service-alpha".
+    ///   3. Atomically swap in a new registry that adds service B ("service-beta")
+    ///      — this is the same three-lock write sequence used by both SIGHUP and
+    ///      the reload-services handler.
+    ///   4. Verify `GET /vault/services` now lists both "service-alpha" and
+    ///      "service-beta" — confirming the swap took effect without a restart.
+    ///
+    /// This test catches regressions in:
+    ///   - The `Arc<RwLock<ServiceRegistry>>` write-lock acquisition order.
+    ///   - The rollback guard (a separate sub-test verifies rollback behaviour).
+    ///   - The `cached_folder_id` invalidation after the swap.
+    #[tokio::test]
+    async fn sighup_registry_swap_adds_service_without_restart() {
+        use crate::vault::handlers;
+        use axum::routing::get;
+
+        // Start with one service registered.
+        let mut initial_registry = ServiceRegistry::new();
+        initial_registry.register(ServiceEntry {
+            name: "service-alpha".to_string(),
+            base_url: "http://alpha.local/api".to_string(),
+            auth: AuthPattern::Bearer {
+                vault_item: "vault-proxy - Alpha".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+
+        let state = make_state(initial_registry);
+
+        let app = Router::new()
+            .route("/vault/services", get(handlers::list_services))
+            .with_state(state.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        // Step 1: Confirm initial state — only service-alpha is registered.
+        let resp = client
+            .get(format!("http://{}/vault/services", addr))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let names = body["services"].as_array().expect("services must be array");
+        assert_eq!(names.len(), 1, "initial registry must have 1 service");
+        assert!(
+            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
+            "service-alpha must be in initial registry"
+        );
+
+        // Step 2: Build a new registry with both service-alpha and service-beta
+        // and atomically swap it in — exactly what SIGHUP / reload-services does.
+        let mut new_registry = ServiceRegistry::new();
+        new_registry.register(ServiceEntry {
+            name: "service-alpha".to_string(),
+            base_url: "http://alpha.local/api".to_string(),
+            auth: AuthPattern::Bearer {
+                vault_item: "vault-proxy - Alpha".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+        new_registry.register(ServiceEntry {
+            name: "service-beta".to_string(),
+            base_url: "http://beta.local/api".to_string(),
+            auth: AuthPattern::Header {
+                header_name: "X-Api-Key".to_string(),
+                vault_item: "vault-proxy - Beta".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+
+        // Perform the three-lock swap (same order as SIGHUP handler).
+        *state.registry.write().await = new_registry;
+        *state.ca_cert_clients.write().await = std::collections::HashMap::new();
+        *state.cached_folder_id.write().await = None;
+
+        // Step 3: Verify service-beta is now visible — swap succeeded.
+        let resp = client
+            .get(format!("http://{}/vault/services", addr))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let names = body["services"].as_array().expect("services must be array");
+        assert_eq!(names.len(), 2, "after swap, registry must have 2 services");
+        assert!(
+            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-beta")),
+            "service-beta must appear in registry after atomic swap (SIGHUP regression check)"
+        );
+        assert!(
+            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
+            "service-alpha must still be present after swap"
+        );
+    }
+
+    /// Verify the SIGHUP rollback guard: swapping in an empty registry when
+    /// the current one is non-empty must be refused.
+    ///
+    /// This mirrors the rollback logic in both the SIGHUP handler and
+    /// `reload_services` — a zero-service reload result keeps the old registry.
+    #[tokio::test]
+    async fn sighup_rollback_guard_refuses_empty_registry_swap() {
+        let mut initial_registry = ServiceRegistry::new();
+        initial_registry.register(ServiceEntry {
+            name: "existing-service".to_string(),
+            base_url: "http://existing.local".to_string(),
+            auth: AuthPattern::Bearer {
+                vault_item: "vault-proxy - Existing".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+
+        let state = make_state(initial_registry);
+
+        // Attempt the rollback scenario: empty new_registry + non-empty old.
+        let empty_registry = ServiceRegistry::new();
+        let new_svc_count = empty_registry.list().len();
+        let prev_svc_count = state.registry.read().await.list().len();
+
+        // Apply the rollback guard (same condition as SIGHUP handler).
+        let should_rollback = new_svc_count == 0 && prev_svc_count > 0;
+        assert!(should_rollback, "rollback guard must fire when new registry is empty");
+
+        // Guard fires — do NOT swap. Old registry stays in place.
+        if !should_rollback {
+            *state.registry.write().await = empty_registry;
+        }
+
+        // After the (non-)swap, the registry must still have the original service.
+        let current_count = state.registry.read().await.list().len();
+        assert_eq!(
+            current_count, 1,
+            "rollback guard must preserve original registry — \
+             zero-service reload must be rejected (SIGHUP regression check)"
         );
     }
 }

@@ -52,29 +52,61 @@ fn default_true() -> bool {
 // AuthPattern                                                                  //
 // -------------------------------------------------------------------------- //
 
-/// Describes how a downstream service authenticates requests.
+/// Describes how vault-proxy authenticates outgoing requests to a downstream
+/// service.
+///
+/// Each variant maps one-to-one with the `auth` values accepted in
+/// `services.toml`. The active variant determines which credential fields are
+/// read from Vaultwarden and how they are attached to the forwarded HTTP request.
+///
+/// # Extension points
+///
+/// To add a new auth pattern:
+/// 1. Add a new variant here with the required fields.
+/// 2. Add the corresponding TOML `auth = "my_pattern"` arm in
+///    [`ServiceRegistry::from_toml_file`].
+/// 3. Add the match arm in [`crate::proxy::apply_auth_and_send`] that
+///    reads credentials and constructs the request.
 #[derive(Debug, Clone)]
 pub enum AuthPattern {
     /// Inject a static token into a named request header.
-    /// e.g. `X-Api-Key`, `X-Plex-Token`
+    ///
+    /// `header_name` — the HTTP header to set (e.g. `"X-Api-Key"`, `"X-Plex-Token"`).
+    /// `vault_item` — the Vaultwarden item whose **password field** holds the token.
+    ///
+    /// Use for: Sonarr, Radarr, Plex, Overseerr, and any service that accepts
+    /// a static credential in a custom header.
     Header {
         header_name: String,
         vault_item: String,
     },
 
     /// Append a credential as a URL query parameter.
-    /// e.g. Tautulli's `?apikey=xxx`
+    ///
+    /// `param_name` — the query parameter name (e.g. `"apikey"`).
+    /// `vault_item` — the Vaultwarden item whose **password field** holds the key.
+    ///
+    /// Use for: Tautulli (`?apikey=xxx`) and similar query-param APIs.
     QueryParam {
         param_name: String,
         vault_item: String,
     },
 
     /// `Authorization: Bearer <token>` header.
-    /// e.g. Home Assistant long-lived access token.
+    ///
+    /// `vault_item` — the Vaultwarden item whose **password field** holds the token.
+    ///
+    /// Use for: Home Assistant long-lived access tokens and any standard Bearer API.
     Bearer { vault_item: String },
 
     /// HTTP Basic authentication derived from two custom vault fields.
-    /// e.g. OPNsense API key + secret.
+    ///
+    /// `vault_item`   — the Vaultwarden item containing the credentials.
+    /// `key_field`    — the custom field name whose value is used as the username.
+    /// `secret_field` — the custom field name whose value is used as the password.
+    ///
+    /// Use for: OPNsense (API key + secret), and any service that requires
+    /// non-standard field names for Basic auth credentials.
     Basic {
         vault_item: String,
         key_field: String,
@@ -83,11 +115,14 @@ pub enum AuthPattern {
 
     /// Session-based login: first POST credentials to `login_path`, extract a
     /// token from the JSON response field `token_field`, then attach it as a
-    /// `Bearer` header (or service-specific header) on the real request.
+    /// `Bearer` header on the real request.
     ///
-    /// When `login_include_username` is `false`, the login body contains only the
-    /// password field (no username). Configure this in `services.toml` for services
-    /// like Duplicati whose login API does not accept a username field.
+    /// Tokens are cached for 15 minutes (see `SESSION_TOKEN_TTL`). A 401 from
+    /// the upstream automatically triggers a fresh login and one retry.
+    ///
+    /// `login_include_username` — when `false`, the login body contains only the
+    /// password field (no username). Use for services like Duplicati whose login
+    /// API does not accept a username field.
     Session {
         vault_item: String,
         login_path: String,
@@ -98,7 +133,10 @@ pub enum AuthPattern {
     /// UniFi dual auth: try `X-API-Key` from `vault_item.password`, and on
     /// auth failure fall back to POST `login_path` with
     /// `{"username","password","remember":true}` using the same vault item.
-    /// Session cookies + CSRF are managed by the `unifi_session` module.
+    ///
+    /// Session cookies + CSRF tokens are managed by the `unifi_session` module.
+    ///
+    /// Use for: UniFi OS (UDM, UDM-Pro, UDM-SE) controllers.
     UnifiDual {
         vault_item: String,
         login_path: String,
@@ -109,25 +147,60 @@ pub enum AuthPattern {
 // ServiceEntry                                                                 //
 // -------------------------------------------------------------------------- //
 
-/// A registered downstream service.
+/// A registered downstream service — the primary extension point for
+/// integrating vault-proxy with a new service.
+///
+/// Instances are created by [`ServiceRegistry::from_toml_file`] (from
+/// `services.toml`) or via [`ServiceRegistry::register`] in tests and the
+/// legacy config-driven paths.
+///
+/// # Adding a new service
+///
+/// Add a `[[service]]` block to `services.toml`:
+///
+/// ```toml
+/// [[service]]
+/// name       = "myservice"
+/// base_url   = "http://myservice.local:8080/api/v1"
+/// auth       = "bearer"
+/// vault_item = "vault-proxy - MyService"
+/// ```
+///
+/// The `name` field becomes the key callers pass as `"service"` in
+/// `POST /proxy` requests. `vault_item` must match a Vaultwarden item name
+/// inside the configured `vault_folder`.
 #[derive(Debug, Clone)]
 pub struct ServiceEntry {
-    /// Logical name used as the lookup key (e.g. "sonarr", "ha/home").
+    /// Logical name used as the lookup key in `POST /proxy` requests.
+    ///
+    /// Must be unique within the registry. Validated at load time: names
+    /// containing `/` are allowed (e.g. `"ha/home"`) to enable
+    /// namespace-style grouping. Names must not be empty.
     pub name: String,
-    /// Full base URL including any path prefix (e.g. "http://192.0.2.1:8989/api/v3").
+    /// Full base URL including any path prefix, e.g. `"http://192.0.2.1:8989/api/v3"`.
+    ///
+    /// The `path` from each `POST /proxy` call is appended to this URL.
+    /// Trailing slashes are stripped at load time to prevent double-slash
+    /// construction (`base_url/path` is always used, never `base_url//path`).
     pub base_url: String,
-    /// How to authenticate requests to this service.
+    /// Auth pattern that determines how credentials are obtained from Vaultwarden
+    /// and how they are attached to outgoing HTTP requests.
     pub auth: AuthPattern,
-    /// Set when the service presents a self-signed TLS cert (typically
-    /// LAN-local appliances like OPNsense, Duplicati-UI-over-HTTPS, etc.).
-    /// Dispatched via `state.http_permissive` instead of the strict `state.http`.
-    /// iter-29 added this — previously iter-1's TLS-strict `state.http`
-    /// silently broke OPNsense (502 "error sending request").
+    /// When `true`, TLS certificate verification is disabled for this service.
+    ///
+    /// Use only for LAN-local services with self-signed certificates (e.g.
+    /// OPNsense, Duplicati). Never use for internet-facing endpoints.
+    /// A startup warning is logged for every service with this flag set.
     pub insecure_tls: bool,
-    /// Optional path to a PEM CA certificate bundle for this service. When set,
-    /// a per-service reqwest client is built that trusts this CA in addition to
-    /// the system root store — the correct option for internal-CA-signed services
-    /// where `insecure_tls = true` would disable all TLS verification.
+    /// Path to a PEM-encoded CA certificate bundle for this service.
+    ///
+    /// When set, a dedicated `reqwest::Client` is built at startup that trusts
+    /// this CA in addition to the system root store. This is the correct
+    /// option for services signed by a private/internal CA, where
+    /// `insecure_tls = true` would be too broad (disabling all verification).
+    ///
+    /// The client is built once at startup and stored in
+    /// `AppState::ca_cert_clients` to preserve connection-pool reuse.
     pub ca_cert_path: Option<String>,
 }
 
@@ -137,6 +210,19 @@ pub struct ServiceEntry {
 
 /// In-memory registry of all downstream services vault-proxy knows how to
 /// authenticate.
+///
+/// The registry is loaded from `services.toml` at startup via
+/// [`ServiceRegistry::from_toml_file`] and stored in
+/// `AppState::registry` behind a `tokio::sync::RwLock` so it can be
+/// atomically swapped on SIGHUP or `POST /vault/reload-services` without
+/// restarting the process.
+///
+/// # Concurrency
+///
+/// All read operations (handler path) acquire a shared read lock. The SIGHUP
+/// handler and `reload_services` endpoint acquire an exclusive write lock
+/// only during the brief swap. In-flight requests that cloned a `ServiceEntry`
+/// before the swap continue to completion unaffected.
 pub struct ServiceRegistry {
     entries: HashMap<String, ServiceEntry>,
 }
