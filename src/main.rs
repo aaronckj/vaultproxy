@@ -35,7 +35,11 @@ use vault::handlers;
 // -------------------------------------------------------------------------- //
 
 #[derive(Parser, Clone)]
-#[command(name = "vaultproxy", about = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets")]
+#[command(
+    name = "vaultproxy",
+    version,  // iter-33: automatically derives version from Cargo.toml via env!("CARGO_PKG_VERSION")
+    about = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets"
+)]
 struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:3201")]
@@ -1620,6 +1624,8 @@ async fn start_server(
         let sighup_state = state.clone();
         let sighup_config_dir = config_dir.to_string();
         let sighup_proxy_timeout = args.proxy_timeout;
+        let sighup_vault = vault_arc.clone();
+        let sighup_vault_folder = args.vault_folder.clone();
         tokio::spawn(async move {
             let mut sighup = match tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::hangup(),
@@ -1726,6 +1732,28 @@ async fn start_server(
                         "SIGHUP: reload complete — {} service(s) now registered (was {})",
                         svc_count, prev_svc_count
                     );
+
+                    // iter-33: Re-run the vault_folder existence check so
+                    // operators who created the folder and then sent SIGHUP
+                    // see an explicit confirmation rather than silence. This
+                    // mirrors the startup check in main() and uses the same
+                    // log format so log-scrapers can match either event.
+                    let resolved = sighup_vault.find_folder_id_by_name_async(&sighup_vault_folder).await;
+                    if resolved.is_none() {
+                        tracing::warn!(
+                            vault_folder = %sighup_vault_folder,
+                            "SIGHUP: vault_folder '{}' was NOT FOUND in Vaultwarden. \
+                             Scoped endpoints will fall through to permissive mode. \
+                             Create the folder in Vaultwarden and send SIGHUP again.",
+                            sighup_vault_folder
+                        );
+                    } else {
+                        tracing::info!(
+                            vault_folder = %sighup_vault_folder,
+                            "SIGHUP: vault_folder '{}' confirmed in Vaultwarden — scoped endpoints active",
+                            sighup_vault_folder
+                        );
+                    }
                 }
             }
         });

@@ -233,6 +233,18 @@ Sensitive field values (`password`, `token`, `api_key`, `secret`, `bearer`, `coo
 
 The file is written to disk every 10 entries or on process shutdown (whichever comes first). To ship it to a SIEM, tail the file or mount the config directory and read it directly — there is no syslog or stdout output of audit events.
 
+## Credential audit (password health scan)
+
+vault-proxy includes a built-in credential health scanner that detects weak, reused, and compromised passwords across vault items in your `vault_folder`. Three HTTP endpoints control it:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `POST /audit/credaudit/scan/start` | public | Start a new audit run. Returns `{"run_id": "..."}`. |
+| `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `{"status": "...", "items": [...]}`. |
+| `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations from the review. Body: `{"run_id": "...", "approvals": [...]}`. |
+
+Results are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
+
 ## Operator runbook
 
 ### vault-proxy won't start

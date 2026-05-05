@@ -3,6 +3,10 @@
 #
 # Use `vault-proxy --launch <name>` to start a server with credentials injected.
 #
+# RELOAD NOTE: Changes to this file require a PROCESS RESTART — they are NOT
+# picked up by SIGHUP. SIGHUP only reloads services.toml (the /proxy registry).
+# To apply mcp-servers.toml changes: docker compose restart vaultproxy
+#
 # SECURITY NOTES:
 #
 #   1. /proc/<pid>/environ exposure: --launch injects credentials into the

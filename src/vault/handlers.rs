@@ -420,6 +420,9 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 
     Json(json!({
         "status": "ok",
+        // iter-33: include binary version so monitoring systems and operators
+        // can confirm which release is running without shelling into the container.
+        "version": env!("CARGO_PKG_VERSION"),
         "vault_item_count": items.len(),
         "vault_folder": state.vault_folder,
         "service_count": service_count,

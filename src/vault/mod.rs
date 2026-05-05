@@ -1766,6 +1766,36 @@ impl VaultManager {
             http: Client::new(),
         }
     }
+
+    /// Seed the stub vault with a cipher and a named folder.
+    ///
+    /// Only available in test builds. Allows integration tests to populate
+    /// the in-memory vault without a live Vaultwarden connection, so that
+    /// handlers that call `get_cipher_by_id` and `find_folder_id_by_name_async`
+    /// return deterministic values rather than None/empty.
+    ///
+    /// `folder_id` and `folder_name` are inserted into the folder index.
+    /// `cipher` is stored under its `cipher.id` key.
+    #[cfg(test)]
+    pub async fn seed_for_test(
+        &self,
+        folder_id: String,
+        folder_name: String,
+        cipher: crate::vault::types::EncryptedCipher,
+    ) {
+        // Insert folder into both the name→id index and all_folders list.
+        let mut folders = self.folders.write().await;
+        folders.insert(folder_id.clone(), folder_name.clone());
+        drop(folders);
+
+        let mut all_folders = self.all_folders.write().await;
+        all_folders.push((folder_id, folder_name));
+        drop(all_folders);
+
+        // Insert cipher into the items map keyed by its id.
+        let mut items = self.items.write().await;
+        items.insert(cipher.id.clone(), (cipher.id.clone(), cipher));
+    }
 }
 
 #[cfg(test)]

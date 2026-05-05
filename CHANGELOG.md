@@ -3,6 +3,73 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.7] — iterations 32–33 audit fixes
+
+### Features (iteration 33)
+
+- **`--version` flag (iter-33)**: `vault-proxy --version` now prints the binary
+  version from `Cargo.toml` via clap's `#[command(version)]` derive. Previously
+  operators had no way to confirm which release was running without inspecting the
+  binary or reading `Cargo.toml`.
+
+- **`GET /vault/health` version field (iter-33)**: The health response now includes
+  a `"version"` field (`env!("CARGO_PKG_VERSION")`). Monitoring systems and
+  operators can confirm the running version without shelling into the container.
+
+- **Request tracing spans in `handle_proxy` (iter-33)**: `POST /proxy` now creates
+  a `tracing::info_span!("proxy", service, method)` at the start of each request.
+  All log lines emitted during a single request (permission check, vault decrypt,
+  upstream send, audit entry) share the `service` and `method` fields, making
+  correlated log analysis possible in structured-log tools.
+
+- **`UnifiRequestCtx` struct — `too_many_arguments` refactor (iter-33)**:
+  `unifi_session::handle_request` had 8 parameters, triggering
+  `clippy::too_many_arguments`. Introduced `UnifiRequestCtx { base_url, method,
+  path, body, query }` to group the per-request routing fields. The new signature
+  is `handle_request(cache, service, req: &UnifiRequestCtx, auth_ctx:
+  &UnifiDualAuthCtx)`. All call sites (proxy/mod.rs and all test helpers) updated.
+
+- **SIGHUP vault_folder re-check (iter-33)**: After a successful `services.toml`
+  reload, the SIGHUP handler now re-runs the vault_folder existence check and logs
+  a confirmation or warning. Operators who create the vault folder and send SIGHUP
+  now see an explicit `vault_folder confirmed` log line instead of silence.
+
+- **Credential audit endpoints documented in README (iter-33)**: The three HTTP
+  endpoints exposed by the `credential_audit` module (`/audit/credaudit/scan/start`,
+  `/audit/credaudit/review_pending/{run_id}`, `/audit/credaudit/apply`) were live
+  but undocumented. Added a "Credential audit" section to `README.md`.
+
+- **`mcp-servers.example.toml` SIGHUP/restart clarification (iter-33)**:
+  Added a comment at the top of `mcp-servers.example.toml` explaining that changes
+  to this file require a process restart — they are NOT picked up by SIGHUP (which
+  only reloads `services.toml`).
+
+- **Vault scope guard integration test (iter-33)**: Added integration test
+  `vault_folder_scope_guard_blocks_out_of_folder_delete` that wires a real axum
+  router, registers a `vault_folder` in `AppState`, and verifies that
+  `POST /vault/items/delete` with an item ID from outside the vault_folder returns
+  403 FORBIDDEN. Catches regressions in the scope-guard code path.
+
+### Correctness fixes (iteration 32)
+
+- **Middleware integration tests (iter-32)**: Added integration tests for the
+  rate-limiter middleware (`rate_limiter_returns_429_after_budget_exhausted`),
+  DNS rebinding guard (`dns_rebinding_guard_blocks_external_host`), and the
+  internal bearer token middleware (`internal_token_middleware_returns_401_without_header`).
+  These tests exercise the full axum middleware stack via real HTTP requests.
+
+- **`/rotate` returns 501 Not Implemented (iter-32)**: `POST /rotate` now returns
+  `501 Not Implemented` with a JSON body explaining the feature status, rather than
+  silently succeeding or returning an unrelated error. The internal token middleware
+  still applies — callers must present a valid bearer token before reaching the
+  handler.
+
+- **`--check` integration test (iter-32)**: Added a subprocess-level test that
+  runs `vault-proxy --check` against a temp `services.toml` and asserts the correct
+  exit code and stdout content without standing up a live Vaultwarden connection.
+
+- **`Cargo.toml` bumped to `0.1.7` (iter-33)**: Captures all iter-32/33 fixes.
+
 ## [0.1.6] — iterations 29–31 audit fixes
 
 ### Correctness fixes (iteration 31)

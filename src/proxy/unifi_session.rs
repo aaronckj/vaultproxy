@@ -162,18 +162,35 @@ pub struct UnifiResponse {
 /// Extra query params as (key, value) pairs supplied by the caller.
 pub type QueryPairs<'a> = &'a [(&'a str, String)];
 
+/// Groups the per-request routing fields so `handle_request` avoids an
+/// 8-parameter signature (clippy::too_many_arguments).
+///
+/// Separating these from `UnifiDualAuthCtx` keeps the auth credentials
+/// (`username`, `password`, `login_path`) distinct from the routing details
+/// (`base_url`, `method`, `path`, `body`, `query`), which improves call-site
+/// clarity: callers construct the ctx once per vault-item and the req once
+/// per HTTP call.
+pub struct UnifiRequestCtx<'a> {
+    pub base_url: &'a str,
+    pub method: Method,
+    pub path: &'a str,
+    pub body: Option<&'a Value>,
+    pub query: QueryPairs<'a>,
+}
+
 /// Forward a UniFi request, attempting `X-API-Key` first and falling back to
 /// session-cookie login on auth failure. Caches session state per service.
 pub async fn handle_request(
     cache: &UnifiSessionCache,
     service: &str,
-    base_url: &str,
-    method: Method,
-    path: &str,
-    body: Option<&Value>,
-    query: QueryPairs<'_>,
-    ctx: &UnifiDualAuthCtx,
+    req: &UnifiRequestCtx<'_>,
+    auth_ctx: &UnifiDualAuthCtx,
 ) -> Result<UnifiResponse> {
+    let base_url = req.base_url;
+    let method = req.method.clone();
+    let path = req.path;
+    let body = req.body;
+    let query = req.query;
     let target = build_url(base_url, path);
 
     // --- Attempt 1: X-API-Key via a bare (no cookie jar) client. ---
@@ -190,7 +207,7 @@ pub async fn handle_request(
         &target,
         body,
         query,
-        &[("X-API-Key", ctx.password.as_str())],
+        &[("X-API-Key", auth_ctx.password.as_str())],
         None,
     )
     .await?;
@@ -210,7 +227,7 @@ pub async fn handle_request(
     // session would continue working against UDM (which doesn't know the
     // upstream credential changed) until UDM's own session TTL expired —
     // silently extending the old credential's authority.
-    let current_fp = fingerprint_creds(&ctx.username, &ctx.password);
+    let current_fp = fingerprint_creds(&auth_ctx.username, &auth_ctx.password);
     if let Some(ref state) = *guard {
         if state.cred_fingerprint != current_fp {
             tracing::info!(service, "UniFi credentials rotated — invalidating cached session");
@@ -219,7 +236,7 @@ pub async fn handle_request(
     }
 
     if guard.is_none() {
-        let mut new_session = login(base_url, ctx).await?;
+        let mut new_session = login(base_url, auth_ctx).await?;
         new_session.cred_fingerprint = current_fp.clone();
         *guard = Some(new_session);
     }
@@ -240,7 +257,7 @@ pub async fn handle_request(
     // If the retry itself looks like auth failure, relogin once and retry.
     if is_auth_failure(retry.status, &retry.headers, &retry.json) {
         tracing::warn!(service, "session expired, re-logging in once");
-        let mut refreshed = login(base_url, ctx).await?;
+        let mut refreshed = login(base_url, auth_ctx).await?;
         refreshed.cred_fingerprint = current_fp.clone();
         *guard = Some(refreshed);
         let session = guard.as_ref().expect("session just refreshed");
@@ -532,6 +549,28 @@ mod tests {
         }
     }
 
+    /// Helper: call `handle_request` using the new `UnifiRequestCtx` wrapper.
+    /// Reduces test boilerplate from 9-arg positional calls to a compact helper.
+    async fn call(
+        cache: &UnifiSessionCache,
+        service: &str,
+        base_url: &str,
+        http_method: Method,
+        http_path: &str,
+        body: Option<&Value>,
+        query: &[(&str, String)],
+        auth_ctx: &UnifiDualAuthCtx,
+    ) -> Result<UnifiResponse> {
+        let req = UnifiRequestCtx {
+            base_url,
+            method: http_method,
+            path: http_path,
+            body,
+            query,
+        };
+        handle_request(cache, service, &req, auth_ctx).await
+    }
+
     #[tokio::test]
     async fn api_key_success_no_login_attempted() {
         let server = MockServer::start().await;
@@ -556,7 +595,7 @@ mod tests {
             .await;
 
         let cache = UnifiSessionCache::new();
-        let resp = handle_request(
+        let resp = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -616,7 +655,7 @@ mod tests {
             .await;
 
         let cache = UnifiSessionCache::new();
-        let resp = handle_request(
+        let resp = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -676,7 +715,7 @@ mod tests {
         let cache = UnifiSessionCache::new();
 
         // First call: forces login + retry.
-        let r1 = handle_request(
+        let r1 = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -694,7 +733,7 @@ mod tests {
         // exhausted so the "wrong-key" matcher won't re-match -- wiremock
         // will 404), which still looks like an auth failure; handler then
         // finds a cached session and skips login.
-        let r2 = handle_request(
+        let r2 = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -733,7 +772,7 @@ mod tests {
             .await;
 
         let cache = UnifiSessionCache::new();
-        let err = handle_request(
+        let err = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -780,7 +819,7 @@ mod tests {
             .await;
 
         let cache = UnifiSessionCache::new();
-        let resp = handle_request(
+        let resp = call(
             &cache,
             "unifi_home",
             &server.uri(),
@@ -837,17 +876,15 @@ mod tests {
             let cache = cache.clone();
             let uri = uri.clone();
             tasks.push(tokio::spawn(async move {
-                handle_request(
-                    &cache,
-                    "unifi_home",
-                    &uri,
-                    Method::GET,
-                    "/api/self/sites",
-                    None,
-                    &[],
-                    &ctx("home", "wrong"),
-                )
-                .await
+                let auth_ctx = ctx("home", "wrong");
+                let req = UnifiRequestCtx {
+                    base_url: &uri,
+                    method: Method::GET,
+                    path: "/api/self/sites",
+                    body: None,
+                    query: &[],
+                };
+                handle_request(&cache, "unifi_home", &req, &auth_ctx).await
             }));
         }
 
@@ -895,13 +932,14 @@ mod tests {
             .await;
 
         let cache = UnifiSessionCache::new();
-        let resp = handle_request(
+        let body = serde_json::json!({"cmd": "kick-sta", "mac": "aa:bb:cc:dd:ee:ff"});
+        let resp = call(
             &cache,
             "unifi_home",
             &server.uri(),
             Method::POST,
             "/api/s/default/cmd/stamgr",
-            Some(&serde_json::json!({"cmd": "kick-sta", "mac": "aa:bb:cc:dd:ee:ff"})),
+            Some(&body),
             &[],
             &ctx("home", "wrong"),
         )
@@ -974,7 +1012,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let resp = handle_request(
+        let resp = call(
             &cache,
             "unifi_home",
             &server.uri(),

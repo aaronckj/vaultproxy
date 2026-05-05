@@ -16,7 +16,7 @@ use crate::browser::BrowserAgent;
 use crate::sync::SyncManager;
 use crate::vault::VaultManager;
 use registry::{AuthPattern, ServiceRegistry};
-use unifi_session::{handle_request as unifi_handle_request, UnifiDualAuthCtx, UnifiSessionCache};
+use unifi_session::{handle_request as unifi_handle_request, UnifiDualAuthCtx, UnifiRequestCtx, UnifiSessionCache};
 
 // -------------------------------------------------------------------------- //
 // 2FA approval queue                                                           //
@@ -192,6 +192,17 @@ pub async fn handle_proxy(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProxyRequest>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<ProxyError>)> {
+    // iter-33: Emit a structured debug log at the start of every proxy call so
+    // that all log lines for this request share service+method context. A held
+    // span guard would require `Send`, which is incompatible with axum handlers.
+    // Operators using a structured-log aggregator (Loki, Elasticsearch, etc.)
+    // can correlate lines by filtering on `service` and `method` fields.
+    tracing::debug!(
+        service = %req.service,
+        method  = %req.method,
+        "proxy: dispatching request",
+    );
+
     // 0. Check tool permission for this service request.
     let tool_name = format!("{}_{}", req.service, req.method.to_lowercase());
     let permission = state.permissions.read().await.get_permission(&tool_name);
@@ -589,14 +600,17 @@ async fn apply_auth_and_send(
                 req.path.trim_start_matches('/')
             );
 
+            let unifi_req = UnifiRequestCtx {
+                base_url: &login_base,
+                method,
+                path: &path_with_prefix,
+                body: req.body.as_ref(),
+                query: &query_pairs,
+            };
             let resp = unifi_handle_request(
                 &state.unifi_sessions,
                 &service_name,
-                &login_base,
-                method,
-                &path_with_prefix,
-                req.body.as_ref(),
-                &query_pairs,
+                &unifi_req,
                 &ctx,
             )
             .await?;
@@ -1724,5 +1738,115 @@ mod integration_tests {
             "known service must not return 404 — it should fail at auth (502)");
         assert_eq!(resp.status().as_u16(), 502,
             "stub vault with no items must produce 502 (auth failure)");
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (g) vault_folder scope guard returns 403 for out-of-folder delete       //
+    // ---------------------------------------------------------------------- //
+
+    /// A `POST /vault/items/delete` request for an item that exists in the
+    /// vault but belongs to a DIFFERENT folder (not `vault_folder`) must
+    /// return 403 FORBIDDEN. This exercises the scope guard added in iter-18
+    /// and ensures a regression would be caught immediately.
+    ///
+    /// Test setup:
+    ///   - `AppState::vault_folder` = "vault-proxy"
+    ///   - Seed a folder "other-folder" (id "folder-other") and a cipher
+    ///     "item-001" whose `folder_id` is "folder-other".
+    ///   - Seed the "vault-proxy" folder (id "folder-vp") in the vault so
+    ///     `find_folder_id_by_name_async("vault-proxy")` returns Some("folder-vp").
+    ///   - Call `POST /vault/items/delete` with `id = "item-001"`.
+    ///   - Assert 403: item exists but is outside vault_folder.
+    #[tokio::test]
+    async fn vault_folder_scope_guard_blocks_out_of_folder_delete() {
+        use axum::routing::{get, post};
+        use crate::vault::handlers;
+        use crate::vault::types::EncryptedCipher;
+
+        let state = make_state(ServiceRegistry::new());
+
+        // Seed the vault: "vault-proxy" folder and an item in "other-folder".
+        let vault = &state.vault;
+        // Insert the vault-proxy folder so the scope guard resolves it.
+        vault
+            .seed_for_test(
+                "folder-vp".to_string(),
+                "vault-proxy".to_string(),
+                // Dummy cipher in "vault-proxy" — not the target of the delete.
+                EncryptedCipher {
+                    id: "item-vp".to_string(),
+                    name: "2.a|b".to_string(), // minimal encrypted string
+                    cipher_type: 1,
+                    login: None,
+                    card: None,
+                    identity: None,
+                    secure_note: None,
+                    fields: None,
+                    notes: None,
+                    organization_id: None,
+                    collection_ids: None,
+                    folder_id: Some("folder-vp".to_string()),
+                    revision_date: None,
+                    key: None,
+                    extra: None,
+                },
+            )
+            .await;
+
+        // Seed "other-folder" with the item the test will try to delete.
+        vault
+            .seed_for_test(
+                "folder-other".to_string(),
+                "other-folder".to_string(),
+                EncryptedCipher {
+                    id: "item-001".to_string(),
+                    name: "2.a|b".to_string(),
+                    cipher_type: 1,
+                    login: None,
+                    card: None,
+                    identity: None,
+                    secure_note: None,
+                    fields: None,
+                    notes: None,
+                    organization_id: None,
+                    collection_ids: None,
+                    // This item is in "other-folder", NOT in "vault-proxy".
+                    folder_id: Some("folder-other".to_string()),
+                    revision_date: None,
+                    key: None,
+                    extra: None,
+                },
+            )
+            .await;
+
+        let app = Router::new()
+            .route("/vault/items/delete", post(handlers::delete_item))
+            .route("/vault/health", get(handlers::health))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/vault/items/delete", addr))
+            .json(&json!({
+                "id": "item-001",
+                "confirm": true
+            }))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(), 403,
+            "item outside vault_folder must be rejected with 403 FORBIDDEN \
+             (scope guard regression check)"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body.get("error").is_some(),
+            "403 body must contain an 'error' key"
+        );
     }
 }
