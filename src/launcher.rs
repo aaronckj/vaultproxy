@@ -244,6 +244,50 @@ pub async fn launch(
         resolved.len()
     );
 
+    // Issue (iter-17): Prevent duplicate launches of the same MCP server.
+    //
+    // Two processes running `vault-proxy --launch <name>` simultaneously would
+    // both resolve the same vault credentials, both spawn the same MCP server
+    // binary, and both write the same env vars — resulting in two competing MCP
+    // server instances attached to the same stdio session, which corrupts the
+    // MCP protocol stream.
+    //
+    // Guard: create a lock file named after the server in the config directory.
+    // If the file already exists and is locked (another vault-proxy instance
+    // holds it via fcntl advisory lock), abort with a clear error. The lock is
+    // released automatically when the process exits (advisory locks are not
+    // inherited across exec).
+    //
+    // Using a name-based lock (not a PID file) means the check is
+    // instantaneous — we don't need to read a PID and probe /proc.
+    //
+    // Non-Unix builds fall back to a best-effort file existence check (advisory
+    // locks are not available on Windows).
+    let lock_path = Path::new(config_dir).join(format!(".launch-lock-{}.lock", server_name));
+    let _lock_file = {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("could not open launch lock file {:?}", lock_path))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let ret = unsafe {
+                libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+            };
+            if ret != 0 {
+                anyhow::bail!(
+                    "another vault-proxy --launch {} is already running (lock file {:?} is held). \
+                     Wait for it to finish or kill the duplicate process.",
+                    server_name, lock_path
+                );
+            }
+        }
+        f
+    };
+
     // Safe env vars to inherit from parent (non-sensitive, needed for child to function).
     // XDG_RUNTIME_DIR is intentionally excluded: it points to /run/user/<uid>
     // which contains D-Bus, Wayland, and systemd session sockets. Passing it

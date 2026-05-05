@@ -49,6 +49,8 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 
 Services are registered in `services.toml` inside your `--config-dir` (default `/config/services.toml`). Copy `services.example.toml` from the repo as a starting point.
 
+> **Note:** `services.toml` is read **once at startup** and is NOT hot-reloaded. If you add, remove, or change a `[[service]]` block, you must restart vault-proxy for the change to take effect. `POST /vault/resync` only refreshes vault *credentials* from Vaultwarden — it does not reload `services.toml`.
+
 ```toml
 # Each [[service]] block registers one downstream service.
 # `name` is what you pass as "service" in POST /proxy calls.

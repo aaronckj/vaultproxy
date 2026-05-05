@@ -920,8 +920,13 @@ fn build_request(
 /// UPSTREAM_BODY_LIMIT_MB=8     # tighten to 8 MB for memory-constrained hosts
 /// ```
 ///
-/// Values below 1 MB or above 2048 MB are rejected at startup; 0 would make
-/// every response fail and very large values risk OOM on constrained hosts.
+/// Issue (iter-17): Validation is performed at call time (not at startup).
+/// Invalid values (`UPSTREAM_BODY_LIMIT_MB=0`, `=abc`, or negative) fall back
+/// to the 32 MB default with a `tracing::warn` — the process does not panic.
+/// Out-of-range positive values (< 1 MB or > 2048 MB) also warn and fall back.
+/// This means a misconfiguration is caught in logs on the first proxied request,
+/// not at startup. The warn-and-default strategy avoids hard startup failures
+/// for a non-critical tuning knob; operators should monitor startup logs.
 fn upstream_body_limit_bytes() -> usize {
     const DEFAULT_MB: usize = 32;
     const MIN_MB: usize = 1;
@@ -987,6 +992,26 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
     // responses we use `bytes()` which buffers the full body — so the actual
     // cap is enforced by checking the returned length.
     let body_limit = upstream_body_limit_bytes();
+
+    // Issue (iter-17): Short-circuit body read for status codes that MUST NOT
+    // carry a response body per RFC 9110 (HTTP Semantics §6.3.x):
+    //   - 204 No Content
+    //   - 304 Not Modified
+    // For these statuses, `resp.bytes()` would return an empty slice anyway
+    // (reqwest drains the body), but skipping it avoids a redundant read and
+    // makes intent explicit.  We also skip the Content-Length check because it
+    // has no meaning for bodyless responses.
+    //
+    // 3xx redirect responses (301, 302, …) ARE allowed to have a body — a short
+    // HTML "Moved Permanently" page is conventional — and we forward them as-is.
+    // Since `redirect::Policy::none()` prevents reqwest from following the
+    // redirect, the MCP caller receives the 3xx status and body directly.  That
+    // body will fail JSON parsing and be wrapped in `{"_raw": "..."}`, which is
+    // the correct behaviour: the caller should inspect the Location header (if
+    // present), not try to parse the redirect page as JSON.
+    if status == 204 || status == 304 {
+        return Ok(ProxyResponse { status, body: Value::Null });
+    }
 
     if let Some(content_length) = resp.content_length() {
         if content_length > body_limit as u64 {

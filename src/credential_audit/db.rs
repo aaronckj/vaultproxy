@@ -109,11 +109,30 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         if applied.contains(version) {
             continue;
         }
-        conn.execute_batch(sql)?;
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)",
-            [version],
-        )?;
+        // Issue (iter-17): Wrap each migration + the schema_migrations INSERT in
+        // a single transaction.  Without this, if execute_batch() succeeds but
+        // the INSERT fails (e.g. disk full), the migration is NOT recorded as
+        // applied.  On the next restart the migration would be re-run, hitting
+        // "table already exists" / "duplicate column" errors from SQLite.
+        // Conversely, if execute_batch() partially applies (several DDL
+        // statements in one batch where the last fails), the transaction rolls
+        // back the entire migration, leaving the DB in a clean state rather than
+        // a half-migrated one.
+        conn.execute_batch("BEGIN;")?;
+        match (|| -> Result<()> {
+            conn.execute_batch(sql)?;
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?1)",
+                [version],
+            )?;
+            Ok(())
+        })() {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                conn.execute_batch("ROLLBACK;").ok();
+                return Err(e);
+            }
+        }
     }
     Ok(())
 }

@@ -528,6 +528,29 @@ impl ServiceRegistry {
 
     /// Build a `ServiceRegistry` from a `services.toml` file in `--config-dir`.
     ///
+    /// # Hot-reload: NOT supported
+    ///
+    /// Issue (iter-17): `services.toml` is read **once at startup** and is NOT
+    /// watched for changes.  If an operator adds, removes, or modifies a
+    /// `[[service]]` block at runtime, the change will not take effect until the
+    /// vault-proxy process is restarted.  Calling `POST /vault/resync` does NOT
+    /// reload `services.toml` — it only re-fetches vault *items* (credentials)
+    /// from Vaultwarden.  The startup log and `/vault/resync` response body both
+    /// explicitly state this to avoid operator confusion.
+    ///
+    /// # Shared vault_item across services
+    ///
+    /// Issue (iter-17): Two `[[service]]` entries may share the same `vault_item`
+    /// value (e.g. two UniFi controllers pointing at `vault-proxy - UniFi`).
+    /// This is **valid and intentional** — both services read the same single
+    /// credential.  There is no deduplication or conflict: each service entry is
+    /// stored independently; the shared vault_item string is simply a lookup key
+    /// that resolves to the same vault credential at request time.  The
+    /// `test_credential` handler also accepts a vault_item ID (not a service
+    /// name), so testing one service's vault item implicitly tests all services
+    /// that share it.  Document this in your services.toml with a comment if the
+    /// sharing is intentional.
+    ///
     /// A missing file returns an empty registry with a warning (not an error).
     /// This is **intentionally different** from `launcher::launch()`, which
     /// returns a hard error when `mcp-servers.toml` is missing:

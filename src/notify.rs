@@ -85,6 +85,16 @@ impl Notifier {
         }
     }
 
+    /// ntfy.sh enforces a 4096-byte limit on the message body and a 255-byte
+    /// limit on the Title header.  Vault item names or error descriptions that
+    /// exceed these limits would cause the POST to return a 400 Bad Request,
+    /// silently dropping the notification.
+    ///
+    /// We truncate at safe byte boundaries (not char boundaries, to avoid
+    /// splitting a multi-byte UTF-8 sequence — `truncate_utf8` handles this).
+    const NTFY_TITLE_MAX_BYTES: usize = 255;
+    const NTFY_BODY_MAX_BYTES: usize = 4096;
+
     pub async fn send(&self, title: &str, message: &str, priority: u8) -> Result<()> {
         // Enforce rate limit to prevent notification floods.
         {
@@ -100,11 +110,26 @@ impl Notifier {
 
         match &self.channel {
             NotifyChannel::Ntfy { url } => {
+                // Issue (iter-17): Truncate title and body to ntfy.sh's hard
+                // limits (255 bytes for Title, 4096 bytes for body).  A vault
+                // item name or error description that exceeds these limits
+                // causes ntfy.sh to return 400 Bad Request, silently dropping
+                // the notification.
+                let title_safe = truncate_utf8(title, Self::NTFY_TITLE_MAX_BYTES);
+                let body_safe = truncate_utf8(message, Self::NTFY_BODY_MAX_BYTES);
+                if title_safe.len() < title.len() || body_safe.len() < message.len() {
+                    tracing::debug!(
+                        "notification truncated to fit ntfy.sh limits \
+                         (title: {} → {} bytes, body: {} → {} bytes)",
+                        title.len(), title_safe.len(),
+                        message.len(), body_safe.len(),
+                    );
+                }
                 self.http
                     .post(url)
-                    .header("Title", title)
+                    .header("Title", title_safe)
                     .header("Priority", priority.to_string())
-                    .body(message.to_string())
+                    .body(body_safe.to_string())
                     .send()
                     .await?;
                 Ok(())
@@ -187,5 +212,56 @@ impl Notifier {
         self.send(title, &msg, if success { 3 } else { 4 })
             .await
             .ok();
+    }
+}
+
+/// Truncate `s` to at most `max_bytes` bytes, respecting UTF-8 char boundaries.
+///
+/// Returns a `&str` slice of `s` — no allocation if already within the limit.
+/// Truncation is performed at the last valid UTF-8 char boundary at or below
+/// `max_bytes`, so the result is always valid UTF-8.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk back from max_bytes to find a valid char boundary.
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_utf8;
+
+    #[test]
+    fn ascii_within_limit_unchanged() {
+        assert_eq!(truncate_utf8("hello", 10), "hello");
+    }
+
+    #[test]
+    fn ascii_truncated_at_boundary() {
+        assert_eq!(truncate_utf8("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn multibyte_not_split() {
+        // "é" is 2 bytes (U+00E9). Truncating at 1 byte must not split it.
+        let s = "aébcd";
+        let r = truncate_utf8(s, 2); // 'a' = 1 byte, 'é' = 2 bytes → fits 'a' only
+        assert_eq!(r, "a");
+        assert!(r.is_ascii()); // verify no invalid bytes
+    }
+
+    #[test]
+    fn empty_string_unchanged() {
+        assert_eq!(truncate_utf8("", 10), "");
+    }
+
+    #[test]
+    fn exact_limit_unchanged() {
+        assert_eq!(truncate_utf8("hello", 5), "hello");
     }
 }

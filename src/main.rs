@@ -627,7 +627,12 @@ async fn start_server(
             services_path
         );
     } else {
-        tracing::info!("registered {} services from {:?}: {:?}", svc_count, services_path, registry.list());
+        tracing::info!(
+            "registered {} services from {:?}: {:?} \
+             (services.toml is read once at startup — restart required to pick up changes; \
+             POST /vault/resync reloads credentials only)",
+            svc_count, services_path, registry.list()
+        );
     }
 
     // Issue (iter-15): Startup configuration summary — log all key settings so

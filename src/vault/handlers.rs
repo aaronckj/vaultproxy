@@ -516,6 +516,53 @@ pub async fn update_item(
         None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
     };
 
+    // Issue (iter-17): Scope update_item to items inside state.vault_folder only.
+    //
+    // Without this guard an MCP caller can pass any vault item UUID — including
+    // items outside the vault-proxy folder (banking passwords, personal notes,
+    // SSH keys, etc.) — and overwrite their name, username, password, or URI.
+    // vault-proxy has no business modifying items it doesn't own.
+    //
+    // We resolve vault_folder → folder_id async; if the folder is not found we
+    // fall through permissively (the vault_folder may not yet exist in a fresh
+    // vault, or the operator may be mid-setup).  We only block when we can
+    // positively confirm the item belongs to a *different* folder.
+    {
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match cipher.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} is not in the vault-proxy folder ('{}') — \
+                                 update_item only modifies items owned by vault-proxy",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    // Item has no folder — could be a root-level item not owned by vault-proxy.
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} has no folder — update_item only modifies items \
+                                 inside the vault-proxy folder ('{}')",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
+        // If vault_folder_id is None (folder not found), fall through and allow
+        // the update — the operator is likely running a fresh/test vault.
+    }
+
     let enc_key = state.vault.enc_key();
     let mac_key = state.vault.mac_key();
 
@@ -1667,7 +1714,21 @@ pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::St
     match state.vault.sync().await {
         Ok(()) => {
             let items = state.vault.list_items().await;
-            (axum::http::StatusCode::OK, Json(json!({"ok": true, "items": items.len()})))
+            // Issue (iter-17): Make the scope of this endpoint explicit in the
+            // response body. `/vault/resync` reloads vault *items* (credentials)
+            // from Vaultwarden only — it does NOT reload `services.toml` or
+            // rebuild `ca_cert_clients`. Operators who add a new service to
+            // `services.toml` must restart the process; calling resync will NOT
+            // make the new service available. Including `scope` and
+            // `services_toml_note` in the response prevents confusion where an
+            // operator adds a service, calls resync, and wonders why it still
+            // returns 404 "unknown service".
+            (axum::http::StatusCode::OK, Json(json!({
+                "ok": true,
+                "items": items.len(),
+                "scope": "vault_items_only",
+                "services_toml_note": "services.toml and CA-cert clients are NOT reloaded by this endpoint — restart the process to pick up services.toml changes",
+            })))
         }
         Err(e) => {
             // On error, reset the timestamp so operators can immediately retry
