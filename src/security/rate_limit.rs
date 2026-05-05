@@ -144,12 +144,10 @@ pub async fn rate_limit_middleware(
 ///   - The MCP callers (Claude desktop + Node.js servers) are well-behaved clients
 ///     that complete requests quickly.
 ///
-/// TODO(public-release): Add a per-connection header-read timeout using
-/// `axum_server`'s `HttpConfig::http1_header_read_timeout` (or Tower's
-/// `TimeoutLayer` at the connection level) before any non-homelab deployment.
-/// The relevant axum-server API is:
-///   `axum_server::Server::http_config(HttpConfig::new().timer(TokioTimer::new()).build())`
-/// where `HttpConfig` is re-exported from `hyper`.
+/// RESOLVED (iter-22): A per-connection HTTP/1 header-read timeout of 5 seconds
+/// has been added to the main API server via `axum_server::bind(...).http_builder()
+/// .http1().timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(5))`.
+/// See `main.rs::start_server` for the implementation.
 ///
 /// # Shared-IP bucket limitation
 ///

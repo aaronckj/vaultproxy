@@ -10,6 +10,40 @@ use crate::proxy::AppState;
 use super::types::{DuplicateGroup, FolderInfo, MaskedItem};
 
 // -------------------------------------------------------------------------- //
+// Helpers                                                                     //
+// -------------------------------------------------------------------------- //
+
+/// Resolve the `vault_folder` name to its Vaultwarden folder ID, using the
+/// cached value in `state.cached_folder_id` when available.
+///
+/// Issue (iter-22): Every scoped handler previously called
+/// `find_folder_id_by_name_async` on every request — a read lock + linear scan
+/// over the folder map. Since `vault_folder` is static (set at startup),
+/// caching the resolved ID avoids the repeated lock acquisition.
+///
+/// The cache is invalidated by `POST /vault/resync` (which may rename or
+/// recreate the folder). A `None` in the cache means "not yet resolved" —
+/// this function populates it on first call and returns the resolved ID.
+///
+/// Callers that get `None` back should treat it as "folder not found in the
+/// vault" (same semantics as `find_folder_id_by_name_async`).
+pub async fn resolve_vault_folder_id(state: &Arc<AppState>) -> Option<String> {
+    // Fast path: cache hit.
+    {
+        let cached = state.cached_folder_id.read().await;
+        if let Some(ref id) = *cached {
+            return Some(id.clone());
+        }
+    }
+    // Slow path: resolve and populate the cache.
+    let id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+    if let Some(ref resolved) = id {
+        *state.cached_folder_id.write().await = Some(resolved.clone());
+    }
+    id
+}
+
+// -------------------------------------------------------------------------- //
 // Request types                                                               //
 // -------------------------------------------------------------------------- //
 
@@ -52,6 +86,30 @@ fn validate_item_name(name: &str) -> Result<(), String> {
     }
     if name.split('/').any(|seg| seg.is_empty()) {
         return Err(format!("name '{}' has empty path segment", name));
+    }
+    Ok(())
+}
+
+/// Validate a custom field name for an upsert operation.
+///
+/// Issue (iter-22): `upsert_connecterr_secrets` accepts `fields: BTreeMap<String, String>`
+/// where keys are field names written to Vaultwarden. These were previously not
+/// validated for control characters. A field name with an embedded `\n` or `\0`
+/// could corrupt structured log output or confuse Vaultwarden's internal field storage.
+///
+/// Field names differ from item names: they do not use `/` path syntax, so the
+/// empty-path-segment check is omitted. Otherwise the same control-character
+/// rejection applies.
+fn validate_field_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("field name is empty".into());
+    }
+    if name.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
+        return Err(format!(
+            "field name '{}' contains a control character (newline, null, tab, etc.) — \
+             field names must contain only printable characters",
+            name.escape_debug()
+        ));
     }
     Ok(())
 }
@@ -452,11 +510,23 @@ pub async fn list_folders(
         // Return all folders — used by callers that need to resolve destination
         // folder IDs for `POST /vault/items/move`. Audit so operators can see
         // when the full listing is requested.
+        //
+        // Issue (iter-22): The iter-21 comment said "Audit logging is applied"
+        // but only a tracing::info! was present — the structured AuditLog was
+        // never called for this path. Fixed here.
         tracing::info!(
             "list_folders: include_all=true requested — returning all {} folder(s) \
              for destination resolution (move_item use case)",
             all.len()
         );
+        state.audit_log.log(crate::security::audit_log::AuditEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            tool_name: "vault__list_folders".to_string(),
+            args_summary: "include_all=true".to_string(),
+            result_summary: format!("ok; returned {} folder(s)", all.len()),
+            permission: "Allowed".to_string(),
+            trigger: "http".to_string(),
+        });
         return Json(all);
     }
 
@@ -834,9 +904,11 @@ pub async fn update_item(
 ///   (e.g. Docker Compose depends_on) so Connecterr completes the handshake
 ///   before any untrusted code runs.
 ///
-/// TODO(public-release): Consider requiring a pre-shared bootstrap token
-/// (e.g. written to a file only Connecterr can read) to gate the first
-/// handshake, eliminating the race entirely.
+/// RESOLVED (iter-22): A pre-shared bearer token is now required to call
+/// `/handshake`. The token is generated at startup and written to
+/// `$CONFIG_DIR/internal-token` (0o600 permissions). Connecterr reads the
+/// token file before calling `/handshake`, eliminating the race window for
+/// unauthenticated callers.
 pub async fn handshake(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Only allow handshake once — prevent key exfiltration after startup.
     if state.handshake_completed.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -2224,6 +2296,13 @@ pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::St
 
     match state.vault.sync().await {
         Ok(()) => {
+            // Issue (iter-22): Invalidate the cached folder_id so the next
+            // handler call re-resolves it against the freshly synced vault.
+            // A resync may rename or recreate the vault_folder, making the
+            // cached ID stale. Clearing here is cheap (one write lock) and
+            // happens at most once every 30 seconds (the resync cooldown).
+            *state.cached_folder_id.write().await = None;
+
             let items = state.vault.list_items().await;
             // Issue (iter-17): Make the scope of this endpoint explicit in the
             // response body. `/vault/resync` reloads vault *items* (credentials)
@@ -2400,17 +2479,13 @@ pub struct TotpRequest {
 ///
 /// This endpoint is **internal** to the legacy Connecterr TypeScript layer.
 /// It aggregates credential metadata from Vaultwarden and returns the result
-/// to any unauthenticated caller that can reach 127.0.0.1:3201. While the
-/// response contains only field *names* (never plaintext values), it does
-/// expose the internal structure of the vault folder, including service names
-/// and item names.
+/// to callers. While the response contains only field *names* (never plaintext
+/// values), it exposes the internal structure of the vault folder.
 ///
-/// For a public release, this endpoint should be:
-///   1. Protected by the same bearer-token or mTLS scheme used elsewhere, OR
-///   2. Removed if the TypeScript Connecterr layer is no longer maintained.
-///
-/// TODO(public-release): Gate behind authentication or remove if legacy
-/// Connecterr TypeScript layer is no longer in use.
+/// RESOLVED (iter-22): This endpoint is now gated behind the internal bearer
+/// token. Callers must present `Authorization: Bearer <token>` (token from
+/// `$CONFIG_DIR/internal-token`, 0o600 permissions). The TypeScript Connecterr
+/// side reads the token file and includes it in the Authorization header.
 pub async fn connecterr_secrets(
     State(state): State<Arc<AppState>>,
 ) -> (StatusCode, Json<Value>) {
@@ -2545,31 +2620,36 @@ pub async fn provide_totp(
 ///
 /// # Security note (iter-6 audit)
 ///
-/// This endpoint is **internal** to the legacy Connecterr CLI. Any
-/// unauthenticated caller on localhost can write arbitrary field names into
-/// the vault folder. While field *values* are not written by this endpoint
-/// (only field names / structural metadata), it could still be used to
-/// corrupt the vault folder structure. For a public release, consider:
-///   1. Protecting with authentication, OR
-///   2. Removing if the Connecterr CLI is no longer maintained.
+/// This endpoint is **internal** to the legacy Connecterr CLI.
 ///
-/// TODO(public-release): Gate behind authentication or remove if legacy
-/// Connecterr CLI layer is no longer in use.
+/// RESOLVED (iter-22): This endpoint is now gated behind the internal bearer
+/// token. Callers must present `Authorization: Bearer <token>` (token from
+/// `$CONFIG_DIR/internal-token`, 0o600 permissions).
 pub async fn upsert_connecterr_secrets(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpsertConnecterrSecretsRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    // Validate all names up-front so we don't half-apply.
+    // Validate all names and field names up-front so we don't half-apply.
+    //
+    // Issue (iter-22): field names were previously not validated for control
+    // characters. A crafted field name with `\n` or `\0` could corrupt
+    // Vaultwarden storage or inject fake log lines. Validate eagerly before
+    // any vault mutations so the entire batch is either accepted or rejected.
     let mut errors: Vec<Value> = Vec::new();
     for item in &req.items {
         if let Err(msg) = validate_item_name(&item.name) {
             errors.push(json!({ "name": item.name, "error": msg }));
         }
+        for field_key in item.fields.keys() {
+            if let Err(msg) = validate_field_name(field_key) {
+                errors.push(json!({ "name": item.name, "field": field_key, "error": msg }));
+            }
+        }
     }
     if !errors.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid item name(s)", "items": errors })),
+            Json(json!({ "error": "invalid item name(s) or field name(s)", "items": errors })),
         ));
     }
 

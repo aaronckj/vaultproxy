@@ -38,14 +38,12 @@ pub struct RotateRequest {
 /// credential rotation for any registered service name.
 ///
 /// Current rotation strategies for `sonarr` and `radarr` are **stubs** that
-/// return a placeholder result and perform no real action. When real rotation
-/// strategies are wired up, this endpoint MUST be protected behind
-/// authentication to prevent an attacker with local code execution (e.g. a
-/// compromised container on the same host) from forcing credential rotation
-/// in a denial-of-service pattern.
+/// return a placeholder result and perform no real action.
 ///
-/// TODO(public-release): Gate `/rotate` behind a bearer token or equivalent
-/// before connecting live rotation strategies.
+/// RESOLVED (iter-22): This endpoint is now gated behind the internal bearer
+/// token via `require_internal_token` middleware applied to the `/rotate` sub-router
+/// in `main.rs`. Callers must present `Authorization: Bearer <token>` where the
+/// token is read from `$CONFIG_DIR/internal-token` (0o600 permissions).
 pub async fn handle_rotate(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RotateRequest>,

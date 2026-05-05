@@ -97,6 +97,28 @@ pub struct AppState {
     /// cannot hammer Vaultwarden with full-vault syncs at 60 req/60s.
     /// Stored as seconds since the Unix epoch via `AtomicU64` (zero = never).
     pub last_resync_unix: Arc<std::sync::atomic::AtomicU64>,
+    /// Shared-secret bearer token for internal-only endpoints.
+    ///
+    /// Generated once at startup (or read from `$CONFIG_DIR/internal-token`)
+    /// and stored here for use by `require_internal_token` middleware. The
+    /// token is a 32-byte random hex string written to disk with 0o600
+    /// permissions so the TypeScript Connecterr side can read it.
+    ///
+    /// See `crate::internal_token` and `main.rs::require_internal_token`.
+    pub internal_token: Arc<String>,
+    /// Cached folder_id for `vault_folder`.
+    ///
+    /// Issue (iter-22): Every vault mutation handler calls
+    /// `find_folder_id_by_name_async(&vault_folder)`, which acquires a read
+    /// lock on the vault's folder map and does a linear scan. Since
+    /// `vault_folder` is static (set at startup), the resolved `folder_id`
+    /// can be cached here after the first successful resolution.
+    ///
+    /// The cache is invalidated (set to `None`) by `POST /vault/resync` so
+    /// that a folder rename or deletion is picked up after the next sync.
+    /// A `None` value means "not yet resolved or invalidated" — callers fall
+    /// back to `find_folder_id_by_name_async` and populate the cache.
+    pub cached_folder_id: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 // -------------------------------------------------------------------------- //

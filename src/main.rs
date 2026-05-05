@@ -1,4 +1,5 @@
 mod audit;
+mod internal_token;
 mod keystore;
 mod launcher;
 mod setup;
@@ -862,6 +863,27 @@ async fn start_server(
         _ => notify::Notifier::disabled(),
     });
 
+    // TODO 1 (iter-22): Load or generate the internal bearer token.
+    //
+    // All internal-only endpoints (/handshake, /vault/connecterr-secrets,
+    // /vault/connecterr-secrets/upsert, /rotate, /browser/*) are now gated by
+    // `require_internal_token` middleware.  The token is a 32-byte random hex
+    // string persisted to $CONFIG_DIR/internal-token with 0o600 permissions.
+    //
+    // The TypeScript Connecterr side reads the token from the same path before
+    // calling these endpoints:
+    //   const token = fs.readFileSync(process.env.CONFIG_DIR + '/internal-token', 'utf8').trim();
+    //   fetch('http://127.0.0.1:3201/vault/connecterr-secrets', {
+    //     headers: { 'Authorization': `Bearer ${token}` }
+    //   });
+    let token = internal_token::load_or_generate(config_dir)
+        .map_err(|e| anyhow::anyhow!("internal-token init failed: {}", e))?;
+    tracing::info!(
+        "internal bearer token path: {}/internal-token \
+         (TypeScript Connecterr side must present 'Authorization: Bearer <token>')",
+        config_dir
+    );
+
     // Assemble shared state.
     let state: Arc<AppState> = Arc::new(AppState {
         vault: vault_arc.clone(),
@@ -881,6 +903,10 @@ async fn start_server(
         handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         vault_folder: args.vault_folder.clone(),
         last_resync_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        internal_token: Arc::new(token),
+        // Populated lazily on the first vault mutation that needs the folder_id.
+        // Cleared by POST /vault/resync to pick up any folder renames/recreations.
+        cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
     });
 
     // Build router with rate limiting on sensitive endpoints.
@@ -891,47 +917,53 @@ async fn start_server(
     // route for Connecterr secrets, which can carry many items — override
     // to 512 KB per-route.
     //
-    // Security posture of internal / legacy endpoints (iter-6 audit):
+    // Security posture (iter-22 hardening):
     //
-    // ALL routes below go through:
+    // ALL routes go through:
     //   - `dns_rebinding_guard` (rejects non-localhost Host headers)
     //   - `rate_limit_middleware` (token-bucket per source IP)
+    //   - `api_security_headers` (X-Content-Type-Options, X-Frame-Options, etc.)
     //
-    // BUT they do NOT go through HTTP authentication middleware. This is the
-    // intended design for a localhost-only sidecar: process isolation and the
-    // DNS-rebinding guard are the primary access controls.  The following
-    // endpoints have additional per-endpoint notes:
+    // INTERNAL routes additionally require:
+    //   - `require_internal_token` (checks Authorization: Bearer <token>)
     //
-    //   /handshake               — single-use; returns ephemeral mTLS private
-    //                              key to the *first* caller.  See the handler
-    //                              docstring for the race-condition caveat and
-    //                              the TODO to add a bootstrap token gate.
-    //
-    //   /vault/inject-creds      — internal HA config-flow helper; credentials
-    //                              are injected into HA and NOT returned to the
-    //                              caller. No credential-return risk, but any
-    //                              local process can trigger HA credential flows.
-    //
-    //   /vault/connecterr-secrets        — legacy Connecterr TypeScript API.
-    //   /vault/connecterr-secrets/upsert   Returns vault folder structure.
-    //                                       See handler docstrings for
-    //                                       public-release TODO.
-    //
-    //   /rotate                  — currently stubs only; MUST be auth-gated
-    //                              before live rotation strategies are wired.
-    //                              See handler docstring.
-    //
-    //   /browser/*               — localhost-only; triggers playwright
-    //                              automation. Any local caller can start or
-    //                              abort a browser-based rotation workflow.
-    //
-    // TODO(public-release): Evaluate adding a shared-secret bearer token
-    // layer for the above internal endpoints before any non-homelab
-    // deployment.
+    // Internal routes (gated by bearer token):
+    //   /handshake               — returns ephemeral mTLS private key (single-use)
+    //   /vault/connecterr-secrets        — legacy Connecterr TypeScript API
+    //   /vault/connecterr-secrets/upsert — legacy Connecterr upsert
+    //   /rotate                  — credential rotation trigger
+    //   /browser/rotate          — browser-based rotation workflow trigger
+    //   /browser/status          — rotation status poll
+    //   /browser/screenshot      — last rotation screenshot
+    //   /browser/abort           — abort active rotation
     use axum::extract::DefaultBodyLimit;
     let rate_limiter = security::rate_limit::default_rate_limiter();
+
+    // Sub-router for internal-only endpoints — protected by bearer token.
+    // iter-22: these were previously open to any localhost process; now they
+    // require `Authorization: Bearer <token>` where <token> is read from
+    // $CONFIG_DIR/internal-token (0o600 — owner read/write only).
+    let internal_router = Router::new()
+        .route("/handshake", get(handlers::handshake))
+        .route("/vault/connecterr-secrets", get(handlers::connecterr_secrets))
+        .route(
+            "/vault/connecterr-secrets/upsert",
+            axum::routing::post(crate::vault::handlers::upsert_connecterr_secrets)
+                .layer(DefaultBodyLimit::max(512 * 1024)),
+        )
+        .route("/rotate",             post(rotate::handle_rotate))
+        .route("/browser/rotate",     post(browser_rotate))
+        .route("/browser/status",     get(browser_status))
+        .route("/browser/screenshot", get(browser_screenshot))
+        .route("/browser/abort",      post(browser_abort))
+        // Gate the entire sub-router behind the internal bearer token.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_internal_token,
+        ))
+        .with_state(state.clone());
+
     let app = Router::new()
-        .route("/handshake",          get(handlers::handshake))
         .route("/vault/health",       get(handlers::health))
         .route("/vault/items",        get(handlers::list_items))
         .route("/vault/duplicates",   get(handlers::list_duplicates))
@@ -941,12 +973,6 @@ async fn start_server(
         .route("/vault/items/clone",   post(handlers::clone_item))
         .route("/vault/write-env",    post(handlers::write_env))
         .route("/vault/items/untracked", get(handlers::list_untracked_items))
-        .route("/vault/connecterr-secrets", get(handlers::connecterr_secrets))
-        .route(
-            "/vault/connecterr-secrets/upsert",
-            axum::routing::post(crate::vault::handlers::upsert_connecterr_secrets)
-                .layer(DefaultBodyLimit::max(512 * 1024)),
-        )
         .route("/vault/totp",         post(handlers::generate_totp))
         .route("/vault/notes",        post(handlers::decrypt_notes))
         .route("/vault/items",        post(handlers::create_item))
@@ -962,11 +988,7 @@ async fn start_server(
         .route("/sync/setup-cloud",   post(handlers::setup_cloud))
         .route("/sync/totp",          post(handlers::provide_totp))
         .route("/proxy",              post(handle_proxy))
-        .route("/rotate",             post(rotate::handle_rotate))
-        .route("/browser/rotate",     post(browser_rotate))
-        .route("/browser/status",     get(browser_status))
-        .route("/browser/screenshot", get(browser_screenshot))
-        .route("/browser/abort",      post(browser_abort))
+        .merge(internal_router)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter,
@@ -1347,16 +1369,39 @@ async fn start_server(
             );
         }
     }
-    tracing::info!("vault-proxy listening on {}", args.listen);
-    let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async {
-        // Wait for either SIGTERM (Docker stop / systemd) or Ctrl-C.
-        // On non-Unix platforms (e.g., Windows dev builds) only Ctrl-C is
-        // available; SIGTERM handling is Unix-specific.
+    // TODO 2 (iter-22): Per-connection HTTP/1 header-read timeout — Slowloris defence.
+    //
+    // `axum::serve` uses `hyper_util::server::conn::auto::Builder` internally but
+    // intentionally does not expose HTTP/1 connection options — the axum 0.8
+    // source comments "Use hyper or hyper-util if you need configuration."
+    //
+    // We therefore switch the main API server from `axum::serve` to
+    // `axum_server::bind`, which wraps `hyper_util::server::conn::auto::Builder`
+    // and exposes `.http_builder()` — giving us access to the HTTP/1 builder:
+    //   server.http_builder()
+    //       .http1()
+    //       .timer(TokioTimer::new())
+    //       .header_read_timeout(Duration::from_secs(5));
+    //
+    // A Slowloris attack keeps HTTP/1.1 connections alive by sending request
+    // header bytes one at a time, never completing the header block. Without a
+    // header-read deadline, each such connection holds a tokio task indefinitely;
+    // the rate limiter only counts *completed* requests, so Slowloris bypasses it.
+    // A 5-second header-read timeout drops partial connections before they
+    // accumulate enough to exhaust available tasks.
+    //
+    // Graceful shutdown is implemented via `axum_server::Handle::graceful_shutdown`
+    // (10-second drain window): we spawn a task that waits for SIGTERM or Ctrl-C
+    // and then calls `handle.graceful_shutdown(Some(10s))`, stopping new accepts
+    // and waiting for in-flight requests to finish.
+    //
+    // ConnectInfo<SocketAddr> is preserved: `into_make_service_with_connect_info`
+    // is still used so the rate-limit middleware can key on client IP.
+    let server_handle = axum_server::Handle::new();
+    let shutdown_handle = server_handle.clone();
+
+    // Spawn the signal watcher — triggers graceful shutdown on SIGTERM or Ctrl-C.
+    tokio::spawn(async move {
         let sigterm_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = {
             #[cfg(unix)]
             {
@@ -1366,8 +1411,6 @@ async fn start_server(
                     ) {
                         sig.recv().await;
                     } else {
-                        // If we can't install SIGTERM handler, block forever
-                        // so the select! falls through to Ctrl-C only.
                         std::future::pending::<()>().await;
                     }
                 })
@@ -1377,7 +1420,6 @@ async fn start_server(
                 Box::pin(std::future::pending::<()>())
             }
         };
-
         tokio::select! {
             _ = sigterm_fut => {
                 tracing::info!("received SIGTERM — draining in-flight requests before exit");
@@ -1386,8 +1428,23 @@ async fn start_server(
                 tracing::info!("received Ctrl-C — draining in-flight requests before exit");
             }
         }
-    })
-    .await?;
+        // Allow up to 10 s for in-flight requests to complete before hard-kill.
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+    });
+
+    tracing::info!("vault-proxy listening on {}", args.listen);
+
+    let mut server = axum_server::bind(args.listen);
+    server
+        .http_builder()
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(5));
+
+    server
+        .handle(server_handle)
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+        .await?;
 
     tracing::info!("vault-proxy shut down cleanly");
     Ok(())
@@ -1526,6 +1583,67 @@ async fn browser_abort(
     };
     *browser.current_job.write().await = None;
     AxumJson(serde_json::json!({"status": "aborted"}))
+}
+
+/// Bearer-token gate for internal-only endpoints.
+///
+/// TODO 1/3 (iter-22): Any process on localhost can reach vault-proxy's
+/// `/handshake`, `/vault/connecterr-secrets*`, `/rotate`, and `/browser/*`
+/// endpoints — process isolation and the DNS-rebinding guard are the primary
+/// access controls, but a compromised container on the same host could abuse
+/// these endpoints.
+///
+/// This middleware adds a shared-secret layer: callers must present
+/// `Authorization: Bearer <token>` where `<token>` is the content of
+/// `$CONFIG_DIR/internal-token` (generated once at startup, stored with
+/// 0o600 permissions).
+///
+/// The TypeScript Connecterr side reads the token file before calling these
+/// endpoints:
+/// ```ts
+/// const token = fs.readFileSync(process.env.CONFIG_DIR + '/internal-token', 'utf8').trim();
+/// fetch('http://127.0.0.1:3201/vault/connecterr-secrets', {
+///   headers: { 'Authorization': `Bearer ${token}` }
+/// });
+/// ```
+async fn require_internal_token(
+    AxumState(state): AxumState<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+
+    // Extract the Bearer token from the Authorization header.
+    let provided = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim)
+        .unwrap_or("");
+
+    // Constant-time comparison to prevent timing oracles.
+    let expected = state.internal_token.as_str();
+    let valid = provided.len() == expected.len()
+        && provided.as_bytes().iter().zip(expected.as_bytes().iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0;
+
+    if !valid {
+        tracing::warn!(
+            "require_internal_token: rejected request to {} — missing or invalid Bearer token",
+            req.uri().path()
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            AxumJson(serde_json::json!({
+                "error": "unauthorized — internal endpoint requires Authorization: Bearer <token>",
+                "hint": "read the token from $CONFIG_DIR/internal-token"
+            })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
 }
 
 /// Adds security response headers to all main API (non-dashboard) responses.

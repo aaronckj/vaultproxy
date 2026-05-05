@@ -3,6 +3,53 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — iteration-22 security hardening
+
+### Security fixes (iteration 22)
+
+- **Internal bearer token for internal endpoints (iter-22 — TODO 1/3)**:
+  `/handshake`, `/vault/connecterr-secrets`, `/vault/connecterr-secrets/upsert`,
+  `/rotate`, `/browser/rotate`, `/browser/status`, `/browser/screenshot`, and
+  `/browser/abort` are now gated by a shared-secret bearer token. At startup
+  vault-proxy generates a 32-byte random hex token and writes it to
+  `$CONFIG_DIR/internal-token` with `0o600` permissions. Callers must present
+  `Authorization: Bearer <token>`. Previously any localhost process could call
+  these endpoints without authentication. The TypeScript Connecterr side reads
+  the token from the same file path.
+
+- **HTTP/1 header-read timeout — Slowloris defence (iter-22 — TODO 2)**:
+  The main API server now uses `axum_server::bind` instead of `axum::serve`,
+  configuring `http1().timer(TokioTimer::new()).header_read_timeout(5s)` on the
+  hyper-util connection builder. Without this, a Slowloris attack could hold
+  connections open indefinitely by sending headers one byte at a time; the rate
+  limiter only counts completed requests and would not have caught it. The 5-second
+  timeout drops partial connections before they accumulate. Graceful shutdown is
+  preserved via `axum_server::Handle::graceful_shutdown(10s)`.
+
+- **Field-name control-character injection in `upsert_connecterr_secrets`
+  (iter-22)**: The iter-21 fix added control-character rejection to item names
+  (`validate_item_name`), but field names in the `fields: BTreeMap<String, String>`
+  payload were not validated. A crafted field name with an embedded `\n` or `\0`
+  could corrupt Vaultwarden storage or inject fake log lines. A new
+  `validate_field_name` function is applied to all field keys before any vault
+  mutations.
+
+- **`list_folders?include_all=true` missing structured audit log (iter-22)**:
+  The iter-21 implementation logged `tracing::info!` only — the persistent
+  `AuditLog` was never written for the `include_all=true` path despite the
+  CHANGELOG stating "Audit logging is applied." Fixed: `state.audit_log.log()`
+  is now called for every `include_all=true` request.
+
+### Performance improvements (iteration 22)
+
+- **`find_folder_id_by_name_async` cached in AppState (iter-22)**: Every
+  scoped vault handler previously called `find_folder_id_by_name_async` on
+  every request — a read lock + linear scan over the folder map. Since
+  `vault_folder` is static (set at startup), the resolved `folder_id` is now
+  cached in `AppState::cached_folder_id`. The cache is invalidated by
+  `POST /vault/resync`. A new `resolve_vault_folder_id` helper encapsulates
+  the check-and-populate pattern for all handlers.
+
 ## [0.1.2] — iteration-21 audit fixes
 
 ### Security fixes (iteration 21)
