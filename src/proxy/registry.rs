@@ -63,7 +63,7 @@ pub enum AuthPattern {
 pub struct ServiceEntry {
     /// Logical name used as the lookup key (e.g. "sonarr", "ha/home").
     pub name: String,
-    /// Full base URL including any path prefix (e.g. "http://10.0.0.112:8989/api/v3").
+    /// Full base URL including any path prefix (e.g. "http://192.0.2.1:8989/api/v3").
     pub base_url: String,
     /// How to authenticate requests to this service.
     pub auth: AuthPattern,

@@ -1187,7 +1187,7 @@ pub struct InjectCredsRequest {
     pub vault_item: String,
     /// HA config flow ID to inject credentials into.
     pub flow_id: String,
-    /// HA base URL (e.g., "http://10.0.0.115:8123").
+    /// HA base URL (e.g., "http://192.0.2.1:8123").
     pub ha_url: String,
     /// HA long-lived access token item name in vault (notes field).
     pub ha_token_item: String,
@@ -1787,14 +1787,14 @@ mod upsert_tests {
     fn request_deserializes_flat_items() {
         let raw = json!({
             "items": [
-                { "name": "ssh/kali", "fields": { "host": "10.0.0.112", "port": "2222" } },
-                { "name": "unifi/home", "fields": { "url": "https://10.0.0.1" } },
+                { "name": "ssh/kali", "fields": { "host": "192.0.2.10", "port": "2222" } },
+                { "name": "unifi/home", "fields": { "url": "https://192.0.2.2" } },
             ]
         });
         let req: UpsertConnecterrSecretsRequest = serde_json::from_value(raw).unwrap();
         assert_eq!(req.items.len(), 2);
         assert_eq!(req.items[0].name, "ssh/kali");
-        assert_eq!(req.items[0].fields.get("host").unwrap(), "10.0.0.112");
+        assert_eq!(req.items[0].fields.get("host").unwrap(), "192.0.2.10");
     }
 
     #[test]
@@ -1815,7 +1815,7 @@ mod upsert_tests {
         // Build a request body containing one valid and one malformed item name.
         let raw = json!({
             "items": [
-                { "name": "ssh/kali", "fields": { "host": "10.0.0.112" } },
+                { "name": "ssh/kali", "fields": { "host": "192.0.2.10" } },
                 { "name": "bad//name", "fields": {} },
             ]
         });
