@@ -242,6 +242,24 @@ async fn main() -> anyhow::Result<()> {
 /// The dashboard serves /setup or /unlock pages. Once the user completes
 /// setup or unlock via the web UI, the process needs to be restarted to
 /// fully initialize (or we poll until credentials appear).
+///
+/// # Issue (iter-8): generate_mtls_certs() called twice in the same process
+///
+/// When `start_dashboard_only` is called and the user subsequently completes
+/// setup/unlock, this function calls `start_server()`, which calls
+/// `generate_mtls_certs()` a *second* time.
+///
+/// `generate_mtls_certs()` is stateless and pure: it calls `rcgen` to generate
+/// new in-memory ECDSA P-256 key pairs and self-signed certificates using only
+/// the OS entropy source. There are no global side effects, no file I/O, and no
+/// shared mutable state — each call produces a fresh independent set of
+/// certificates. The certs from the first call are used for the dashboard-only
+/// HTTPS server; the certs from the second call are used for the full server.
+/// Both sets are independent and simultaneously valid.
+///
+/// The only cost is entropy consumption (3 key pairs × 32 bytes each ≈ 96 bytes
+/// of entropy per call) and CPU time (a few milliseconds). This is not a
+/// resource leak.
 #[cfg(feature = "dashboard")]
 async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()> {
     // Generate ephemeral mTLS certificates for HTTPS
@@ -744,6 +762,27 @@ async fn start_server(
     let app = app.merge(cred_audit_router);
 
     // Spawn policy scheduler — checks rotation policies every hour.
+    //
+    // Issue (iter-8): A panic inside `tokio::spawn` silently terminates the
+    // spawned task. The JoinHandle is dropped immediately (we don't `.await`
+    // it), so the panic is swallowed with only a tokio runtime warning in
+    // debug builds.  The workaround is to wrap the inner loop body in a
+    // `std::panic::catch_unwind`-equivalent by catching per-iteration errors
+    // explicitly rather than letting any single bad policy propagate.
+    //
+    // The loop body already handles each iteration defensively:
+    //   - `load_policies` never panics (all paths return Vec)
+    //   - `save_policies` returns Result (logged on error, not propagated)
+    //   - `chrono` parsing is .ok()-guarded
+    //
+    // The remaining risk is an unexpected panic from a dependency. We add a
+    // TODO noting this rather than using `catch_unwind` (which requires
+    // AssertUnwindSafe wrapping of every captured variable).
+    //
+    // TODO(public-release): Wrap the spawn future body in a restart loop so
+    // a panic in the scheduler re-spawns the task rather than silently losing
+    // all rotation scheduling. Pattern:
+    //   loop { tokio::spawn(async move { /* scheduler body */ }).await.ok(); }
     {
         let policy_vault = vault_arc.clone();
         let _policy_notifier = state.notifier.clone();
@@ -1071,6 +1110,18 @@ async fn browser_rotate(
 
     if item_name.is_empty() {
         return AxumJson(serde_json::json!({"error": "item_name required"}));
+    }
+
+    // Issue (iter-8): Guard against an empty litellm_url. When --litellm-url is
+    // not configured (default = ""), VisionModel::analyze() constructs a
+    // relative URL ("/v1/chat/completions") which reqwest rejects with a
+    // "relative URL without a base" error deep inside the spawned workflow task,
+    // producing a log error with no clear indication that the root cause is a
+    // missing LITELLM_URL. Return a clear 400 here before spawning anything.
+    if browser.litellm_url.is_empty() {
+        return AxumJson(serde_json::json!({
+            "error": "browser rotation requires a vision model — set LITELLM_URL (e.g. LITELLM_URL=http://mlbox.local:4000)"
+        }));
     }
 
     // Validate login_url against the same SSRF policy used by `inject_creds`

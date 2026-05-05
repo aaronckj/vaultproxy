@@ -589,6 +589,33 @@ async fn session_login(
     token_field: &str,
     login_include_username: bool,
 ) -> anyhow::Result<String> {
+    // Issue (iter-8): Validate that login_path and token_field are non-empty.
+    //
+    // `from_toml_file()` ensures both are present (non-None) for session auth,
+    // but it does NOT check for empty strings. An empty login_path constructs a
+    // URL like `http://host/api` (trailing base_url with no login segment) which
+    // either 404s or, worse, posts credentials to the API root. An empty
+    // token_field calls `resp.get("")` which returns None and produces an
+    // "empty token" error message that gives no hint what went wrong.
+    //
+    // Checking here (at login time, not registry-load time) catches both
+    // services.toml entries and the legacy from_config / from_vault paths that
+    // don't go through the TOML validator.
+    if login_path.is_empty() {
+        return Err(anyhow::anyhow!(
+            "session auth for vault item '{}': login_path is empty — set login_path in services.toml \
+             (e.g. login_path = \"/tokens\")",
+            vault_item
+        ));
+    }
+    if token_field.is_empty() {
+        return Err(anyhow::anyhow!(
+            "session auth for vault item '{}': token_field is empty — set token_field in services.toml \
+             (e.g. token_field = \"token\")",
+            vault_item
+        ));
+    }
+
     // Determine the base URL for the service that owns this login endpoint.
     // The `login_path` is relative to the service's base_url.  We find the
     // matching registry entry by scanning for the vault item — there will be

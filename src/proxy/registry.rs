@@ -677,6 +677,18 @@ impl ServiceRegistry {
                             continue;
                         }
                     };
+                    // Issue (iter-8): Reject empty login_path. An empty string
+                    // passes the Option check above but would construct a login
+                    // URL of just `base_url` (e.g. "http://host/api") — the
+                    // login POST hits the API root, not the login endpoint.
+                    if login_path.is_empty() {
+                        tracing::error!(
+                            "service '{}': login_path is empty — skipping. \
+                             Set login_path to the login endpoint path (e.g. login_path = \"/tokens\")",
+                            svc.name
+                        );
+                        continue;
+                    }
                     // Reject login_path values that contain path traversal
                     // segments. `login_path` is concatenated with `base_url` to
                     // form the login URL (e.g. "http://host/api" + "/tokens" →
@@ -697,6 +709,18 @@ impl ServiceRegistry {
                             continue;
                         }
                     };
+                    // Issue (iter-8): Reject empty token_field. An empty string
+                    // would cause `resp.get("")` to always return None and then
+                    // produce "token field '' not found in login response" — a
+                    // confusing error that gives no hint the config is missing.
+                    if token_field.is_empty() {
+                        tracing::error!(
+                            "service '{}': token_field is empty — skipping. \
+                             Set token_field to the JSON key in the login response (e.g. token_field = \"token\")",
+                            svc.name
+                        );
+                        continue;
+                    }
                     AuthPattern::Session {
                         vault_item: svc.vault_item,
                         login_path,

@@ -28,9 +28,25 @@ fn default_dry_run() -> bool {
 pub async fn scan_start(
     State(orch): State<SharedOrch>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // TODO(iter-8): The blanket CONFLICT status is wrong for non-conflict errors.
+    // `start_scan` returns Err for at least three distinct cases:
+    //   - another scan already running  → 409 CONFLICT  (correct)
+    //   - engine unreachable            → 503 SERVICE_UNAVAILABLE
+    //   - DB failure                    → 500 INTERNAL_SERVER_ERROR
+    // Distinguish them by matching on the error message or by introducing a typed
+    // error enum so callers can act appropriately (e.g. retry on 503, not on 409).
     match orch.start_scan().await {
         Ok(run_id) => Ok(Json(serde_json::json!({"run_id": run_id}))),
-        Err(_) => Err(StatusCode::CONFLICT),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("another audit run is in progress") {
+                Err(StatusCode::CONFLICT)
+            } else if msg.contains("engine is not reachable") {
+                Err(StatusCode::SERVICE_UNAVAILABLE)
+            } else {
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
     }
 }
 

@@ -206,10 +206,27 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     println!("Your Vaultwarden master password is your recovery path — keep it safe.");
     println!();
     println!("Next steps:");
-    println!("  1. Copy services.example.toml to {}/services.toml and edit to match your setup.", config_dir);
-    println!("  2. Remove --setup from your start command and restart to begin proxying.");
-    println!("  3. Test with: curl -s http://127.0.0.1:3201/vault/health | jq .");
+    println!("  1. In Vaultwarden, create a folder named 'vault-proxy' (or your --vault-folder value).");
+    println!("     Add your service credentials as Login items inside that folder.");
+    println!("     Item names must match the `vault_item` field in services.toml");
+    println!("     (e.g. an item named 'vault-proxy - Home Assistant' for vault_item = \"vault-proxy - Home Assistant\").");
     println!();
+    println!("  2. Copy services.example.toml to {}/services.toml and edit to match your setup.", config_dir);
+    println!("     Each [[service]] block needs a `vault_item` that matches a Vaultwarden item name.");
+    println!();
+    println!("  3. Remove --setup from your start command and restart to begin proxying.");
+    println!();
+    println!("  4. Test with: curl -s http://127.0.0.1:3201/vault/health | jq .");
+    println!("     A successful first proxy call looks like:");
+    println!("     curl -s -X POST http://127.0.0.1:3201/proxy \\");
+    println!("       -H 'Content-Type: application/json' \\");
+    println!("       -d '{{\"service\":\"ha_home\",\"method\":\"GET\",\"path\":\"/api/\"}}' | jq .");
+    println!();
+    println!("  Common first-run problems:");
+    println!("    - 'unknown service'  → service name in request doesn't match services.toml `name`");
+    println!("    - 'upstream request failed' → base_url is wrong or the service is unreachable");
+    println!("    - 'credential not found'    → vault_item name doesn't match a Vaultwarden item");
+    println!("    - 'vault unavailable' (503) → check GET /vault/health for sync status");
 
     Ok(creds)
 }

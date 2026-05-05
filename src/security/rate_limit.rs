@@ -118,6 +118,28 @@ pub async fn rate_limit_middleware(
 
 /// Create a default rate limiter: 60 requests per 60-second window.
 ///
+/// # Slowloris / slow-client note
+///
+/// This rate limiter counts **completed** requests (the middleware runs after
+/// the request is fully received). A slowloris-style attack — opening many
+/// TCP connections and dribbling headers one byte at a time — is NOT mitigated
+/// here: slow clients hold an axum connection slot (and a Tokio task) indefinitely
+/// without ever incrementing the counter.
+///
+/// Axum does not set a read timeout by default. The primary mitigations in this
+/// deployment are:
+///   - The sidecar is bound to 127.0.0.1 only, so only local processes can
+///     connect; a network-level slowloris is impossible.
+///   - The MCP callers (Claude desktop + Node.js servers) are well-behaved clients
+///     that complete requests quickly.
+///
+/// TODO(public-release): Add a per-connection header-read timeout using
+/// `axum_server`'s `HttpConfig::http1_header_read_timeout` (or Tower's
+/// `TimeoutLayer` at the connection level) before any non-homelab deployment.
+/// The relevant axum-server API is:
+///   `axum_server::Server::http_config(HttpConfig::new().timer(TokioTimer::new()).build())`
+/// where `HttpConfig` is re-exported from `hyper`.
+///
 /// # Shared-IP bucket limitation
 ///
 /// The rate limiter keys on `(route, client_ip)`.  When vault-proxy is used

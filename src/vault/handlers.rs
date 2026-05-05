@@ -849,6 +849,20 @@ pub async fn test_credential(
 /// `target_path` is allowlisted to `/envs/` (the canonical bind mount for
 /// service env files). Rejecting unknown prefixes stops this handler from
 /// being a write-anywhere primitive.
+///
+/// # Public-release note
+///
+/// The hardcoded `/envs/` prefix is a homelab-specific convention (bind-mount
+/// path inside the Connecterr Docker Compose stack). Public users almost
+/// certainly do not have an `/envs/` directory.
+///
+/// TODO(public-release): This endpoint should either be removed entirely for
+/// the public release (it has no meaningful use outside the Connecterr Docker
+/// stack) or the allowed prefix should be made configurable via
+/// `--env-write-root` / `ENV_WRITE_ROOT` so operators can set a path that
+/// exists on their system. Until then, any public user calling this endpoint
+/// will receive a 400 "target_path must begin with ['/envs/']" error that
+/// gives no indication of how to fix it.
 pub async fn write_env(
     State(state): State<Arc<AppState>>,
     Json(req): Json<WriteEnvRequest>,
@@ -1453,6 +1467,24 @@ pub async fn generate_totp(
 // -------------------------------------------------------------------------- //
 
 /// `POST /vault/notes` -- decrypt and return the notes content for a vault item.
+///
+/// # Security note
+///
+/// This endpoint returns the **full decrypted notes field** to any unauthenticated
+/// caller on localhost. Notes can contain arbitrary sensitive data (API tokens,
+/// SSH keys, recovery codes, etc.). Unlike passwords (which are never returned),
+/// notes are returned in full because `inject_creds` legitimately needs to read
+/// a long-lived HA token from the notes field of a vault item.
+///
+/// For the internal sidecar use case this is acceptable: only local processes
+/// can call it and all routes already go through the DNS-rebinding guard.
+///
+/// TODO(public-release): Evaluate whether this endpoint is needed at all in the
+/// public release. If the only consumer is `inject_creds` (which calls
+/// `decrypt_notes` internally), the HTTP endpoint can be removed — keeping it
+/// creates an unnecessarily wide surface for notes exfiltration via any local
+/// process that can call the sidecar. If retained, it should be gated by the
+/// same authentication layer added to other sensitive endpoints.
 pub async fn decrypt_notes(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Value>,

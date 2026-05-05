@@ -25,10 +25,41 @@ pub fn build_secrets_json(pairs: Vec<(String, Map<String, Value>)>) -> Value {
     Value::Object(root)
 }
 
+/// Maximum depth of a vault item name path (slash-separated segments).
+/// Each recursive call to `walk_path` consumes one stack frame; the default
+/// Rust stack is 8 MiB and each frame is ~200 bytes, giving ~40 000 safe
+/// frames. We cap at 64 as a generous-but-safe limit: no legitimate service
+/// credential hierarchy needs more than a handful of levels, and any deeper
+/// name is almost certainly a misconfiguration or an attempted attack.
+pub const WALK_PATH_MAX_DEPTH: usize = 64;
+
 fn walk_path<'a>(root: &'a mut Map<String, Value>, parts: &[&str]) -> &'a mut Map<String, Value> {
+    walk_path_inner(root, parts, 0)
+}
+
+fn walk_path_inner<'a>(
+    root: &'a mut Map<String, Value>,
+    parts: &[&str],
+    depth: usize,
+) -> &'a mut Map<String, Value> {
     // Safety: callers must pass a non-empty slice. `build_secrets_json` splits
     // on '/' so the minimum is one element. Return root unchanged for empty
     // slices instead of panicking — callers validate item names before calling.
+    //
+    // Depth guard: `aggregate()` already rejects names with more than
+    // `WALK_PATH_MAX_DEPTH` segments before calling `build_secrets_json`, so
+    // this check is a belt-and-suspenders defence for direct callers of
+    // `build_secrets_json`. Returning root at the depth cap is safe: the
+    // offending item's fields will be merged into the parent node rather than
+    // discarded, which is a tolerable semantic degradation vs. a stack overflow.
+    if depth >= WALK_PATH_MAX_DEPTH {
+        tracing::warn!(
+            "walk_path: depth cap {} reached — truncating nested path. \
+             This should not happen in production; check vault item names.",
+            WALK_PATH_MAX_DEPTH
+        );
+        return root;
+    }
     let (head, tail) = match parts.split_first() {
         Some(pair) => pair,
         None => return root,
@@ -43,7 +74,7 @@ fn walk_path<'a>(root: &'a mut Map<String, Value>, parts: &[&str]) -> &'a mut Ma
         let entry = root.entry(head.to_string()).or_insert_with(|| Value::Object(Map::new()));
         if !entry.is_object() { *entry = Value::Object(Map::new()); }
         // SAFETY: we just ensured the entry is an Object above.
-        walk_path(entry.as_object_mut().expect("entry is Object"), tail)
+        walk_path_inner(entry.as_object_mut().expect("entry is Object"), tail, depth + 1)
     }
 }
 
@@ -93,6 +124,18 @@ pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<V
         // create "" keys in the output JSON.
         if name.is_empty() || name.split('/').any(|p| p.is_empty()) {
             tracing::warn!(item = %name, "skipping item with empty path segment");
+            continue;
+        }
+        // Reject deeply nested names that would recurse past the stack-safe
+        // limit in walk_path. A 65-segment path is not a real credential name.
+        let segment_count = name.split('/').count();
+        if segment_count > WALK_PATH_MAX_DEPTH {
+            tracing::warn!(
+                item = %name,
+                segments = segment_count,
+                max = WALK_PATH_MAX_DEPTH,
+                "skipping item: path too deep (would risk stack overflow in walk_path)"
+            );
             continue;
         }
         if !seen_names.insert(name.clone()) {
