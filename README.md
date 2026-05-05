@@ -38,12 +38,12 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 
 ## Security model
 
-- The proxy listens on `127.0.0.1:3201` only — network isolation is the primary guarantee
+- The proxy listens on `127.0.0.1:3201` by default — network isolation is the primary guarantee. **Warning:** if you override `--listen` to bind a non-loopback address (e.g. `0.0.0.0:3201`), all proxy and vault endpoints become accessible to any host on that network. There is no authentication middleware — the only access control is the loopback bind. A startup warning is logged whenever a non-loopback address is used. Never expose this port beyond the local machine without a reverse proxy with mTLS or network-layer ACLs.
 - DNS rebinding guard on all `/proxy` requests
-- Rate limit: 60 req/60s on `/proxy`
+- Rate limit: 60 req/60s on all endpoints
 - Credentials are decrypted in-process from an encrypted keystore; plaintext values never appear in logs
 - Optional TPM sealing: keystore is hardware-bound to the host machine (`--features tpm`)
-- Dashboard (optional, `--features dashboard`) listens on `127.0.0.1:3202` only
+- Dashboard (optional, `--features dashboard`) listens on `127.0.0.1:3202` by default; same `--listen` non-loopback warning applies
 
 ## Configuration
 

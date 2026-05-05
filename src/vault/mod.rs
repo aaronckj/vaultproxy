@@ -154,8 +154,17 @@ impl VaultManager {
 
         // Build an HTTP client that tolerates self-signed certificates (common
         // for self-hosted Vaultwarden instances).
+        //
+        // Issue (iter-14): No timeout was set on this client, so an unreachable
+        // or slow Vaultwarden server during `--setup` (or re-auth) would block
+        // the caller indefinitely — a 120-second (or longer) hang during the
+        // interactive setup wizard is a poor experience. Apply a 30-second
+        // connect+read timeout: long enough for legitimate slow auth responses
+        // (high-iteration KDF on low-power hardware), short enough to surface
+        // connectivity problems quickly.
         let http = Client::builder()
             .danger_accept_invalid_certs(true)
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("failed to build HTTP client")?;
 

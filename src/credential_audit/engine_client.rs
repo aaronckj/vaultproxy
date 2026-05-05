@@ -12,6 +12,12 @@ impl EngineClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            // 300s client-level timeout covers long LLM inference runs.
+            // Individual requests that do NOT involve LLM inference (health,
+            // telemetry) override this with shorter per-request timeouts —
+            // see each call site. The `run()` and `judge_login()` calls
+            // intentionally inherit the full 300s window because they invoke
+            // the LLM engine and may take several minutes per batch.
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(300))
                 .build()
@@ -45,9 +51,14 @@ impl EngineClient {
     }
 
     pub async fn telemetry(&self, run_id: &str) -> Result<serde_json::Value> {
+        // Issue (iter-14): Telemetry is a lightweight metadata fetch — no LLM
+        // inference involved. Override the 300s client default with a 10s
+        // per-request limit so a slow/hung engine does not stall audit
+        // orchestration for up to 5 minutes.
         let resp = self
             .http
             .get(format!("{}/audit/telemetry/{run_id}", self.base_url))
+            .timeout(Duration::from_secs(10))
             .send()
             .await
             .context("telemetry request")?;

@@ -550,7 +550,39 @@ impl ServiceRegistry {
             }
         };
 
-        for svc in parsed.service {
+        for mut svc in parsed.service {
+            // Issue (iter-14): Trim leading/trailing whitespace from the service
+            // name and vault_item at load time.  A TOML entry like
+            //   name = "  ha_home  "
+            // would register under the key "  ha_home  " (with spaces), but
+            // callers always send {"service": "ha_home"} (without spaces),
+            // making the service silently unreachable.  The same applies to
+            // vault_item: "  vault-proxy - HA  " would never match the Vaultwarden
+            // item name, causing every credential lookup to return "not found".
+            //
+            // We trim here (before any other validation) so that the subsequent
+            // empty-name / all-whitespace checks correctly reject a name that
+            // becomes empty after trimming.
+            let trimmed_name = svc.name.trim().to_string();
+            if trimmed_name != svc.name {
+                tracing::warn!(
+                    "services.toml: service name '{}' has leading/trailing whitespace — \
+                     trimmed to '{}'. Update the config to remove the spaces.",
+                    svc.name, trimmed_name
+                );
+            }
+            svc.name = trimmed_name;
+
+            let trimmed_vault_item = svc.vault_item.trim().to_string();
+            if trimmed_vault_item != svc.vault_item {
+                tracing::warn!(
+                    "services.toml: vault_item '{}' for service '{}' has leading/trailing \
+                     whitespace — trimmed to '{}'. Update the config to remove the spaces.",
+                    svc.vault_item, svc.name, trimmed_vault_item
+                );
+            }
+            svc.vault_item = trimmed_vault_item;
+
             // Issue-1 (iter-4): Validate service name. An empty name would
             // register a "" key in the lookup map, making `/proxy` calls with
             // `service = ""` reach a real service. Names with null bytes, path
@@ -1594,5 +1626,55 @@ vault_item = "vault-proxy - CJK Service"
             registry.list().contains(&"my_服务"),
             "Unicode service name should be accepted"
         );
+    }
+
+    // Issue (iter-14): Whitespace trimming of name and vault_item.
+
+    #[test]
+    fn test_service_name_with_leading_trailing_spaces_is_trimmed() {
+        // A services.toml entry like name = "  ha_home  " should be reachable
+        // via {"service": "ha_home"} — the spaces must be stripped at load time
+        // so callers don't have to know about the config file's whitespace.
+        let f = write_toml(r#"
+[[service]]
+name = "  ha_home  "
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "vault-proxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        // The trimmed name "ha_home" must be reachable.
+        assert!(
+            registry.get("ha_home").is_some(),
+            "service with leading/trailing spaces in name should be reachable after trimming"
+        );
+        // The untrimmed key must NOT be present.
+        assert!(
+            registry.get("  ha_home  ").is_none(),
+            "service must not be registered under the untrimmed name"
+        );
+    }
+
+    #[test]
+    fn test_vault_item_with_leading_trailing_spaces_is_trimmed() {
+        // A vault_item with spaces ("  vault-proxy - HA  ") would never match
+        // the actual Vaultwarden item name and cause every credential lookup
+        // to return "not found". Trimming at load time silently fixes this.
+        let f = write_toml(r#"
+[[service]]
+name = "ha"
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "  vault-proxy - HA  "
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("ha").expect("service should be registered");
+        match &svc.auth {
+            AuthPattern::Bearer { vault_item } => {
+                assert_eq!(vault_item, "vault-proxy - HA",
+                    "vault_item should be trimmed of leading/trailing spaces");
+            }
+            other => panic!("expected Bearer, got {:?}", other),
+        }
     }
 }

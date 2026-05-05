@@ -3,15 +3,70 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — security hardening (iterations 1–10)
+## [Unreleased] — security hardening (iterations 1–14)
 
 The v0.1.0 release tag reflects the initial public scaffold. Since that
-tag, the codebase has gone through 10 focused security and reliability
-audit passes totalling 98+ individual fixes. The items below are
+tag, the codebase has gone through 14 focused security and reliability
+audit passes totalling 118+ individual fixes. The items below are
 representative; they are NOT all included in the v0.1.0 release artifact.
 
 Users building from source or pulling a `latest` image get all fixes.
 Users on the v0.1.0 tagged release should upgrade.
+
+### Security fixes (iterations 11–14)
+
+- **VaultManager HTTP client had no timeout (iter-14)**: `VaultManager::new()`
+  built its reqwest client without a timeout, causing `--setup` validation and
+  re-auth to hang indefinitely if Vaultwarden was unreachable (typo in URL, VW
+  down). A 30-second connect+read timeout is now applied.
+
+- **service name / vault_item whitespace not trimmed (iter-14)**: a services.toml
+  entry like `name = "  ha_home  "` was registered with leading/trailing spaces,
+  making the service silently unreachable (callers always send `{"service":"ha_home"}`
+  without spaces). Both `name` and `vault_item` are now trimmed at load time and
+  a warning is logged for config entries that needed trimming.
+
+- **README security model claimed loopback-only listen without caveat (iter-14)**:
+  the README stated "listens on 127.0.0.1:3201 only" without noting that `--listen`
+  can override this to a non-loopback address, removing the primary access control.
+  The security model section now prominently warns about non-loopback `--listen`
+  usage and matches the runtime warning already logged by `main.rs`.
+
+- **SSRF setup URL not validated (iter-13)**: the `validate_vaultwarden_creds`
+  function in `setup.rs` called `VaultManager::new()` with the operator-supplied
+  URL before checking it. A crafted setup URL could reach cloud-metadata endpoints.
+  The URL now passes through `is_allowed_outbound_url()` before any network call.
+
+- **Non-loopback --listen startup warning (iter-13)**: binding vault-proxy to
+  `0.0.0.0` or any non-loopback address without authentication middleware exposes
+  all endpoints to the local network. A prominent `SECURITY:` log entry is now
+  emitted at startup in this case.
+
+- **Scheme-less base_url emits actionable error (iter-13)**: a `base_url` without
+  an `http://` or `https://` prefix (e.g. `homeassistant.local:8123`) was
+  previously rejected with a generic SSRF error message. The message now
+  explicitly suggests adding the scheme.
+
+- **Duplicate mcp_server names logged at load time (iter-12)**: duplicate entries
+  in `mcp-servers.toml` (where only the first match is used) now log a warning,
+  making the silently-unreachable second entry visible.
+
+- **`mcp_server` command not found emits actionable error (iter-12)**: an
+  `ENOENT` (command not found) spawn failure now names the missing binary and
+  shows the inherited `PATH`, distinguishing it from permission-denied failures.
+
+- **Setup password minimum raised to 12 characters (iter-11)**: the previous
+  8-character minimum was below the bcrypt offline-crack threshold. The new 12-char
+  minimum with ≥2 character classes applies to both CLI and web setup flows.
+
+- **Non-TTY stdin in `--setup` yields actionable error (iter-11)**: when stdin is
+  not a TTY (Docker without `-t`, CI pipelines), `rpassword` returns a cryptic
+  "not a tty" error. The error is now mapped to a clear message explaining how to
+  allocate a pseudo-TTY or use the web setup flow instead.
+
+- **Userinfo in base_url rejected (iter-11)**: a `base_url` containing embedded
+  credentials (e.g. `http://user:pass@host/`) was accepted and the credentials
+  would appear in logs. Such URLs are now rejected at registry load time.
 
 ### Security fixes (iterations 1–10)
 
