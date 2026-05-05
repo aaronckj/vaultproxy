@@ -145,7 +145,7 @@ impl ServiceRegistry {
                     None => continue,
                 };
 
-                let entry = build_media_entry(name, svc_type, url);
+                let entry = build_media_entry(name, svc_type, url, "Connecterr");
                 if let Some(e) = entry {
                     registry.register(e);
                 }
@@ -421,7 +421,7 @@ impl ServiceRegistry {
                     Some(u) => u.trim_end_matches('/').to_string(),
                     None => continue,
                 };
-                if let Some(entry) = build_media_entry(svc_name.clone(), &svc_type, url) {
+                if let Some(entry) = build_media_entry(svc_name.clone(), &svc_type, url, vault_prefix) {
                     registry.register(entry);
                 }
             }
@@ -443,14 +443,14 @@ impl Default for ServiceRegistry {
 
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
 /// types.
-fn build_media_entry(name: String, svc_type: &str, url: String) -> Option<ServiceEntry> {
+fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &str) -> Option<ServiceEntry> {
     match svc_type {
         "plex" => Some(ServiceEntry {
             name,
             base_url: url,
             auth: AuthPattern::Header {
                 header_name: "X-Plex-Token".to_string(),
-                vault_item: "Connecterr - Plex".to_string(),
+                vault_item: format!("{} - Plex", vault_prefix),
             },
             insecure_tls: false,
         }),
@@ -459,7 +459,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String) -> Option<Servic
             base_url: format!("{}/api/v3", url),
             auth: AuthPattern::Header {
                 header_name: "X-Api-Key".to_string(),
-                vault_item: "Connecterr - Sonarr".to_string(),
+                vault_item: format!("{} - Sonarr", vault_prefix),
             },
             insecure_tls: false,
         }),
@@ -468,7 +468,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String) -> Option<Servic
             base_url: format!("{}/api/v3", url),
             auth: AuthPattern::Header {
                 header_name: "X-Api-Key".to_string(),
-                vault_item: "Connecterr - Radarr".to_string(),
+                vault_item: format!("{} - Radarr", vault_prefix),
             },
             insecure_tls: false,
         }),
@@ -477,7 +477,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String) -> Option<Servic
             base_url: format!("{}/api/v1", url),
             auth: AuthPattern::Header {
                 header_name: "X-Api-Key".to_string(),
-                vault_item: "Connecterr - Overseerr".to_string(),
+                vault_item: format!("{} - Overseerr", vault_prefix),
             },
             insecure_tls: false,
         }),
@@ -486,7 +486,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String) -> Option<Servic
             base_url: format!("{}/api/v2", url),
             auth: AuthPattern::QueryParam {
                 param_name: "apikey".to_string(),
-                vault_item: "Connecterr - Tautulli".to_string(),
+                vault_item: format!("{} - Tautulli", vault_prefix),
             },
             insecure_tls: false,
         }),
@@ -669,6 +669,23 @@ mod from_vault_tests {
     fn from_vault_empty_blob_returns_empty_registry() {
         let reg = ServiceRegistry::from_vault(&json!({}), "Connecterr");
         assert_eq!(reg.list().len(), 0);
+    }
+
+    #[test]
+    fn test_from_vault_media_uses_vault_prefix() {
+        let aggregated = serde_json::json!({
+            "media": {
+                "myplex": { "type": "plex", "url": "http://192.0.2.1:32400" }
+            }
+        });
+        let registry = ServiceRegistry::from_vault(&aggregated, "myproxy");
+        let svc = registry.get("myplex").unwrap();
+        match &svc.auth {
+            AuthPattern::Header { vault_item, .. } => {
+                assert_eq!(vault_item, "myproxy - Plex");
+            }
+            other => panic!("expected Header, got {:?}", other),
+        }
     }
 
     #[test]
