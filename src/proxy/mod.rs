@@ -50,6 +50,19 @@ pub struct AppState {
     /// requests against UDM's self-signed cert. Kept separate so no other
     /// module can accidentally bypass TLS verification.
     pub http_permissive: reqwest::Client,
+    /// Per-service HTTP clients for services with a custom CA certificate.
+    ///
+    /// Issue (iter-16 fix): the previous approach built a new `reqwest::Client`
+    /// on every proxy call when `ca_cert_path` was set. `reqwest::Client`
+    /// maintains a connection pool internally; creating a new instance on every
+    /// request defeats connection reuse and forces a TLS handshake on every
+    /// call. These clients are now built once at startup and stored here, keyed
+    /// by service name, so the connection pool is preserved across requests.
+    ///
+    /// The map is read-only after startup (no hot-reload of CA certs without
+    /// restart), so no lock is needed — an `Arc<HashMap>` provides cheap
+    /// shared access from concurrent request handlers.
+    pub ca_cert_clients: Arc<std::collections::HashMap<String, reqwest::Client>>,
     /// Per-service UniFi session cache (cookie jars + CSRF tokens).
     pub unifi_sessions: Arc<UnifiSessionCache>,
     /// Cached session tokens for `AuthPattern::Session` services (NPM, Duplicati).
@@ -754,66 +767,24 @@ fn build_request(
 ) -> anyhow::Result<reqwest::RequestBuilder> {
     // Pick the right TLS client for this service:
     //   - insecure_tls = true  → http_permissive (no cert verification)
-    //   - ca_cert_path set     → build a one-off client that trusts this CA
+    //   - ca_cert_path set     → use the pre-built per-service CA-cert client
+    //                            from AppState::ca_cert_clients (built once at
+    //                            startup so the connection pool is preserved)
     //   - neither              → http (strict system-root verification)
     //
-    // The ca_cert client is built per-call rather than cached because
-    // (a) these services are rare and (b) reqwest::Client is cheap to clone.
-    // The performance impact is negligible (one Arc clone for the connector);
-    // a cached HashMap<String, Client> would add significant state complexity.
+    // Issue (iter-15 → iter-16 fix): the iter-15 implementation built a new
+    // reqwest::Client on every proxy call when ca_cert was set. reqwest::Client
+    // maintains a connection pool; a fresh Client per request defeats connection
+    // reuse and forces a TLS handshake on every call. CA-cert clients are now
+    // built once in start_server() and stored in AppState::ca_cert_clients.
     let service_name = req.service.as_str();
     let service_entry = state.registry.get(service_name);
     let insecure = service_entry.map(|s| s.insecure_tls).unwrap_or(false);
-    let ca_cert_path = service_entry.and_then(|s| s.ca_cert_path.as_deref());
 
-    // Build or select client based on TLS policy.
-    // `owned_client` holds a per-call client when ca_cert is in use; it must
-    // outlive the `builder` borrow so we declare it before `client`.
-    let owned_client: Option<reqwest::Client> = if !insecure {
-        if let Some(ca_path) = ca_cert_path {
-            // Issue (iter-15): Build a reqwest client that trusts the private CA.
-            // We re-read the cert file here; it was validated at registry load
-            // time so this read should not fail. If it does (e.g. file deleted
-            // after startup), fall back to the strict client and log a warning.
-            match std::fs::read(ca_path)
-                .ok()
-                .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
-            {
-                Some(cert) => {
-                    match reqwest::Client::builder()
-                        .add_root_certificate(cert)
-                        .timeout(std::time::Duration::from_secs(120))
-                        .redirect(reqwest::redirect::Policy::none())
-                        .build()
-                    {
-                        Ok(c) => Some(c),
-                        Err(e) => {
-                            tracing::warn!(
-                                "service '{}': failed to build CA-cert client ({}), \
-                                 falling back to strict TLS", service_name, e
-                            );
-                            None
-                        }
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "service '{}': ca_cert '{}' could not be read at request time, \
-                         falling back to strict TLS", service_name, ca_path
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
     let client: &reqwest::Client = if insecure {
         &state.http_permissive
-    } else if let Some(ref c) = owned_client {
-        c
+    } else if let Some(ca_client) = state.ca_cert_clients.get(service_name) {
+        ca_client
     } else {
         &state.http
     };
@@ -931,19 +902,57 @@ fn build_request(
     Ok(builder)
 }
 
-/// Maximum upstream response body we'll buffer. 32 MB is generous for any
-/// legitimate JSON API response; a malicious or misbehaving upstream that
-/// returns a 10 GB body would otherwise exhaust the proxy's heap.
+/// Maximum upstream response body we'll buffer.
+///
+/// The default of 32 MB is generous for any legitimate JSON API response;
+/// a malicious or misbehaving upstream that returns a 10 GB body would
+/// otherwise exhaust the proxy's heap.
 ///
 /// The 64 KB cap on *incoming* `/proxy` request bodies (applied at the router
 /// via `DefaultBodyLimit`) does NOT apply to *outgoing* upstream responses —
 /// this constant closes that gap.
 ///
-/// 32 MB allows single-call responses that return large vault exports, log
-/// dumps, or bulk API payloads while still protecting against unbounded
-/// buffering. If a legitimate service needs more, it should be streamed
-/// (not proxied through vault-proxy).
-const UPSTREAM_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+/// Override via the `UPSTREAM_BODY_LIMIT_MB` environment variable for operators
+/// with legitimate large responses (binary files, bulk exports, etc.):
+///
+/// ```sh
+/// UPSTREAM_BODY_LIMIT_MB=128   # allow up to 128 MB responses
+/// UPSTREAM_BODY_LIMIT_MB=8     # tighten to 8 MB for memory-constrained hosts
+/// ```
+///
+/// Values below 1 MB or above 2048 MB are rejected at startup; 0 would make
+/// every response fail and very large values risk OOM on constrained hosts.
+fn upstream_body_limit_bytes() -> usize {
+    const DEFAULT_MB: usize = 32;
+    const MIN_MB: usize = 1;
+    const MAX_MB: usize = 2048;
+
+    let mb = match std::env::var("UPSTREAM_BODY_LIMIT_MB") {
+        Ok(val) => match val.parse::<usize>() {
+            Ok(n) => {
+                if n < MIN_MB || n > MAX_MB {
+                    tracing::warn!(
+                        "UPSTREAM_BODY_LIMIT_MB={} is out of the allowed range [{}, {}] MB — \
+                         using default of {} MB",
+                        n, MIN_MB, MAX_MB, DEFAULT_MB
+                    );
+                    DEFAULT_MB
+                } else {
+                    n
+                }
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "UPSTREAM_BODY_LIMIT_MB='{}' is not a valid integer — using default of {} MB",
+                    val, DEFAULT_MB
+                );
+                DEFAULT_MB
+            }
+        },
+        Err(_) => DEFAULT_MB,
+    };
+    mb * 1024 * 1024
+}
 
 /// Send a built request and normalise the response into a `ProxyResponse`.
 ///
@@ -977,13 +986,15 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
     // declares a body larger than the limit. For chunked or no-Content-Length
     // responses we use `bytes()` which buffers the full body — so the actual
     // cap is enforced by checking the returned length.
+    let body_limit = upstream_body_limit_bytes();
+
     if let Some(content_length) = resp.content_length() {
-        if content_length > UPSTREAM_BODY_LIMIT_BYTES as u64 {
+        if content_length > body_limit as u64 {
             return Err(anyhow::anyhow!(
                 "upstream response Content-Length ({} bytes) exceeds the \
                  {} MB limit — refusing to buffer",
                 content_length,
-                UPSTREAM_BODY_LIMIT_BYTES / (1024 * 1024),
+                body_limit / (1024 * 1024),
             ));
         }
     }
@@ -995,12 +1006,12 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
         .await
         .map_err(|e| anyhow::anyhow!("failed to read upstream response body: {}", e))?;
 
-    if bytes.len() > UPSTREAM_BODY_LIMIT_BYTES {
+    if bytes.len() > body_limit {
         return Err(anyhow::anyhow!(
             "upstream response body ({} bytes) exceeds the {} MB limit — \
-             refusing to buffer",
+             refusing to buffer (override with UPSTREAM_BODY_LIMIT_MB env var)",
             bytes.len(),
-            UPSTREAM_BODY_LIMIT_BYTES / (1024 * 1024),
+            body_limit / (1024 * 1024),
         ));
     }
 

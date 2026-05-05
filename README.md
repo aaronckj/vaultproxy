@@ -167,6 +167,15 @@ cargo build --release --features tpm
 | `--proxy-timeout` | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
 | `--ntfy-url` | `NTFY_URL` | — | ntfy.sh topic URL for push alerts |
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
+| `--allow-root` | — | — | Suppress the root-user security warning (see below) |
+| — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
+
+> **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as
+> uid 0 (root) because a credential broker running as root grants full system
+> access if compromised. Pass `--allow-root` only when root is genuinely
+> required — for example, when accessing `/dev/tpm0` on systems without udev
+> rules that permit non-root TPM access. Prefer a dedicated non-root user in all
+> other cases (e.g. `--user vaultproxy:vaultproxy` in Docker Compose).
 
 ## Building
 

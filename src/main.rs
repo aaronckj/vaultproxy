@@ -103,6 +103,20 @@ struct Args {
     /// The server name must match an [[mcp_server]] entry in mcp-servers.toml.
     #[arg(long)]
     launch: Option<String>,
+
+    /// Suppress the root-user security warning.
+    ///
+    /// vault-proxy emits a prominent warning when run as uid 0 (root) because
+    /// running a credential broker as root violates least privilege — a
+    /// compromise would grant full system access. This flag suppresses that
+    /// warning for deployments where root is genuinely required (e.g. accessing
+    /// `/dev/tpm0` on systems without udev rules that grant non-root TPM access).
+    ///
+    /// Using this flag does NOT disable any security controls — it only
+    /// suppresses the log entry. If you are unsure whether you need root, you
+    /// almost certainly do not; use a dedicated non-root user instead.
+    #[arg(long)]
+    allow_root: bool,
 }
 
 // -------------------------------------------------------------------------- //
@@ -137,17 +151,14 @@ async fn main() -> anyhow::Result<()> {
     // Operators who truly need root (e.g. TPM /dev/tpm0 access on some distros
     // without udev rules) can suppress the warning by passing `--allow-root`.
     #[cfg(unix)]
-    if unsafe { libc::geteuid() } == 0 {
-        let allow_root = std::env::args().any(|a| a == "--allow-root");
-        if !allow_root {
-            tracing::warn!(
-                "SECURITY: vault-proxy is running as root (uid 0). This is unnecessary — \
-                 vault-proxy only needs read access to --config-dir and the ability to bind \
-                 to its listen port. Running as root means a compromise of this process \
-                 grants full system access. Use a dedicated non-root user (e.g. `--user vaultproxy` \
-                 in Docker). Pass --allow-root to suppress this warning if root is intentional."
-            );
-        }
+    if unsafe { libc::geteuid() } == 0 && !args.allow_root {
+        tracing::warn!(
+            "SECURITY: vault-proxy is running as root (uid 0). This is unnecessary — \
+             vault-proxy only needs read access to --config-dir and the ability to bind \
+             to its listen port. Running as root means a compromise of this process \
+             grants full system access. Use a dedicated non-root user (e.g. `--user vaultproxy` \
+             in Docker). Pass --allow-root to suppress this warning if root is intentional."
+        );
     }
 
     // Issue (iter-10): Create --config-dir if it does not exist.
@@ -716,6 +727,66 @@ async fn start_server(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
+    // Issue (iter-16): Build per-service CA-cert clients once at startup.
+    //
+    // Services with a `ca_cert` path in services.toml need a custom reqwest
+    // Client that trusts their private CA. These clients MUST be built once
+    // here and shared across requests — building a new Client per request
+    // (the iter-15 approach) defeats reqwest's connection pooling and forces
+    // a full TLS handshake on every proxy call to that service.
+    //
+    // The registry has already validated the PEM content at load time
+    // (iter-16 fix in registry.rs), so these builds should not fail. If one
+    // does (reqwest API change, platform issue), we log and continue without
+    // a CA-cert client for that service — it will fall back to the strict
+    // system-root client, which may fail with a TLS error, but startup is not
+    // aborted so other services remain functional.
+    let ca_cert_clients: std::collections::HashMap<String, reqwest::Client> = {
+        let mut map = std::collections::HashMap::new();
+        for svc_name in registry.list() {
+            if let Some(entry) = registry.get(svc_name) {
+                if let Some(ref ca_path) = entry.ca_cert_path {
+                    match std::fs::read(ca_path)
+                        .ok()
+                        .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
+                    {
+                        Some(cert) => {
+                            match reqwest::Client::builder()
+                                .add_root_certificate(cert)
+                                .timeout(std::time::Duration::from_secs(args.proxy_timeout))
+                                .redirect(reqwest::redirect::Policy::none())
+                                .build()
+                            {
+                                Ok(client) => {
+                                    tracing::debug!(
+                                        "service '{}': built CA-cert client from '{}'",
+                                        svc_name, ca_path
+                                    );
+                                    map.insert(svc_name.to_string(), client);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "service '{}': failed to build CA-cert client from '{}': {} \
+                                         — falling back to strict TLS client",
+                                        svc_name, ca_path, e
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::error!(
+                                "service '{}': ca_cert '{}' could not be read or parsed at startup \
+                                 — falling back to strict TLS client",
+                                svc_name, ca_path
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        map
+    };
+
     // Initialize browser agent.
     let browser_agent = Arc::new(browser::BrowserAgent::new(
         &args.litellm_url,
@@ -792,6 +863,7 @@ async fn start_server(
         registry: Arc::new(registry),
         http,
         http_permissive,
+        ca_cert_clients: Arc::new(ca_cert_clients),
         unifi_sessions: Arc::new(crate::proxy::unifi_session::UnifiSessionCache::new()),
         session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         client_certs: Some(certs),

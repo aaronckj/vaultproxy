@@ -857,9 +857,19 @@ impl ServiceRegistry {
                 }
             };
 
-            // Issue (iter-15): Validate ca_cert path if provided. Read it now
-            // so a missing or unreadable file fails at startup rather than at
-            // the first proxy call (which may be hours later in production).
+            // Issue (iter-15 + iter-16 fix): Validate ca_cert at startup.
+            //
+            // iter-15: reject missing / unreadable file at startup rather than
+            // at first proxy call (which may be hours later in production).
+            //
+            // iter-16 fix: the iter-15 check called `std::fs::read()` only to
+            // confirm the file existed, but did NOT parse the PEM content. A
+            // file that exists but contains garbage (e.g. "not a cert", or a
+            // DER-encoded cert instead of PEM) would pass the load-time check
+            // and fail at first request time with a cryptic reqwest TLS error.
+            // We now parse it with `reqwest::Certificate::from_pem()` at load
+            // time to surface malformed PEM early with a clear error message.
+            //
             // We also warn if BOTH ca_cert and insecure_tls are set — in that
             // case insecure_tls wins (disables all verification), making ca_cert
             // pointless; the operator probably meant one or the other.
@@ -875,14 +885,71 @@ impl ServiceRegistry {
                         );
                         None // insecure_tls wins; don't store ca_cert_path
                     } else {
-                        // Verify the file exists and is readable at startup.
+                        // Read and parse the PEM at startup so a missing, empty,
+                        // or malformed cert file is caught immediately rather
+                        // than at first request time.
+                        //
+                        // Note: `reqwest::Certificate::from_pem` defers real
+                        // PEM parsing to when the client is built (rustls path:
+                        // the bytes are stored raw and parsed later). We therefore
+                        // validate by actually building a test reqwest client with
+                        // the certificate — this is the only way to confirm the
+                        // PEM is well-formed before the first proxy call.
                         match std::fs::read(path) {
-                            Ok(_) => {
-                                tracing::info!(
-                                    "service '{}': using custom CA certificate from '{}'",
-                                    svc.name, path
-                                );
-                                Some(path.clone())
+                            Ok(pem_bytes) => {
+                                // Validate the PEM content. reqwest's rustls backend
+                                // uses a lenient PEM parser that silently skips
+                                // unrecognized blocks rather than erroring on
+                                // garbage input — `from_pem()` + `build()` both
+                                // succeed even for completely invalid files,
+                                // silently adding zero root certs. We apply two
+                                // checks:
+                                //
+                                // 1. Structural: require at least one
+                                //    "BEGIN CERTIFICATE" header in the file.
+                                //    Catches empty files, DER blobs, and random
+                                //    text that contains no PEM blocks.
+                                //
+                                // 2. Build test: actually construct a reqwest
+                                //    client to surface encoding errors (e.g.
+                                //    truncated DER inside a PEM envelope).
+                                let pem_str = String::from_utf8_lossy(&pem_bytes);
+                                if !pem_str.contains("BEGIN CERTIFICATE") {
+                                    tracing::error!(
+                                        "service '{}': ca_cert '{}' contains no PEM certificate \
+                                         blocks (no '-----BEGIN CERTIFICATE-----' header found) — \
+                                         skipping service. Ensure the file is a PEM-encoded \
+                                         certificate, not DER or another format.",
+                                        svc.name, path
+                                    );
+                                    continue;
+                                }
+
+                                // Build test — catches DER-inside-PEM encoding errors.
+                                let build_ok = reqwest::Certificate::from_pem(&pem_bytes)
+                                    .and_then(|cert| {
+                                        reqwest::Client::builder()
+                                            .add_root_certificate(cert)
+                                            .build()
+                                    });
+                                match build_ok {
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            "service '{}': using custom CA certificate from '{}' \
+                                             (PEM validated at load time)",
+                                            svc.name, path
+                                        );
+                                        Some(path.clone())
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "service '{}': ca_cert '{}' failed client build test: \
+                                             {} — skipping service.",
+                                            svc.name, path, e
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -1744,5 +1811,51 @@ vault_item = "  vault-proxy - HA  "
             }
             other => panic!("expected Bearer, got {:?}", other),
         }
+    }
+
+    // iter-16: ca_cert PEM validation tests.
+
+    /// A garbage ca_cert file (non-PEM content) must be rejected at load time
+    /// with a clear error. Previously (iter-15) only file readability was checked;
+    /// a file containing "not a cert" would pass load-time and fail at runtime
+    /// with a cryptic TLS error.
+    #[test]
+    fn test_ca_cert_garbage_pem_is_rejected() {
+        use std::io::Write as _;
+        let mut certfile = tempfile::NamedTempFile::new().unwrap();
+        certfile.write_all(b"not a certificate\n").unwrap();
+        let cert_path = certfile.path().to_str().unwrap().to_string();
+
+        let toml_content = format!(
+            "[[service]]\nname = \"ca_test\"\nbase_url = \"https://192.0.2.10:8443/api\"\n\
+             auth = \"bearer\"\nvault_item = \"test - CA Service\"\nca_cert = \"{}\"\n",
+            cert_path.replace('\\', "\\\\")
+        );
+        let mut tf = tempfile::NamedTempFile::new().unwrap();
+        tf.write_all(toml_content.as_bytes()).unwrap();
+
+        let registry = ServiceRegistry::from_toml_file(tf.path());
+        assert!(
+            registry.get("ca_test").is_none(),
+            "service with garbage ca_cert PEM must be rejected at load time (iter-16)"
+        );
+    }
+
+    /// A missing ca_cert file must be rejected at load time.
+    #[test]
+    fn test_ca_cert_missing_file_is_rejected() {
+        let f = write_toml(r#"
+[[service]]
+name = "ca_missing"
+base_url = "https://192.0.2.10:8443/api"
+auth = "bearer"
+vault_item = "test - CA Service"
+ca_cert = "/nonexistent/path/to/ca.pem"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("ca_missing").is_none(),
+            "service with missing ca_cert file must be rejected at load time"
+        );
     }
 }

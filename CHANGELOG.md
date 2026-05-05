@@ -3,15 +3,81 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — security hardening (iterations 1–14)
+## [Unreleased] — security hardening (iterations 1–16)
 
 The v0.1.0 release tag reflects the initial public scaffold. Since that
-tag, the codebase has gone through 14 focused security and reliability
-audit passes totalling 118+ individual fixes. The items below are
+tag, the codebase has gone through 16 focused security and reliability
+audit passes totalling 130+ individual fixes. The items below are
 representative; they are NOT all included in the v0.1.0 release artifact.
 
 Users building from source or pulling a `latest` image get all fixes.
 Users on the v0.1.0 tagged release should upgrade.
+
+### Security fixes and features (iteration 16)
+
+- **`ca_cert` per-request client creation (iter-16 fix)**: the iter-15
+  implementation built a new `reqwest::Client` on every proxy call for services
+  with a custom CA certificate. `reqwest::Client` maintains a connection pool;
+  creating a new instance per request defeats connection reuse and forces a full
+  TLS handshake on every call to that service. CA-cert clients are now built
+  once at startup and stored in `AppState::ca_cert_clients`, keyed by service
+  name, so the connection pool is preserved across concurrent requests.
+
+- **`ca_cert` PEM validation at load time (iter-16 fix)**: the iter-15 check
+  only confirmed that the `ca_cert` file was readable (`std::fs::read` success),
+  but did not validate the PEM content. A file containing garbage or a DER-encoded
+  cert (rather than PEM) passed the load-time check and would have failed at
+  first request time with a cryptic TLS error. The registry now calls
+  `reqwest::Certificate::from_pem()` at load time so malformed CA cert files
+  are caught immediately with a clear error message.
+
+- **`--allow-root` registered with clap (iter-16 fix)**: the `--allow-root` flag
+  was parsed via `std::env::args().any()` (invisible to `--help`) rather than
+  as a proper clap argument. It is now a first-class clap flag, appearing in
+  `--help` output and the README CLI reference table.
+
+- **`UPSTREAM_BODY_LIMIT_MB` env-var override (iter-16)**: the 32 MB upstream
+  response body cap was a hardcoded constant. Operators with legitimate large
+  responses (binary files, bulk exports) can now set `UPSTREAM_BODY_LIMIT_MB`
+  to override the limit. Values below 1 MB or above 2048 MB fall back to the
+  default with a warning.
+
+### Security fixes and features (iteration 15)
+
+- **Upstream response body cap (iter-15)**: `resp.bytes()` on an upstream response
+  previously had no size limit — a malicious upstream returning a 10 GB body
+  would exhaust the proxy's heap. A 32 MB cap (overridable via
+  `UPSTREAM_BODY_LIMIT_MB`) is now applied via both `Content-Length` header
+  pre-check and post-read byte-count check.
+
+- **Custom CA certificate per service (iter-15)**: services.toml now accepts a
+  `ca_cert = "/path/to/ca.pem"` field per `[[service]]` block. vault-proxy builds
+  a dedicated reqwest client that trusts the specified CA, enabling services signed
+  by a private/internal CA without disabling all TLS verification (`insecure_tls`).
+  The file is validated at startup; missing or malformed cert files skip the service
+  with an error log.
+
+- **Root-user security warning (iter-15)**: vault-proxy now logs a prominent
+  `SECURITY:` warning at startup when running as uid 0, with instructions to use
+  a non-root user. Pass `--allow-root` to suppress the warning when root is
+  genuinely required (e.g. TPM `/dev/tpm0` access without udev rules).
+
+- **Proactive token refresh (iter-15)**: vault-proxy now proactively refreshes
+  the Vaultwarden access token when it is within 5 minutes of expiry, before the
+  token is used for the next request. This eliminates the reactive 401 → refresh →
+  retry path that added ~200 ms latency on the first request after token expiry.
+  Concurrent proactive refreshes are serialised via `reauth_mutex` with a
+  short-circuit: if the token already changed while waiting, no re-auth is made.
+
+- **Resync cooldown (iter-15)**: `POST /vault/resync` now enforces a 30-second
+  per-endpoint cooldown (`last_resync_unix` in `AppState`) so an MCP client
+  cannot trigger full-vault syncs at the global rate-limit cadence (60/min).
+
+- **Startup configuration summary (iter-15)**: vault-proxy logs a single
+  structured summary line at startup listing `listen`, `services`, `vault_folder`,
+  `config_dir`, `tpm_active`, `cloud_sync`, `dashboard_listen`, and
+  `proxy_timeout_s`. No sensitive values (email, passwords, paths with credentials)
+  are included.
 
 ### Security fixes (iterations 11–14)
 
