@@ -32,7 +32,7 @@ use vault::handlers;
 // -------------------------------------------------------------------------- //
 
 #[derive(Parser, Clone)]
-#[command(name = "vault-proxy", about = "Secure credential proxy for Connecterr")]
+#[command(name = "mcp-vault-proxy", about = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets")]
 struct Args {
     /// Address to listen on.
     #[arg(long, default_value = "127.0.0.1:3201")]
@@ -61,7 +61,7 @@ struct Args {
     /// LiteLLM (OpenAI-compatible) base URL for vision model inference.
     /// Defaults to the MLbox local stack so screenshots/credentials never
     /// leave the homelab network.
-    #[arg(long, env = "LITELLM_URL", default_value = "http://10.0.0.207:4000")]
+    #[arg(long, env = "LITELLM_URL", default_value = "")]
     litellm_url: String,
 
     /// LiteLLM API key (Bearer auth). Empty = no auth header.
@@ -350,8 +350,8 @@ async fn start_server(
                         ("scope", "api offline_access"),
                         ("client_id", "cli"),
                         ("deviceType", "14"),
-                        ("deviceIdentifier", "connecterr-vault-proxy"),
-                        ("deviceName", "Connecterr Vault Proxy"),
+                        ("deviceIdentifier", "mcp-vault-proxy"),
+                        ("deviceName", "mcp-vault-proxy"),
                     ])
                     .send()
                     .await;

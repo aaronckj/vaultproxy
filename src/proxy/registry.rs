@@ -512,18 +512,18 @@ mod tests {
                 "media": {
                     "enabled": true,
                     "services": [
-                        { "name": "plex",      "type": "plex",      "url": "http://10.0.0.112:32400" },
-                        { "name": "sonarr",    "type": "sonarr",    "url": "http://10.0.0.112:8989"  },
-                        { "name": "radarr",    "type": "radarr",    "url": "http://10.0.0.112:7878"  },
-                        { "name": "overseerr", "type": "overseerr", "url": "http://10.0.0.112:5055"  },
-                        { "name": "tautulli",  "type": "tautulli",  "url": "http://10.0.0.112:8181"  }
+                        { "name": "plex",      "type": "plex",      "url": "http://192.0.2.1:32400" },
+                        { "name": "sonarr",    "type": "sonarr",    "url": "http://192.0.2.1:8989"  },
+                        { "name": "radarr",    "type": "radarr",    "url": "http://192.0.2.1:7878"  },
+                        { "name": "overseerr", "type": "overseerr", "url": "http://192.0.2.1:5055"  },
+                        { "name": "tautulli",  "type": "tautulli",  "url": "http://192.0.2.1:8181"  }
                     ]
                 },
-                "unifi":     { "enabled": true, "controllers": [{ "name": "home", "url": "https://10.0.0.1", "site": "default" }] },
-                "ha":        { "enabled": true, "instances": [{ "name": "home", "url": "http://10.0.0.115:8123"  }] },
-                "opnsense":  { "enabled": true, "instances": [{ "name": "main", "url": "https://10.0.0.167"       }] },
-                "npm":       { "enabled": true, "instances": [{ "name": "main", "url": "http://10.0.0.112:81"    }] },
-                "duplicati": { "enabled": true, "instances": [{ "name": "main", "url": "http://10.0.0.112:8200"  }] }
+                "unifi":     { "enabled": true, "controllers": [{ "name": "home", "url": "https://192.0.2.2", "site": "default" }] },
+                "ha":        { "enabled": true, "instances": [{ "name": "home", "url": "http://192.0.2.3:8123" }] },
+                "opnsense":  { "enabled": true, "instances": [{ "name": "main", "url": "https://192.0.2.4" }] },
+                "npm":       { "enabled": true, "instances": [{ "name": "main", "url": "http://192.0.2.1:81" }] },
+                "duplicati": { "enabled": true, "instances": [{ "name": "main", "url": "http://192.0.2.1:8200" }] }
             }
         })
     }
@@ -546,7 +546,7 @@ mod tests {
     fn test_sonarr_base_url_has_api_prefix() {
         let registry = ServiceRegistry::from_config(&sample_config());
         let svc = registry.get("sonarr").unwrap();
-        assert_eq!(svc.base_url, "http://10.0.0.112:8989/api/v3");
+        assert_eq!(svc.base_url, "http://192.0.2.1:8989/api/v3");
     }
 
     #[test]
