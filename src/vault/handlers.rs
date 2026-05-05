@@ -320,11 +320,44 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 /// `GET /vault/items` — list vault items with passwords masked.
+///
+/// Issue (iter-18): Scope to vault_folder only.
+///
+/// Previously this returned every item in the entire vault — banking
+/// credentials, SSH keys, personal logins — with their names, usernames, and
+/// URIs exposed in plaintext to any local caller. vault-proxy has no business
+/// exposing items from other folders; only items in `state.vault_folder` are
+/// within its ownership boundary.
+///
+/// We resolve vault_folder → folder_id async and filter the full list.
+/// If the folder isn't found (fresh vault / mid-setup) we fall through and
+/// return all items so first-run usability is preserved — the same permissive
+/// fallback used by update_item and delete_item.
 pub async fn list_items(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<MaskedItem>> {
     let items = state.vault.list_items().await;
-    Json(items)
+
+    // Find the folder_id that corresponds to vault_folder.
+    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+
+    let filtered = match vault_folder_id {
+        Some(ref folder_id) => items
+            .into_iter()
+            .filter(|item| item.folder_id.as_deref() == Some(folder_id.as_str()))
+            .collect(),
+        None => {
+            // vault_folder not found — fresh vault or misconfiguration.
+            // Return all items so first-run tooling still works.
+            tracing::debug!(
+                "list_items: vault_folder '{}' not found — returning all items (fresh vault?)",
+                state.vault_folder
+            );
+            items
+        }
+    };
+
+    Json(filtered)
 }
 
 /// `GET /vault/duplicates` — find items that share the same
@@ -687,6 +720,54 @@ pub async fn clone_item(
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "name is required" })),
         );
+    }
+
+    // Issue (iter-18): Scope clone_item to source items inside state.vault_folder only.
+    //
+    // Without this guard an MCP caller can supply any source_id — including items
+    // from entirely different folders (banking, personal SSH keys, etc.) — and
+    // duplicate their encrypted password blob into a new item. This would silently
+    // exfiltrate credentials indirectly: the clone lands in the vault folder and
+    // vault-proxy can then decrypt its password via decrypt_password().
+    //
+    // We do NOT restrict the *destination* folder (req.folder_id) — cloning into
+    // an arbitrary destination folder is intentional (the operator may want the
+    // clone in a staging area). Only the *source* must be inside vault_folder.
+    {
+        let source = match state.vault.get_cipher_by_id(&req.source_id).await {
+            Some(c) => c,
+            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "source item not found"}))),
+        };
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match source.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "source item {} is not in the vault-proxy folder ('{}') — \
+                                 clone_item only clones items owned by vault-proxy",
+                                req.source_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "source item {} has no folder — clone_item only clones items \
+                                 inside the vault-proxy folder ('{}')",
+                                req.source_id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
     }
 
     match state
@@ -1234,6 +1315,54 @@ pub async fn move_item(
         );
     }
 
+    // Issue (iter-18): Scope move_item so it only moves items that belong to
+    // state.vault_folder.
+    //
+    // Without this guard an MCP caller can supply any item UUID and relocate it
+    // to an arbitrary folder — including moving vault-proxy items OUT of
+    // vault_folder (breaking credential lookups) or pulling foreign items INTO
+    // vault_folder (making them decryptable via /proxy).
+    //
+    // We allow the *destination* to be any folder — the operator may legitimately
+    // want to move an item to a review/staging folder for cleanup. Only the
+    // *source* item must currently reside in vault_folder.
+    {
+        let cipher = match state.vault.get_cipher_by_id(&req.id).await {
+            Some(c) => c,
+            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
+        };
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match cipher.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} is not in the vault-proxy folder ('{}') — \
+                                 move_item only moves items owned by vault-proxy",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} has no folder — move_item only moves items \
+                                 inside the vault-proxy folder ('{}')",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
+    }
+
     // Prefer folder_id when provided — avoids the by-name ambiguity when
     // multiple folders share a name. Fall back to folder_name (create-on-
     // demand) when only that form is sent.
@@ -1292,6 +1421,54 @@ pub async fn delete_item(
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "id is required" })),
         );
+    }
+
+    // Issue (iter-18): Scope delete_item to items inside state.vault_folder only.
+    //
+    // Without this guard an MCP caller can supply any vault item UUID —
+    // including items outside the vault-proxy folder (banking passwords,
+    // SSH keys, personal notes) — and permanently delete them.
+    // vault-proxy must only destroy items it owns.
+    //
+    // Mirror the logic used by update_item (iter-17): resolve vault_folder →
+    // folder_id; if the folder doesn't exist yet fall through permissively
+    // (fresh vault / mid-setup). Block only when we can positively confirm the
+    // item belongs to a *different* known folder.
+    {
+        let cipher = match state.vault.get_cipher_by_id(&req.id).await {
+            Some(c) => c,
+            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
+        };
+        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        if let Some(ref folder_id) = vault_folder_id {
+            match cipher.folder_id.as_deref() {
+                Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} is not in the vault-proxy folder ('{}') — \
+                                 delete_item only removes items owned by vault-proxy",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                None => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({
+                            "error": format!(
+                                "item {} has no folder — delete_item only removes items \
+                                 inside the vault-proxy folder ('{}')",
+                                req.id, state.vault_folder
+                            )
+                        })),
+                    );
+                }
+                _ => {} // folder_id matches vault_folder — proceed
+            }
+        }
     }
 
     match state.vault.delete_cipher(&req.id).await {
@@ -2314,5 +2491,105 @@ mod write_env_traversal_tests {
         // Normal paths must pass
         assert!(!has_traversal("/envs/myapp.env"), "normal path should be allowed");
         assert!(!has_traversal("/envs/sub/myapp.env"), "nested normal path should be allowed");
+    }
+}
+
+// Issue (iter-18): Unit tests for the folder-scope guard logic used by
+// delete_item, clone_item, move_item, and list_items.  The actual handlers
+// require a live AppState + VaultManager, so we replicate the decision logic
+// inline to verify the three key cases: item-in-wrong-folder, item-with-no-folder,
+// and item-in-correct-folder.
+#[cfg(test)]
+mod folder_scope_guard_tests {
+    /// Simulate the folder ownership check introduced in iter-18.
+    /// Returns Ok(()) when the item belongs to vault_folder_id, or Err(msg)
+    /// for wrong-folder and no-folder cases.
+    fn check_folder_scope(
+        item_folder_id: Option<&str>,
+        vault_folder_id: Option<&str>,
+        item_id: &str,
+        vault_folder_name: &str,
+    ) -> Result<(), String> {
+        match vault_folder_id {
+            None => Ok(()), // vault_folder not found — fresh vault, allow
+            Some(folder_id) => match item_folder_id {
+                Some(id) if id == folder_id => Ok(()),
+                Some(_) => Err(format!(
+                    "item {} is not in the vault-proxy folder ('{}')",
+                    item_id, vault_folder_name
+                )),
+                None => Err(format!(
+                    "item {} has no folder — only items inside '{}' are permitted",
+                    item_id, vault_folder_name
+                )),
+            },
+        }
+    }
+
+    #[test]
+    fn item_in_correct_folder_is_allowed() {
+        let result = check_folder_scope(
+            Some("folder-uuid-abc"),
+            Some("folder-uuid-abc"),
+            "item-uuid-1",
+            "vault-proxy",
+        );
+        assert!(result.is_ok(), "item in correct folder must be allowed");
+    }
+
+    #[test]
+    fn item_in_wrong_folder_is_blocked() {
+        let result = check_folder_scope(
+            Some("other-folder-uuid"),
+            Some("folder-uuid-abc"),
+            "item-uuid-1",
+            "vault-proxy",
+        );
+        assert!(result.is_err(), "item in wrong folder must be blocked");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("vault-proxy"), "error must mention vault_folder name");
+    }
+
+    #[test]
+    fn item_with_no_folder_is_blocked() {
+        let result = check_folder_scope(
+            None,
+            Some("folder-uuid-abc"),
+            "item-uuid-1",
+            "vault-proxy",
+        );
+        assert!(result.is_err(), "item with no folder must be blocked");
+    }
+
+    #[test]
+    fn fresh_vault_no_folder_id_is_allowed() {
+        // vault_folder_id = None means the vault_folder doesn't exist yet.
+        // Fall through permissively so first-run tooling works.
+        let result = check_folder_scope(
+            None,
+            None, // vault_folder not found
+            "item-uuid-1",
+            "vault-proxy",
+        );
+        assert!(result.is_ok(), "fresh vault (no folder_id) must allow all items");
+    }
+
+    #[test]
+    fn list_items_folder_filter_logic() {
+        // Simulate the list_items filtering: only items whose folder_id
+        // matches vault_folder_id should survive.
+        let vault_folder_id = "folder-abc";
+        let items: Vec<(Option<&str>, &str)> = vec![
+            (Some("folder-abc"), "item-in-scope"),
+            (Some("folder-xyz"), "item-out-of-scope"),
+            (None, "item-no-folder"),
+        ];
+        let filtered: Vec<&str> = items
+            .into_iter()
+            .filter(|(fid, _)| *fid == Some(vault_folder_id))
+            .map(|(_, name)| name)
+            .collect();
+
+        assert_eq!(filtered, vec!["item-in-scope"]);
     }
 }

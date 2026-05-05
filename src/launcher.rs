@@ -244,6 +244,28 @@ pub async fn launch(
         resolved.len()
     );
 
+    // Issue (iter-18): Reject server names that contain '/' before building the
+    // lock file path.
+    //
+    // The lock file is created at `<config_dir>/.launch-lock-<name>.lock`. If
+    // `name` contains a `/` (e.g. `name = "unix/server"`) the `Path::join`
+    // below constructs `.launch-lock-unix/server.lock`, which tries to create
+    // the file inside a subdirectory `unix/` that does not exist, causing a
+    // confusing "No such file or directory" error rather than the expected
+    // duplicate-launch message. Worse, a crafted name like `../../etc/cron.d/x`
+    // would escape config_dir entirely.
+    //
+    // The mcp-servers.toml validator in from_toml_file does not check for '/'
+    // in server names, so we guard here at the point of use.
+    if server_name.contains('/') || server_name.contains('\\') {
+        anyhow::bail!(
+            "mcp_server name '{}' contains a path separator ('/' or '\\\\') — \
+             server names must not contain path separators (they are embedded \
+             in the lock file name). Use a name like 'my-server' instead.",
+            server_name
+        );
+    }
+
     // Issue (iter-17): Prevent duplicate launches of the same MCP server.
     //
     // Two processes running `vault-proxy --launch <name>` simultaneously would
@@ -540,5 +562,41 @@ command = "cmd-b"
         assert!(validate_env_var_name("MY_SECRET").is_ok(), "MY_SECRET must be allowed");
         assert!(validate_env_var_name("UNIFI_API_KEY").is_ok(), "UNIFI_API_KEY must be allowed");
         assert!(validate_env_var_name("LD_PRELOAD").is_ok(), "LD_PRELOAD allowed (but logs a warning)");
+    }
+
+    // Issue (iter-18): Validate the path-separator check on server names used in
+    // lock file construction. Inline the check logic for unit testing without a
+    // live VaultManager.
+    fn server_name_has_path_separator(name: &str) -> bool {
+        name.contains('/') || name.contains('\\')
+    }
+
+    #[test]
+    fn test_server_name_with_forward_slash_rejected() {
+        // "unix/server" would embed a directory separator in the lock file path,
+        // turning ".launch-lock-unix/server.lock" into a path traversal.
+        assert!(
+            server_name_has_path_separator("unix/server"),
+            "server name with '/' must be rejected for lock file safety"
+        );
+        assert!(
+            server_name_has_path_separator("../../etc/cron.d/x"),
+            "path traversal via server name must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_server_name_with_backslash_rejected() {
+        assert!(
+            server_name_has_path_separator("win\\server"),
+            "server name with '\\\\' must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_normal_server_names_pass() {
+        assert!(!server_name_has_path_separator("my-mcp-server"), "hyphenated name must pass");
+        assert!(!server_name_has_path_separator("server_a"), "underscored name must pass");
+        assert!(!server_name_has_path_separator("unifi"), "simple name must pass");
     }
 }
