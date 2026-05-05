@@ -682,16 +682,47 @@ async fn start_server(
     ));
 
     // Initialize notifier (supports ntfy, email queue, or disabled).
+    //
+    // Issue (iter-13): Warn when NOTIFY_CHANNEL is set to a channel that
+    // requires a companion variable that is empty. Silently falling through to
+    // Notifier::disabled() means credential rotation events and audit alerts
+    // are swallowed with no operator-visible indication.
+    //
+    //   NOTIFY_CHANNEL=email  with empty NOTIFY_EMAIL  → warn, disable
+    //   NOTIFY_CHANNEL=ntfy   with empty NTFY_URL       → warn, disable
+    //
+    // This mirrors the pattern used by PROXY_TIMEOUT=0 (iter-9) and ensures
+    // misconfigured notification channels surface in startup logs.
     let notifier = Arc::new(match args.notify_channel.as_str() {
         "ntfy" if !args.ntfy_url.is_empty() => {
             notify::Notifier::new(notify::NotifyChannel::Ntfy {
                 url: args.ntfy_url.clone(),
             })
         }
+        "ntfy" => {
+            // NOTIFY_CHANNEL=ntfy but NTFY_URL is empty — notifications will
+            // be silently dropped. Warn so the operator can fix the config.
+            tracing::warn!(
+                "NOTIFY_CHANNEL=ntfy is set but NTFY_URL is empty — \
+                 notifications will be DISABLED. Set NTFY_URL to your ntfy \
+                 topic URL (e.g. NTFY_URL=https://ntfy.sh/my-topic)."
+            );
+            notify::Notifier::disabled()
+        }
         "email" if !args.notify_email.is_empty() => {
             notify::Notifier::new(notify::NotifyChannel::Email {
                 to: args.notify_email.clone(),
             })
+        }
+        "email" => {
+            // NOTIFY_CHANNEL=email but NOTIFY_EMAIL is empty — notifications
+            // will be silently dropped. Warn so the operator can fix the config.
+            tracing::warn!(
+                "NOTIFY_CHANNEL=email is set but NOTIFY_EMAIL is empty — \
+                 notifications will be DISABLED. Set NOTIFY_EMAIL to the \
+                 recipient address (e.g. NOTIFY_EMAIL=alerts@example.com)."
+            );
+            notify::Notifier::disabled()
         }
         _ if !args.ntfy_url.is_empty() => {
             // Backward compat: if ntfy_url is set but notify_channel is not,
@@ -1151,6 +1182,29 @@ async fn start_server(
     //
     // Sessions cached in `state.session_tokens` are in-memory only; they are
     // not persisted and do not need explicit clearing on shutdown.
+    // Issue (iter-13): Warn when --listen binds to a non-loopback address.
+    // vault-proxy's security model is built on localhost-only process isolation:
+    // no authentication middleware guards the proxy/vault endpoints — only the
+    // DNS-rebinding guard and rate limiter do. Binding to 0.0.0.0 or any
+    // non-loopback interface exposes all unauthenticated endpoints to the local
+    // network, breaking the core trust model. The default is 127.0.0.1:3201
+    // (loopback-only). Operators who intentionally bind to a non-loopback
+    // address must add authentication at the network layer (reverse proxy +
+    // mTLS or similar) — this warning is a reminder to do that.
+    {
+        let listen_ip = args.listen.ip();
+        if !listen_ip.is_loopback() {
+            tracing::warn!(
+                "SECURITY: --listen {} binds to a non-loopback address. \
+                 vault-proxy has no authentication middleware — all /proxy, /vault/*, \
+                 and credential endpoints are accessible to any host that can reach \
+                 this address. This BREAKS the localhost-only trust model. \
+                 Ensure a reverse proxy with mTLS or network-layer ACLs guards this \
+                 port before exposing it beyond the local machine.",
+                args.listen
+            );
+        }
+    }
     tracing::info!("vault-proxy listening on {}", args.listen);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     axum::serve(

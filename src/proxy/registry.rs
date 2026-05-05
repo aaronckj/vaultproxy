@@ -630,6 +630,27 @@ impl ServiceRegistry {
 
             let base_url = svc.base_url.trim_end_matches('/').to_string();
 
+            // Issue (iter-13): Emit a specific diagnostic for scheme-less base_url values
+            // before the general SSRF check.  `url::Url::parse("host:port")` succeeds
+            // but treats "host" as the scheme — so `is_allowed_outbound_url` rejects it
+            // with a generic "not allowed" message that gives no hint the problem is a
+            // missing "http://" or "https://" prefix (e.g. "homeassistant.local:8123").
+            // Catching this case first emits a targeted, actionable error.
+            {
+                let looks_schemeless = !base_url.starts_with("http://")
+                    && !base_url.starts_with("https://");
+                if looks_schemeless {
+                    // Still run the full SSRF check to catch edge cases, but
+                    // the error message below already covers this branch.
+                    tracing::error!(
+                        "service '{}': base_url '{}' has no http/https scheme — \
+                         did you mean 'http://{}' or 'https://{}'? Skipping.",
+                        svc.name, base_url, base_url, base_url
+                    );
+                    continue;
+                }
+            }
+
             // Validate base_url against SSRF policy. This prevents a
             // compromised/tricked services.toml from pointing the proxy at
             // cloud-metadata endpoints (169.254.169.254, fd00:ec2::254, etc.)
@@ -637,7 +658,9 @@ impl ServiceRegistry {
             // `inject_creds` and `browser_rotate` in vault/handlers.rs.
             if !crate::vault::handlers::is_allowed_outbound_url(&base_url) {
                 tracing::error!(
-                    "service '{}': base_url '{}' is not allowed (link-local or cloud-metadata endpoint) — skipping",
+                    "service '{}': base_url '{}' is not allowed — \
+                     must be http/https with a non-loopback, non-link-local, \
+                     non-cloud-metadata host. Skipping.",
                     svc.name, base_url
                 );
                 continue;
@@ -1289,6 +1312,25 @@ vault_item = "myproxy - Bad"
 "#);
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.get("bad_basic").is_none(), "basic service missing key_field should be skipped");
+    }
+
+    /// iter-13: A base_url without an http/https scheme (e.g. "homeassistant.local:8123")
+    /// must be rejected at load time with a clear diagnostic, not silently accepted
+    /// or rejected with a confusing "link-local or cloud-metadata" error message.
+    #[test]
+    fn test_schemeless_base_url_skips_service() {
+        let f = write_toml(r#"
+[[service]]
+name = "ha"
+base_url = "homeassistant.local:8123"
+auth = "bearer"
+vault_item = "myproxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("ha").is_none(),
+            "service with scheme-less base_url must be rejected"
+        );
     }
 
     #[test]

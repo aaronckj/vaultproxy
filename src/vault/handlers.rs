@@ -2130,6 +2130,27 @@ mod ssrf_tests {
         assert!(!is_allowed_outbound_url("http://LOCALHOST:8080/"), "case-insensitive localhost must be blocked");
     }
 
+    /// iter-13: Scheme-less URLs (e.g. "homeassistant.local:8123") must be
+    /// blocked. url::Url::parse treats the hostname as the scheme in this form,
+    /// so the scheme check rejects it — but the error message from the registry
+    /// was previously misleading ("link-local or cloud-metadata endpoint").
+    /// Verified here so the behaviour contract is explicit.
+    #[test]
+    fn schemeless_urls_are_blocked() {
+        assert!(
+            !is_allowed_outbound_url("homeassistant.local:8123"),
+            "scheme-less host:port must be blocked (parsed as opaque URI)"
+        );
+        assert!(
+            !is_allowed_outbound_url("192.168.1.100:8080"),
+            "scheme-less ip:port must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("//192.168.1.100:8080/api"),
+            "protocol-relative URL must be blocked (no http/https scheme)"
+        );
+    }
+
     /// iter-11: URLs with an embedded userinfo component (user:password@host)
     /// must be rejected. Userinfo leaks credentials into logs and means the
     /// caller is bypassing vault-proxy's credential-isolation model.
