@@ -170,6 +170,7 @@ cargo build --release --features tpm
 | `--ntfy-url` | `NTFY_URL` | — | ntfy.sh topic URL for push alerts |
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
 | `--allow-root` | — | — | Suppress the root-user security warning (see below) |
+| `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
 | — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
 
 > **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as

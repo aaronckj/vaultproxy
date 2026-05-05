@@ -1347,6 +1347,27 @@ pub async fn write_env(
         format!("{}/", state.env_write_root)
     };
 
+    // iter-24: validate that the env_write_root directory itself exists.
+    // Without this, a misconfigured --env-write-root=/nonexistent/path causes
+    // the tmp file open to fail with a bare OS error ("open tmp .../...tmp:
+    // No such file or directory") that doesn't identify the root directory as
+    // the problem. Checking up-front produces a clear actionable message.
+    {
+        let root_trimmed = root.trim_end_matches('/');
+        if !root_trimmed.is_empty() && !std::path::Path::new(root_trimmed).is_dir() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!(
+                        "--env-write-root directory '{}' does not exist or is not a directory. \
+                         Create it or correct the ENV_WRITE_ROOT / --env-write-root setting.",
+                        root_trimmed
+                    )
+                })),
+            );
+        }
+    }
+
     let ok_prefix = req.target_path.starts_with(&root);
     if !ok_prefix {
         return (
