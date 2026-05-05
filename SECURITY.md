@@ -32,6 +32,28 @@
 - Never returns plaintext credentials — passwords masked as `"********"` in all API responses
 - If exposed via a reverse proxy, place it behind strong forward authentication (e.g., Authentik)
 
+## Two-tier security model
+
+### Tier 1: Native `/proxy` integration (recommended)
+
+MCP servers that support vault-proxy call `POST http://127.0.0.1:3201/proxy` at runtime. The credential is resolved inside vault-proxy, injected into the outbound HTTP request header, and **never exposed to the MCP server process**. The MCP server only sees the downstream service's response.
+
+To detect vault-proxy, smart servers check the `VAULT_PROXY_URL` environment variable (set to `http://127.0.0.1:3201` when vault-proxy is running).
+
+### Tier 2: Launcher mode (`--launch`)
+
+For MCP servers with no vault-proxy support ("dumb" servers), use:
+
+```bash
+vault-proxy --launch unifi-network
+```
+
+vault-proxy resolves credentials from Vaultwarden and spawns the server via fork/exec with credentials injected as environment variables. **No credential file is written to disk.**
+
+**Known limitation:** credentials injected via fork/exec exist in the child process's memory space. On Linux, `/proc/<pid>/environ` allows any process running as the same OS user to read these values. This is weaker than Tier 1 but stronger than storing credentials in `.env` files (which persist on disk).
+
+For maximum security on sensitive services, prefer Tier 1 (native integration or a fork that adds vault-proxy support).
+
 ## Reporting vulnerabilities
 
 Report security issues **privately** via [GitHub Security Advisories](../../security/advisories/new) on this repository. Do not open public issues for security vulnerabilities.

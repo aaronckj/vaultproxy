@@ -57,6 +57,7 @@ tokio-stream = "0.1"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 async-trait = "0.1"
 toml = "0.8"
+shell-words = "1"
 
 [features]
 default = []

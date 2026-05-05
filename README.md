@@ -150,6 +150,33 @@ cargo build --release --features tpm
 cargo build --release --features dashboard
 ```
 
+## Launching MCP servers (wrapper mode)
+
+For MCP servers that don't support vault-proxy natively, use launcher mode to inject credentials at spawn time:
+
+```bash
+vault-proxy --launch unifi-network
+```
+
+Configure servers in `mcp-servers.toml` inside your `--config-dir`:
+
+```toml
+[[mcp_server]]
+name = "unifi-network"
+command = "uvx unifi-network-mcp@latest"
+
+  [[mcp_server.env]]
+  var = "UNIFI_HOST"
+  value = "https://unifi.local"
+
+  [[mcp_server.env]]
+  var = "UNIFI_API_KEY"
+  vault_item = "vault-proxy - UniFi"
+  field = "password"
+```
+
+See `mcp-servers.example.toml` for all options. See `SECURITY.md` for the security tradeoffs between launcher mode and native `/proxy` integration.
+
 ## `/proxy` API
 
 `POST http://127.0.0.1:3201/proxy`

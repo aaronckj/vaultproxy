@@ -1,0 +1,37 @@
+# mcp-vault-proxy MCP server launcher configuration
+# Copy to your --config-dir as mcp-servers.toml.
+#
+# Use `vault-proxy --launch <name>` to start a server with credentials injected.
+#
+# SECURITY NOTE: --launch injects credentials into the child process via fork/exec.
+# Credentials exist in the child's memory and are readable via /proc/<pid>/environ
+# by same-user processes. For stronger isolation, use an MCP server that supports
+# the native /proxy integration (check VAULT_PROXY_URL at runtime).
+
+# ── UniFi Network MCP (sirkirby/unifi-mcp) ──────────────────────────────────
+[[mcp_server]]
+name = "unifi-network"
+command = "uvx unifi-network-mcp@latest"
+
+  [[mcp_server.env]]
+  var = "UNIFI_HOST"
+  value = "https://unifi.local"           # static — your controller URL
+
+  [[mcp_server.env]]
+  var = "UNIFI_API_KEY"
+  vault_item = "vault-proxy - UniFi"      # resolved from Vaultwarden at launch
+  field = "password"
+
+# ── Home Assistant MCP ───────────────────────────────────────────────────────
+[[mcp_server]]
+name = "home-assistant"
+command = "uvx homeassistant-mcp@latest"
+
+  [[mcp_server.env]]
+  var = "HA_BASE_URL"
+  value = "http://homeassistant.local:8123"
+
+  [[mcp_server.env]]
+  var = "HA_TOKEN"
+  vault_item = "vault-proxy - Home Assistant"
+  field = "password"

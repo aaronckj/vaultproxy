@@ -1188,6 +1188,38 @@ impl VaultManager {
         Ok(id)
     }
 
+    /// Resolve a named field from a vault item by item name.
+    ///
+    /// `field` must be `"password"` or `"username"`. Used by the launcher
+    /// to inject credentials into child-process env vars.
+    pub async fn get_field_by_item_name(&self, item_name: &str, field: &str) -> Result<String> {
+        match field {
+            "password" => {
+                let buf = self.decrypt_password(item_name)
+                    .with_context(|| format!("decrypt password for '{}'", item_name))?;
+                let s = std::str::from_utf8(&buf)
+                    .map_err(|e| anyhow!("password for '{}' is not valid UTF-8: {}", item_name, e))?
+                    .to_string();
+                Ok(s)
+            }
+            "username" => {
+                let buf = self.decrypt_username(item_name)
+                    .with_context(|| format!("decrypt username for '{}'", item_name))?
+                    .ok_or_else(|| anyhow!("item '{}' has no username field", item_name))?;
+                let s = std::str::from_utf8(&buf)
+                    .map_err(|e| anyhow!("username for '{}' is not valid UTF-8: {}", item_name, e))?
+                    .to_string();
+                Ok(s)
+            }
+            other => {
+                anyhow::bail!(
+                    "unsupported field '{}' — must be 'password' or 'username'",
+                    other
+                )
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------- //
     // Key accessors                                                            //
     // ---------------------------------------------------------------------- //

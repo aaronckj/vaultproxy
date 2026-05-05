@@ -1,5 +1,6 @@
 mod audit;
 mod keystore;
+mod launcher;
 mod setup;
 mod browser;
 mod credential_audit;
@@ -97,6 +98,11 @@ struct Args {
     /// Vault items must be named "<vault-folder> - <Service>" (e.g. "vault-proxy - UniFi").
     #[arg(long, env = "VAULT_FOLDER", default_value = "vault-proxy")]
     vault_folder: String,
+
+    /// Launch a registered MCP server with credentials injected from Vaultwarden.
+    /// The server name must match an [[mcp_server]] entry in mcp-servers.toml.
+    #[arg(long)]
+    launch: Option<String>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -298,6 +304,13 @@ async fn start_server(
 ) -> anyhow::Result<()> {
     // Wrap VaultManager in Arc for sharing with SyncManager.
     let vault_arc = Arc::new(vault);
+
+    // Launch mode: resolve credentials from Vaultwarden and exec a dumb MCP server.
+    // This check runs BEFORE any other startup work (cloud sync, registry loading, etc.)
+    // because --launch replaces the server process rather than starting a sidecar.
+    if let Some(ref server_name) = args.launch {
+        return crate::launcher::launch(server_name, config_dir, &vault_arc).await;
+    }
 
     // Cloud sync setup — activates when cloud credentials exist in keystore
     // or when --cloud-email is provided (legacy).
