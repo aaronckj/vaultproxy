@@ -1322,7 +1322,20 @@ mod integration_tests {
     /// error (not a panic), causing `handle_proxy` to return 502 BAD_GATEWAY
     /// instead of forwarding to the upstream — which is the expected behaviour
     /// when testing the routing path without a live vault.
+    ///
+    /// Each call creates a unique audit log path using a random suffix so that
+    /// parallel test runs (which is the default for `cargo test`) do not race
+    /// on a shared `/tmp/vault-proxy-test-audit.json` file.
     fn make_state(registry: ServiceRegistry) -> Arc<AppState> {
+        // Use a per-invocation random suffix so parallel tests don't share a
+        // single audit log file and race on writes.
+        let audit_path = format!(
+            "/tmp/vault-proxy-test-audit-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
+        );
         Arc::new(AppState {
             vault: Arc::new(VaultManager::new_stub()),
             registry: Arc::new(tokio::sync::RwLock::new(registry)),
@@ -1349,7 +1362,7 @@ mod integration_tests {
             permissions: Arc::new(tokio::sync::RwLock::new(
                 ToolPermissions::load("/nonexistent/tool-permissions.json"),
             )),
-            audit_log: Arc::new(AuditLog::new("/tmp/vault-proxy-test-audit.json")),
+            audit_log: Arc::new(AuditLog::new(&audit_path)),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vault_folder: "vault-proxy".to_string(),

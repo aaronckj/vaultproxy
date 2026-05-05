@@ -49,7 +49,26 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 
 Services are registered in `services.toml` inside your `--config-dir` (default `/config/services.toml`). Copy `services.example.toml` from the repo as a starting point.
 
-> **Note:** `services.toml` is read **once at startup** and is NOT hot-reloaded. If you add, remove, or change a `[[service]]` block, you must restart vault-proxy for the change to take effect. `POST /vault/resync` only refreshes vault *credentials* from Vaultwarden — it does not reload `services.toml`.
+> **Note:** `services.toml` is read at startup and can also be reloaded at runtime via SIGHUP (see below). `POST /vault/resync` only refreshes vault *credentials* from Vaultwarden — it does not reload `services.toml`.
+
+### Hot-reloading services.toml (SIGHUP)
+
+To add, remove, or change a `[[service]]` block without restarting:
+
+```bash
+# In Docker
+docker kill --signal=HUP <container_name>
+
+# On bare metal
+kill -HUP $(pidof vaultproxy)
+```
+
+vault-proxy will:
+1. Re-parse `services.toml` and validate every entry (SSRF rules, required fields, PEM certs)
+2. Rebuild per-service CA-cert HTTP clients
+3. Atomically swap the new registry into place — in-flight requests see the old registry; new requests see the updated one
+
+**Rollback safety:** if the reloaded file would produce zero services (parse error, all entries rejected), vault-proxy keeps the previous registry and logs a `SIGHUP: rolling back` warning. Fix the file and send SIGHUP again.
 
 ```toml
 # Each [[service]] block registers one downstream service.
@@ -192,6 +211,69 @@ cargo build --release --features tpm
 > required — for example, when accessing `/dev/tpm0` on systems without udev
 > rules that permit non-root TPM access. Prefer a dedicated non-root user in all
 > other cases (e.g. `--user vaultproxy:vaultproxy` in Docker Compose).
+
+## Audit log
+
+vault-proxy writes an audit trail to `$CONFIG_DIR/audit-log.json` (default `/config/audit-log.json`). The file is a JSON array of objects (newest entry first), capped at 1 000 entries:
+
+```json
+[
+  {
+    "timestamp":      "2026-05-05T12:34:56.789Z",   // RFC 3339 UTC
+    "tool_name":      "ha_home__get",                // <service>__<method>
+    "args_summary":   "method=GET, path=/api/states", // truncated at 200 chars
+    "result_summary": "states=[...]",                 // truncated; sensitive fields masked
+    "permission":     "Log",                          // Allow | Log | Ask | Block
+    "trigger":        "proxy"                         // always "proxy" for /proxy calls
+  }
+]
+```
+
+Sensitive field values (`password`, `token`, `api_key`, `secret`, `bearer`, `cookie`, and related names) are replaced with `***` before writing so raw credentials never appear in the log.
+
+The file is written to disk every 10 entries or on process shutdown (whichever comes first). To ship it to a SIEM, tail the file or mount the config directory and read it directly — there is no syslog or stdout output of audit events.
+
+## Operator runbook
+
+### vault-proxy won't start
+
+Look for `STARTUP:` messages in the container log. Common causes:
+- **`STARTUP: vault_folder 'X' was NOT FOUND in Vaultwarden`** — the folder name in `VAULT_FOLDER` doesn't match an existing Vaultwarden folder. Create the folder or correct the env var.
+- **`failed to parse services.toml`** — TOML syntax error. Run `--check` to get a summary: `docker run --rm -v ./config:/config vaultproxy --check`
+- **`keystore locked`** — run `--setup` or use the dashboard to unlock.
+
+### `POST /proxy` returns 404 "unknown service"
+
+The service name in your request doesn't match any entry in `services.toml`. Verify:
+```bash
+curl http://127.0.0.1:3201/vault/services
+```
+This returns the full list of registered services with their auth types and base URLs.
+
+### Credentials stopped working (upstream returns 401/403)
+
+The vault item may have changed in Vaultwarden. Force a re-sync:
+```bash
+curl -X POST http://127.0.0.1:3201/vault/resync
+```
+This re-fetches all vault items from Vaultwarden. For session-based services, the cached session token is invalidated on the next 401 and refreshed automatically.
+
+### Added a service to services.toml but it's not found
+
+Send SIGHUP to reload services.toml without restarting:
+```bash
+docker kill --signal=HUP <container_name>
+```
+Then check `vault/services` to confirm it loaded. If it's still missing, check the container log for a per-service rejection reason (SSRF violation, missing field, bad base_url, etc.).
+
+### `--setup` hangs waiting for input
+
+The setup wizard reads from stdin. If stdin is not a TTY (e.g. `docker run -d`), it will block forever. Run with `-it` to attach a TTY:
+```bash
+docker run --rm -it -v ./config:/config vaultproxy --setup
+```
+
+Or use the web dashboard (`--features dashboard`) to complete setup via browser.
 
 ## Building
 

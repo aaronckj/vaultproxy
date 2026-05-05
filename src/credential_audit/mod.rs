@@ -8,8 +8,6 @@ pub mod types;
 pub mod vault_adapter;
 pub mod vw_adapter;
 
-pub use types::{ItemResult, Run, RunStatus};
-
 use axum::{
     routing::{get, post},
     Router,
@@ -29,7 +27,7 @@ pub fn router(orch: Arc<orchestrator::Orchestrator<vw_adapter::VwAdapter>>) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::credential_audit::types::RunStatus;
 
     #[test]
     fn run_status_serializes_snake_case() {
