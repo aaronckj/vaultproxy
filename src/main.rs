@@ -195,43 +195,64 @@ async fn main() -> anyhow::Result<()> {
     //   --check is fully independent of all other flags.
     if args.check {
         let services_path = std::path::Path::new(&config_dir).join("services.toml");
-        // Detect missing file before calling from_toml_file so we can emit a
-        // clear first-run message and exit 0 (not an error).
+        // Detect missing file before calling from_toml_file_with_counts so we can
+        // emit a clear first-run message and exit 0 (not an error).
         let file_missing = !services_path.exists();
-        let registry = proxy::registry::ServiceRegistry::from_toml_file(&services_path);
-        let count = registry.list().len();
+
+        // Issue (iter-29): use from_toml_file_with_counts so we know how many
+        // [[service]] entries were attempted vs accepted. The difference is the
+        // number of rejected services; naming them helps operators debug CI
+        // failures without parsing structured tracing JSON.
+        let (registry, attempted) =
+            proxy::registry::ServiceRegistry::from_toml_file_with_counts(&services_path);
+        let accepted = registry.list().len();
+        let rejected = attempted.saturating_sub(accepted);
 
         if file_missing {
             // First-run: no services.toml yet. Not an error — give operator
-            // the actionable next step.
-            eprintln!(
-                "vault-proxy --check: services.toml not found at {:?}. \
+            // the actionable next step. Use println! (stdout) so CI pipelines
+            // that only capture stdout see the message.
+            println!(
+                "vaultproxy check: services.toml not found at {}. \
                  This is normal on first run. \
-                 Copy services.example.toml to {:?} and add [[service]] blocks.",
-                services_path, services_path
+                 Copy services.example.toml to {} and add [[service]] blocks.",
+                services_path.display(), services_path.display()
             );
             std::process::exit(0);
         }
 
-        if count == 0 {
+        if accepted == 0 {
             // File exists but loaded zero services — either it is empty or
             // every entry was rejected by validation (SSRF, missing fields, etc).
-            // The tracing output from from_toml_file contains the per-entry
-            // errors. Exit 1 so CI pipelines detect the misconfiguration.
-            eprintln!(
-                "vault-proxy --check: FAIL — 0 services loaded from {:?}. \
-                 Either the file is empty, every [[service]] block was rejected \
-                 (check the log output above for per-entry errors), or the file \
-                 failed to parse. Fix the TOML errors before deploying.",
-                services_path
+            // The tracing output (emitted to stderr above) names each rejected
+            // service and reason. Exit 1 so CI pipelines detect the misconfiguration.
+            println!(
+                "vaultproxy check: FAIL — 0/{attempted} service(s) accepted from {}. \
+                 {rejected} service(s) rejected — see log output above for per-service errors \
+                 (SSRF violations, missing fields, bad base_url). \
+                 Fix services.toml and re-run --check before deploying.",
+                services_path.display()
+            );
+            std::process::exit(1);
+        }
+
+        // Issue (iter-29): report accepted service names + rejected count on stdout
+        // so CI pipelines get actionable output without parsing structured logs.
+        if rejected > 0 {
+            println!(
+                "vaultproxy check: PARTIAL — {accepted}/{attempted} service(s) accepted from {}: {:?}. \
+                 {rejected} service(s) were REJECTED — see log output above for names and reasons \
+                 (SSRF violations, unknown auth types, missing required fields). \
+                 Fix services.toml and re-run --check.",
+                services_path.display(),
+                registry.list()
             );
             std::process::exit(1);
         }
 
         println!(
-            "vault-proxy --check: OK — {} service(s) registered from {:?}: {:?}",
-            count,
-            services_path,
+            "vaultproxy check: OK — {accepted} service(s) registered from {}: {:?}",
+            services_path.display(),
             registry.list()
         );
         std::process::exit(0);
@@ -1662,16 +1683,50 @@ async fn start_server(
                     }
                 }
 
-                // Atomically swap in the new registry and CA-cert clients.
-                *sighup_state.registry.write().await = new_registry;
-                *sighup_state.ca_cert_clients.write().await = new_ca_clients;
-                // Invalidate the folder-id cache so the next mutation re-resolves it.
-                *sighup_state.cached_folder_id.write().await = None;
+                // Issue (iter-29): rollback guard — if from_toml_file returned an
+                // empty registry, the file may have become unreadable or had every
+                // service rejected during the reload. Swapping in an empty registry
+                // would take vault-proxy offline until the next SIGHUP. Instead,
+                // keep the previous registry and log a warning so the operator knows
+                // the reload was rejected. A zero-service result is only accepted when
+                // the old registry was also empty (first-run / intentionally empty).
+                let prev_svc_count = sighup_state.registry.read().await.list().len();
+                if svc_count == 0 && prev_svc_count > 0 {
+                    tracing::warn!(
+                        "SIGHUP: reload produced 0 services (was {}) — \
+                         rolling back to previous registry. \
+                         Check services.toml for parse errors or SSRF violations \
+                         (the log lines above contain per-entry details). \
+                         Fix services.toml and send SIGHUP again.",
+                        prev_svc_count
+                    );
+                    // Intentionally skip the write-lock swap: old registry stays in place.
+                } else {
+                    // Atomically swap in the new registry and CA-cert clients under
+                    // their respective write locks.
+                    //
+                    // Issue (iter-29): these three write lock acquisitions are NOT
+                    // a single atomic operation — a reader between the first and
+                    // second acquire could briefly see the new registry with stale
+                    // ca_cert_clients, or vice versa. In practice this window is
+                    // nanoseconds and only affects ca_cert services. A truly atomic
+                    // swap would require combining registry + ca_cert_clients into a
+                    // single Arc-swapped struct; that refactor is tracked as a future
+                    // improvement. The non-atomicity is safe (no data corruption),
+                    // only potentially causing a single stale-client request during
+                    // the window.
+                    *sighup_state.registry.write().await = new_registry;
+                    *sighup_state.ca_cert_clients.write().await = new_ca_clients;
+                    // Invalidate the folder-id cache so the next vault mutation
+                    // re-resolves the folder (handles services.toml edits alongside
+                    // a vault_folder rename).
+                    *sighup_state.cached_folder_id.write().await = None;
 
-                tracing::info!(
-                    "SIGHUP: reload complete — {} service(s) now registered",
-                    svc_count
-                );
+                    tracing::info!(
+                        "SIGHUP: reload complete — {} service(s) now registered (was {})",
+                        svc_count, prev_svc_count
+                    );
+                }
             }
         });
     }

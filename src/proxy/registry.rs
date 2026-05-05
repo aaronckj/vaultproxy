@@ -1071,6 +1071,32 @@ impl ServiceRegistry {
 
         registry
     }
+
+    /// Same as [`from_toml_file`] but also returns the number of `[[service]]`
+    /// entries present in the file (before validation).  The caller can compute
+    /// `rejected = attempted - registry.list().len()`.
+    ///
+    /// Used by `--check` to produce a plain-stdout summary that names the
+    /// accepted and rejected counts without relying on tracing output (which
+    /// may be structured JSON in CI pipelines).
+    ///
+    /// Returns `(registry, attempted)`.  If the file is missing or unparseable,
+    /// `attempted` is 0 (no entries attempted).
+    pub fn from_toml_file_with_counts(path: &Path) -> (Self, usize) {
+        // Count the entries in the raw TOML before validation.  We parse the
+        // file separately from `from_toml_file` to avoid duplicating all the
+        // validation logic — the extra parse is only done during `--check` (not
+        // at runtime), so the cost is negligible.
+        let attempted = match std::fs::read_to_string(path) {
+            Ok(content) => match toml::from_str::<ServicesFile>(&content) {
+                Ok(parsed) => parsed.service.len(),
+                Err(_) => 0,
+            },
+            Err(_) => 0,
+        };
+        let registry = Self::from_toml_file(path);
+        (registry, attempted)
+    }
 }
 
 impl Default for ServiceRegistry {

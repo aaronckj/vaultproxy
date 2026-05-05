@@ -1733,6 +1733,41 @@ impl VaultManager {
     }
 }
 
+// =========================================================================== //
+// Test-only helpers                                                            //
+// =========================================================================== //
+
+#[cfg(test)]
+impl VaultManager {
+    /// Build a minimal stub `VaultManager` for use in unit and integration tests.
+    ///
+    /// The returned manager has:
+    /// - No vault items (empty cipher/folder maps).
+    /// - Dummy encryption keys (all-zero bytes — useless for real decryption,
+    ///   but sufficient for handlers that don't call `decrypt_*`).
+    /// - A fake URL so connectivity assertions pass without a live server.
+    ///
+    /// Issue (iter-29): integration tests need an `AppState` without a live
+    /// Vaultwarden. Using this stub lets tests verify routing, 404 handling,
+    /// and proxied request forwarding without a real vault dependency.
+    pub fn new_stub() -> Self {
+        VaultManager {
+            vaultwarden_url: "http://localhost:0".to_string(),
+            access_token: RwLock::new("test-access-token".to_string()),
+            refresh_token: RwLock::new(None),
+            token_expires_at: RwLock::new(None),
+            reauth_mutex: Mutex::new(()),
+            // Dummy keys — dec/enc operations will fail gracefully (no panic).
+            enc_key: crate::secure::SecureBuffer::new(vec![0u8; 32]),
+            mac_key: crate::secure::SecureBuffer::new(vec![0u8; 32]),
+            items: RwLock::new(std::collections::HashMap::new()),
+            folders: RwLock::new(FolderIndex::default()),
+            all_folders: RwLock::new(Vec::new()),
+            http: Client::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

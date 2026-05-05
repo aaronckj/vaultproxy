@@ -1280,3 +1280,233 @@ mod query_conflict_tests {
         assert!(conflicts.is_empty(), "non-conflicting keys must pass through");
     }
 }
+
+// -------------------------------------------------------------------------- //
+// Integration tests — axum router + stub AppState + wiremock upstream        //
+// -------------------------------------------------------------------------- //
+//
+// Issue (iter-29): after 29 iterations there were only 2 integration tests,
+// neither of which exercised the full HTTP request path. These tests spin up a
+// real axum listener with a stub AppState (no live Vaultwarden) and verify:
+//
+//   (a) POST /proxy → 404 for unknown service names.
+//   (b) GET /vault/health → 200 with expected JSON keys.
+//   (c) POST /proxy with a known service → fails at auth stage (502 BAD_GATEWAY)
+//       not routing stage (404 NOT_FOUND), confirming service lookup worked.
+//
+// wiremock is used to stand in as the upstream service for test (c), confirming
+// vault-proxy correctly selects the registered service entry and attempts to
+// reach the upstream. The credential decrypt fails on the stub vault (which has
+// no items), so the mocked upstream is never actually called — but the 502
+// confirms vault-proxy got past the routing step and into the auth path.
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::vault::VaultManager;
+    use crate::security::permissions::ToolPermissions;
+    use crate::security::audit_log::AuditLog;
+    use crate::notify::Notifier;
+    use crate::proxy::unifi_session::UnifiSessionCache;
+    use crate::proxy::registry::{AuthPattern, ServiceEntry, ServiceRegistry};
+    use axum::routing::{get, post};
+    use axum::Router;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    /// Build a minimal stub `AppState` for integration tests.
+    ///
+    /// Uses `VaultManager::new_stub()` so no live Vaultwarden connection is
+    /// needed. All credential-decrypt operations will fail gracefully with an
+    /// error (not a panic), causing `handle_proxy` to return 502 BAD_GATEWAY
+    /// instead of forwarding to the upstream — which is the expected behaviour
+    /// when testing the routing path without a live vault.
+    fn make_state(registry: ServiceRegistry) -> Arc<AppState> {
+        Arc::new(AppState {
+            vault: Arc::new(VaultManager::new_stub()),
+            registry: Arc::new(tokio::sync::RwLock::new(registry)),
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            http_permissive: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            unifi_sessions: Arc::new(UnifiSessionCache::new()),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            client_certs: None,
+            cloud_sync: None,
+            approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
+            browser: None,
+            permissions: Arc::new(tokio::sync::RwLock::new(
+                ToolPermissions::load("/nonexistent/tool-permissions.json"),
+            )),
+            audit_log: Arc::new(AuditLog::new("/tmp/vault-proxy-test-audit.json")),
+            notifier: Arc::new(Notifier::disabled()),
+            handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            vault_folder: "vault-proxy".to_string(),
+            last_resync_unix: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            internal_token: Arc::new("test-internal-token".to_string()),
+            cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
+            env_write_root: String::new(),
+        })
+    }
+
+    /// Build a minimal axum Router for integration tests.
+    fn make_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/proxy", post(handle_proxy))
+            .route("/vault/health", get(crate::vault::handlers::health))
+            .with_state(state)
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (a) POST /proxy → 404 for unknown service                               //
+    // ---------------------------------------------------------------------- //
+
+    /// A proxy request for a service that is not in the registry must return
+    /// 404 NOT_FOUND.  The error body must not echo back the service name
+    /// (enumeration defence).
+    #[tokio::test]
+    async fn proxy_unknown_service_returns_404() {
+        let state = make_state(ServiceRegistry::new()); // empty registry
+        let app = make_app(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{}/proxy", addr))
+            .json(&json!({
+                "service": "no-such-service",
+                "method": "GET",
+                "path": "/api/v1/items"
+            }))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status().as_u16(), 404,
+            "unknown service must return 404");
+
+        // The error body must not reveal the requested service name.
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let error_msg = body["error"].as_str().unwrap_or("");
+        assert!(
+            !error_msg.contains("no-such-service"),
+            "error body must not echo back the service name (enumeration defence): got '{error_msg}'"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (b) GET /vault/health → 200                                              //
+    // ---------------------------------------------------------------------- //
+
+    /// The health endpoint must return 200 with a JSON body containing
+    /// `vault_item_count` and `service_count` keys.
+    #[tokio::test]
+    async fn vault_health_returns_200() {
+        let state = make_state(ServiceRegistry::new());
+        let app = make_app(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let resp = reqwest::Client::new()
+            .get(format!("http://{}/vault/health", addr))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(resp.status().as_u16(), 200,
+            "health endpoint must return 200");
+
+        let body: serde_json::Value = resp.json().await
+            .expect("health must return JSON");
+        assert!(
+            body.get("vault_item_count").is_some(),
+            "health response must include vault_item_count field"
+        );
+        assert!(
+            body.get("service_count").is_some(),
+            "health response must include service_count field"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (c) POST /proxy with known service → reaches auth stage (not 404)       //
+    // ---------------------------------------------------------------------- //
+
+    /// When a service IS registered, a proxy request must not return 404.
+    /// The stub vault has no items → credential decrypt fails → 502 BAD_GATEWAY.
+    /// 502 ≠ 404 confirms the service was found and the request reached the
+    /// auth stage.
+    ///
+    /// wiremock is started to accept the forwarded request in case the auth
+    /// somehow succeeds (it won't with the stub), verifying vault-proxy would
+    /// use the correct upstream URL.
+    #[tokio::test]
+    async fn proxy_known_service_reaches_auth_not_routing_error() {
+        // Start a wiremock upstream that would handle the forwarded request.
+        let upstream = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/v1/status"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!({"status": "ok"})))
+            .mount(&upstream)
+            .await;
+
+        let mut registry = ServiceRegistry::new();
+        registry.register(ServiceEntry {
+            name: "ha".to_string(),
+            base_url: upstream.uri(),
+            auth: AuthPattern::Bearer {
+                vault_item: "vault-proxy - HomeAssistant".to_string(),
+            },
+            insecure_tls: false,
+            ca_cert_path: None,
+        });
+
+        let state = make_state(registry);
+        let app = make_app(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/proxy", addr))
+            .json(&json!({
+                "service": "ha",
+                "method": "GET",
+                "path": "/api/v1/status"
+            }))
+            .send()
+            .await
+            .expect("request failed");
+
+        // 502 = reached auth stage, credential lookup failed on stub vault.
+        // 404 would mean the service was not found in the registry (a bug).
+        assert_ne!(resp.status().as_u16(), 404,
+            "known service must not return 404 — it should fail at auth (502)");
+        assert_eq!(resp.status().as_u16(), 502,
+            "stub vault with no items must produce 502 (auth failure)");
+    }
+}
