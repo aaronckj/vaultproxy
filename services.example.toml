@@ -1,0 +1,85 @@
+# mcp-vault-proxy service configuration
+# Copy to your --config-dir as services.toml and edit to match your setup.
+# Each [[service]] block registers one service with the proxy.
+# The `name` field is what you pass as "service" in POST /proxy requests.
+# The `vault_item` field must match an item name in your Vaultwarden vault-proxy folder.
+
+# ── Bearer token (e.g. Home Assistant long-lived access token) ──────────────
+[[service]]
+name = "ha_home"
+base_url = "http://homeassistant.local:8123"
+auth = "bearer"
+vault_item = "vault-proxy - Home Assistant"
+
+# ── API key injected as a header (e.g. Sonarr, Radarr, Overseerr) ───────────
+[[service]]
+name = "sonarr"
+base_url = "http://sonarr.local:8989/api/v3"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "vault-proxy - Sonarr"
+
+[[service]]
+name = "radarr"
+base_url = "http://radarr.local:7878/api/v3"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "vault-proxy - Radarr"
+
+[[service]]
+name = "overseerr"
+base_url = "http://overseerr.local:5055/api/v1"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "vault-proxy - Overseerr"
+
+# ── API key as a query parameter (e.g. Tautulli) ────────────────────────────
+[[service]]
+name = "tautulli"
+base_url = "http://tautulli.local:8181"
+auth = "query_param"
+param_name = "apikey"
+vault_item = "vault-proxy - Tautulli"
+
+# ── HTTP Basic auth (e.g. OPNsense — uses key/secret custom fields) ─────────
+[[service]]
+name = "opnsense_main"
+base_url = "https://opnsense.local/api"
+auth = "basic"
+key_field = "key"
+secret_field = "secret"
+vault_item = "vault-proxy - OPNsense"
+insecure_tls = true        # OPNsense uses a self-signed cert by default
+
+# ── Session login (POST credentials, use returned token) ────────────────────
+[[service]]
+name = "npm_main"
+base_url = "http://npm.local:81/api"
+auth = "session"
+vault_item = "vault-proxy - Nginx Proxy Manager"
+login_path = "/tokens"
+token_field = "token"
+
+[[service]]
+name = "duplicati_main"
+base_url = "http://duplicati.local:8200/api/v1"
+auth = "session"
+vault_item = "vault-proxy - Duplicati"
+login_path = "/auth/login"
+token_field = "AccessToken"
+
+# ── UniFi dual auth (API key first, session fallback) ───────────────────────
+[[service]]
+name = "unifi_home"
+base_url = "https://unifi.local/proxy/network"
+auth = "unifi_dual"
+vault_item = "vault-proxy - UniFi"
+login_path = "/api/auth/login"
+
+# ── Plex (X-Plex-Token header) ───────────────────────────────────────────────
+[[service]]
+name = "plex"
+base_url = "http://plex.local:32400"
+auth = "header"
+header_name = "X-Plex-Token"
+vault_item = "vault-proxy - Plex"

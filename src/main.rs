@@ -425,16 +425,10 @@ async fn start_server(
         None
     };
 
-    // Build service registry from vault's Connecterr folder instead of the legacy modules block in config.
-    let aggregated = match crate::vault::connecterr_secrets::aggregate(&vault_arc, &args.vault_folder).await {
-        Ok(blob) => blob,
-        Err(e) => {
-            tracing::warn!("could not aggregate connecterr secrets: {} — starting with empty registry", e);
-            serde_json::Value::Object(serde_json::Map::new())
-        }
-    };
-    let registry = ServiceRegistry::from_vault(&aggregated, &args.vault_folder);
-    tracing::info!("registered services: {:?}", registry.list());
+    // Build service registry from services.toml in the config directory.
+    let services_path = std::path::Path::new(&config_dir).join("services.toml");
+    let registry = ServiceRegistry::from_toml_file(&services_path);
+    tracing::info!("registered {} services from {:?}: {:?}", registry.list().len(), services_path, registry.list());
 
     // Generate ephemeral mTLS certificates.
     tracing::info!("generating ephemeral mTLS certificates");

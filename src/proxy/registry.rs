@@ -1,6 +1,34 @@
 //! Service auth registry — maps service names to their auth patterns and base URLs.
 
 use std::collections::HashMap;
+use std::path::Path;
+
+// -------------------------------------------------------------------------- //
+// services.toml deserialization types                                          //
+// -------------------------------------------------------------------------- //
+
+#[derive(serde::Deserialize)]
+struct ServicesFile {
+    #[serde(default)]
+    service: Vec<ServiceConfig>,
+}
+
+#[derive(serde::Deserialize)]
+struct ServiceConfig {
+    name: String,
+    base_url: String,
+    auth: String,
+    vault_item: String,
+    // auth-type-specific fields
+    header_name: Option<String>,
+    param_name: Option<String>,
+    key_field: Option<String>,
+    secret_field: Option<String>,
+    login_path: Option<String>,
+    token_field: Option<String>,
+    #[serde(default)]
+    insecure_tls: bool,
+}
 
 // -------------------------------------------------------------------------- //
 // AuthPattern                                                                  //
@@ -429,6 +457,121 @@ impl ServiceRegistry {
 
         registry
     }
+
+    // ---------------------------------------------------------------------- //
+    // TOML-file-driven construction                                            //
+    // ---------------------------------------------------------------------- //
+
+    /// Build a `ServiceRegistry` from a `services.toml` file in `--config-dir`.
+    ///
+    /// Gracefully handles a missing file (returns empty registry with a warning)
+    /// and parse errors (returns empty registry with an error log).
+    pub fn from_toml_file(path: &Path) -> Self {
+        let mut registry = Self::new();
+
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("services.toml not found at {:?}: {} — starting with empty registry", path, e);
+                return registry;
+            }
+        };
+
+        let parsed: ServicesFile = match toml::from_str(&content) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("failed to parse services.toml: {}", e);
+                return registry;
+            }
+        };
+
+        for svc in parsed.service {
+            let base_url = svc.base_url.trim_end_matches('/').to_string();
+            let auth = match svc.auth.as_str() {
+                "bearer" => AuthPattern::Bearer {
+                    vault_item: svc.vault_item,
+                },
+                "header" => {
+                    let header_name = match svc.header_name {
+                        Some(h) => h,
+                        None => {
+                            tracing::warn!("service '{}': auth=header requires header_name — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    AuthPattern::Header {
+                        header_name,
+                        vault_item: svc.vault_item,
+                    }
+                }
+                "query_param" => {
+                    let param_name = match svc.param_name {
+                        Some(p) => p,
+                        None => {
+                            tracing::warn!("service '{}': auth=query_param requires param_name — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    AuthPattern::QueryParam {
+                        param_name,
+                        vault_item: svc.vault_item,
+                    }
+                }
+                "basic" => AuthPattern::Basic {
+                    vault_item: svc.vault_item,
+                    key_field: svc.key_field.unwrap_or_else(|| "key".to_string()),
+                    secret_field: svc.secret_field.unwrap_or_else(|| "secret".to_string()),
+                },
+                "session" => {
+                    let login_path = match svc.login_path {
+                        Some(p) => p,
+                        None => {
+                            tracing::warn!("service '{}': auth=session requires login_path — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    let token_field = match svc.token_field {
+                        Some(t) => t,
+                        None => {
+                            tracing::warn!("service '{}': auth=session requires token_field — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    AuthPattern::Session {
+                        vault_item: svc.vault_item,
+                        login_path,
+                        token_field,
+                    }
+                }
+                "unifi_dual" => {
+                    let login_path = match svc.login_path {
+                        Some(p) => p,
+                        None => {
+                            tracing::warn!("service '{}': auth=unifi_dual requires login_path — skipping", svc.name);
+                            continue;
+                        }
+                    };
+                    AuthPattern::UnifiDual {
+                        vault_item: svc.vault_item,
+                        login_path,
+                    }
+                }
+                other => {
+                    tracing::warn!("service '{}': unknown auth type '{}' — skipping", svc.name, other);
+                    continue;
+                }
+            };
+
+            registry.register(ServiceEntry {
+                name: svc.name,
+                base_url,
+                auth,
+                insecure_tls: svc.insecure_tls,
+            });
+        }
+
+        registry
+    }
 }
 
 impl Default for ServiceRegistry {
@@ -701,5 +844,110 @@ mod from_vault_tests {
             }
             other => panic!("expected Bearer, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod toml_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_toml(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn test_bearer_service_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "ha_home"
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "myproxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("ha_home").unwrap();
+        assert_eq!(svc.base_url, "http://192.0.2.1:8123");
+        match &svc.auth {
+            AuthPattern::Bearer { vault_item } => assert_eq!(vault_item, "myproxy - HA"),
+            other => panic!("expected Bearer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_header_service_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "sonarr"
+base_url = "http://192.0.2.1:8989/api/v3"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "myproxy - Sonarr"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("sonarr").unwrap();
+        match &svc.auth {
+            AuthPattern::Header { header_name, vault_item } => {
+                assert_eq!(header_name, "X-Api-Key");
+                assert_eq!(vault_item, "myproxy - Sonarr");
+            }
+            other => panic!("expected Header, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_missing_header_name_skips_service() {
+        let f = write_toml(r#"
+[[service]]
+name = "bad"
+base_url = "http://192.0.2.1:8080"
+auth = "header"
+vault_item = "myproxy - Bad"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(registry.get("bad").is_none(), "service with missing header_name should be skipped");
+    }
+
+    #[test]
+    fn test_unifi_dual_from_toml() {
+        let f = write_toml(r#"
+[[service]]
+name = "unifi_home"
+base_url = "https://192.0.2.2/proxy/network"
+auth = "unifi_dual"
+vault_item = "myproxy - UniFi"
+login_path = "/api/auth/login"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("unifi_home").unwrap();
+        match &svc.auth {
+            AuthPattern::UnifiDual { vault_item, login_path } => {
+                assert_eq!(vault_item, "myproxy - UniFi");
+                assert_eq!(login_path, "/api/auth/login");
+            }
+            other => panic!("expected UnifiDual, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_missing_file_returns_empty_registry() {
+        let registry = ServiceRegistry::from_toml_file(std::path::Path::new("/nonexistent/services.toml"));
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn test_trailing_slash_stripped_from_base_url() {
+        let f = write_toml(r#"
+[[service]]
+name = "ha"
+base_url = "http://192.0.2.1:8123/"
+auth = "bearer"
+vault_item = "myproxy - HA"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("ha").unwrap();
+        assert_eq!(svc.base_url, "http://192.0.2.1:8123");
     }
 }
