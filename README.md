@@ -44,21 +44,64 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 - Optional TPM sealing: keystore is hardware-bound to the host machine (`--features tpm`)
 - Dashboard (optional, `--features dashboard`) listens on `127.0.0.1:3202` only
 
-## Vault item naming
+## Configuration
 
-Create a folder in Vaultwarden named `vault-proxy` (or your `--vault-folder` value). Add items inside it named:
+Services are registered in `services.toml` inside your `--config-dir` (default `/config/services.toml`). Copy `services.example.toml` from the repo as a starting point.
+
+```toml
+# Each [[service]] block registers one downstream service.
+# `name` is what you pass as "service" in POST /proxy calls.
+# `vault_item` is the name of the item in your Vaultwarden folder — 
+#   the actual credential stays in Vaultwarden, never in this file.
+
+[[service]]
+name = "ha_home"
+base_url = "http://homeassistant.local:8123"
+auth = "bearer"
+vault_item = "vault-proxy - Home Assistant"
+
+[[service]]
+name = "sonarr"
+base_url = "http://sonarr.local:8989/api/v3"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "vault-proxy - Sonarr"
+
+[[service]]
+name = "unifi_home"
+base_url = "https://unifi.local/proxy/network"
+auth = "unifi_dual"
+vault_item = "vault-proxy - UniFi"
+login_path = "/api/auth/login"
+```
+
+### Auth types
+
+| `auth` value | Required fields | Example use |
+|-------------|-----------------|-------------|
+| `bearer` | — | Home Assistant, any Bearer token API |
+| `header` | `header_name` | Sonarr, Radarr, Plex (`X-Plex-Token`) |
+| `query_param` | `param_name` | Tautulli |
+| `basic` | `key_field`, `secret_field` | OPNsense (API key + secret) |
+| `session` | `login_path`, `token_field` | Nginx Proxy Manager, Duplicati |
+| `unifi_dual` | `login_path` | UniFi OS (API key → session fallback) |
+
+Add `insecure_tls = true` for services with self-signed certificates (e.g. OPNsense).
+
+### Vault items
+
+In Vaultwarden, create a folder named `vault-proxy` (or your `--vault-folder` value). Add one item per service named to match the `vault_item` field in `services.toml`:
 
 ```
-vault-proxy - Home Assistant       ← password field holds the Bearer token
-vault-proxy - UniFi                ← password field holds the API key
-vault-proxy - OPNsense             ← custom fields: key, secret
-vault-proxy - Nginx Proxy Manager  ← username + password
-vault-proxy - Tautulli             ← password field holds the API key
-vault-proxy - Plex                 ← password field holds the X-Plex-Token
-vault-proxy - Sonarr               ← password field holds the API key
-vault-proxy - Radarr               ← password field holds the API key
-vault-proxy - Overseerr            ← password field holds the API key
+vault-proxy - Home Assistant    ← password field = Bearer token
+vault-proxy - UniFi             ← password field = API key
+vault-proxy - OPNsense          ← custom fields: key, secret
+vault-proxy - Sonarr            ← password field = API key
+vault-proxy - Tautulli          ← password field = API key
+vault-proxy - Plex              ← password field = X-Plex-Token
 ```
+
+The `vault_item` string in `services.toml` is just a reference — credentials never leave Vaultwarden.
 
 ## Quickstart (Docker Compose)
 
