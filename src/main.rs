@@ -1032,6 +1032,10 @@ async fn start_server(
 
     let app = Router::new()
         .route("/vault/health",       get(handlers::health))
+        // Issue (iter-26): New debugging endpoint — returns service names, auth types,
+        // and base URLs without exposing vault_item names or credential details.
+        // Helps MCP server developers verify that services.toml loaded correctly.
+        .route("/vault/services",     get(handlers::list_services))
         .route("/vault/items",        get(handlers::list_items))
         .route("/vault/duplicates",   get(handlers::list_duplicates))
         .route("/vault/folders",      get(handlers::list_folders))

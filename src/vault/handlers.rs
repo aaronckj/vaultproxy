@@ -412,11 +412,95 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         None => json!({ "state": "not_configured" }),
     };
 
+    // Issue (iter-26): Enrich health response with operational context.
+    // Added: vault_folder (lets callers confirm scope) and service_count.
+    // vault_item_count reflects the in-memory cache (populated at startup and
+    // on POST /vault/resync), NOT a live query to Vaultwarden.
+    let service_count = services.len();
+
     Json(json!({
         "status": "ok",
         "vault_item_count": items.len(),
+        "vault_folder": state.vault_folder,
+        "service_count": service_count,
         "services": services,
         "cloud_sync": cloud_sync_status,
+        // vault_item_count is from the in-memory cache, not a live VW query.
+        // Call POST /vault/resync to refresh.
+        "cache_note": "vault_item_count reflects last sync; call POST /vault/resync to refresh",
+    }))
+}
+
+/// `GET /vault/services` — list registered services with names and auth types,
+/// but WITHOUT vault item names or credential details.
+///
+/// # Purpose (iter-26)
+///
+/// MCP server developers need a way to verify which services are registered
+/// and what auth pattern each one uses, without having to read services.toml
+/// directly. This endpoint supports debugging "why is my /proxy call returning
+/// 404?" by confirming whether the service name is registered at all.
+///
+/// # Security
+///
+/// - Service `name` and `base_url` are returned (the base URL is already in
+///   services.toml which the caller can read, so this is not a secret).
+/// - Auth type is returned (bearer, header, query_param, basic, session,
+///   unifi_dual) so the developer knows what credential shape the service uses.
+/// - `vault_item` (the Vaultwarden item name) is intentionally OMITTED — it
+///   reveals vault credential naming conventions and is not needed for debugging
+///   service registration issues. The header_name / param_name are included
+///   because they are required to understand the auth wiring.
+/// - This endpoint is on the open router (no bearer token required) because
+///   service names and auth types are not secrets — they are visible in
+///   services.toml and the startup logs. Equivalent security posture to
+///   `GET /vault/health`.
+pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
+    use crate::proxy::registry::AuthPattern;
+
+    let services: Vec<Value> = state.registry.list().iter().map(|name| {
+        if let Some(entry) = state.registry.get(name) {
+            let auth_type = match &entry.auth {
+                AuthPattern::Bearer { .. }    => "bearer",
+                AuthPattern::Header { .. }    => "header",
+                AuthPattern::QueryParam { .. } => "query_param",
+                AuthPattern::Basic { .. }     => "basic",
+                AuthPattern::Session { .. }   => "session",
+                AuthPattern::UnifiDual { .. } => "unifi_dual",
+            };
+            // Include header_name / param_name — needed to understand wiring.
+            // Do NOT include vault_item — exposes credential naming conventions.
+            let auth_detail: Value = match &entry.auth {
+                AuthPattern::Header { header_name, .. } => json!({ "header_name": header_name }),
+                AuthPattern::QueryParam { param_name, .. } => json!({ "param_name": param_name }),
+                AuthPattern::Basic { key_field, secret_field, .. } => json!({
+                    "key_field": key_field,
+                    "secret_field": secret_field,
+                }),
+                AuthPattern::Session { login_path, token_field, login_include_username, .. } => json!({
+                    "login_path": login_path,
+                    "token_field": token_field,
+                    "login_include_username": login_include_username,
+                }),
+                AuthPattern::UnifiDual { login_path, .. } => json!({ "login_path": login_path }),
+                AuthPattern::Bearer { .. } => json!({}),
+            };
+            json!({
+                "name": entry.name,
+                "base_url": entry.base_url,
+                "auth": auth_type,
+                "auth_detail": auth_detail,
+                "insecure_tls": entry.insecure_tls,
+                "ca_cert": entry.ca_cert_path.is_some(),
+            })
+        } else {
+            json!({ "name": name })
+        }
+    }).collect();
+
+    Json(json!({
+        "count": services.len(),
+        "services": services,
     }))
 }
 
@@ -766,6 +850,18 @@ pub async fn create_item(
             if let Err(e) = state.vault.sync().await {
                 tracing::warn!("post-create sync failed: {}", e);
             }
+            // Issue (iter-26): Audit all successful vault mutations.
+            // create_item was previously not logged to the structured AuditLog,
+            // only to tracing. All mutation handlers now emit an AuditEntry so
+            // operators have a persistent record of every write operation.
+            state.audit_log.log(crate::security::audit_log::AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                tool_name: "vault__create_item".to_string(),
+                args_summary: format!("name={}, folder={}", req.name, effective_folder_name),
+                result_summary: format!("ok; id={}", id),
+                permission: "Allowed".to_string(),
+                trigger: "http".to_string(),
+            });
             (StatusCode::CREATED, Json(json!({"ok": true, "id": id})))
         }
         Err(e) => {
@@ -890,6 +986,15 @@ pub async fn update_item(
             if let Err(e) = state.vault.sync().await {
                 tracing::warn!("post-update sync failed: {}", e);
             }
+            // Issue (iter-26): Audit mutation — update_item was previously unlogged.
+            state.audit_log.log(crate::security::audit_log::AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                tool_name: "vault__update_item".to_string(),
+                args_summary: format!("id={}", req.id),
+                result_summary: "ok".to_string(),
+                permission: "Allowed".to_string(),
+                trigger: "http".to_string(),
+            });
             (StatusCode::OK, Json(json!({"ok": true, "id": req.id})))
         }
         Err(e) => {
@@ -1694,7 +1799,18 @@ pub async fn delete_folder(
     }
 
     match state.vault.delete_folder(&req.id).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true, "id": req.id }))),
+        Ok(()) => {
+            // Issue (iter-26): Audit folder deletion — delete_folder was previously unlogged.
+            state.audit_log.log(crate::security::audit_log::AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                tool_name: "vault__delete_folder".to_string(),
+                args_summary: format!("id={}", req.id),
+                result_summary: "ok".to_string(),
+                permission: "Allowed".to_string(),
+                trigger: "http".to_string(),
+            });
+            (StatusCode::OK, Json(json!({ "ok": true, "id": req.id })))
+        }
         Err(e) => {
             tracing::error!("delete folder failed: {}", e);
             (
@@ -1787,15 +1903,29 @@ pub async fn move_item(
     };
 
     match result {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "id": req.id,
-                "folder_id": req.folder_id,
-                "folder_name": req.folder_name,
-            })),
-        ),
+        Ok(()) => {
+            // Issue (iter-26): Audit move — move_item was previously unlogged.
+            let dest = req.folder_id.as_deref()
+                .or(req.folder_name.as_deref())
+                .unwrap_or("<unknown>");
+            state.audit_log.log(crate::security::audit_log::AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                tool_name: "vault__move_item".to_string(),
+                args_summary: format!("id={}, dest={}", req.id, dest),
+                result_summary: "ok".to_string(),
+                permission: "Allowed".to_string(),
+                trigger: "http".to_string(),
+            });
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "id": req.id,
+                    "folder_id": req.folder_id,
+                    "folder_name": req.folder_name,
+                })),
+            )
+        }
         Err(e) => {
             tracing::error!("move cipher failed: {}", e);
             (
@@ -1883,6 +2013,18 @@ pub async fn delete_item(
             if let Err(e) = state.vault.sync().await {
                 tracing::warn!("post-delete sync failed: {}", e);
             }
+            // Issue (iter-26): Audit deletion — delete_item was previously unlogged.
+            // Soft-deletes are especially important to track: the item is moved to
+            // trash (not irrecoverable), but the operator needs a record of what was
+            // deleted and when.
+            state.audit_log.log(crate::security::audit_log::AuditEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                tool_name: "vault__delete_item".to_string(),
+                args_summary: format!("id={}", req.id),
+                result_summary: "ok (soft-deleted to trash)".to_string(),
+                permission: "Allowed".to_string(),
+                trigger: "http".to_string(),
+            });
             (StatusCode::OK, Json(json!({ "ok": true, "id": req.id })))
         }
         Err(e) => {
@@ -2732,6 +2874,18 @@ pub async fn upsert_connecterr_secrets(
         }
     }
 
+    // Issue (iter-26): Audit upsert — upsert_connecterr_secrets was previously unlogged.
+    // This endpoint can bulk-create or update multiple vault items, making it one
+    // of the highest-impact mutation paths. Log counts so operators can spot
+    // unexpectedly large batches.
+    state.audit_log.log(crate::security::audit_log::AuditEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        tool_name: "vault__upsert_connecterr_secrets".to_string(),
+        args_summary: format!("items={}", created.len() + merged.len()),
+        result_summary: format!("created={}, merged={}", created.len(), merged.len()),
+        permission: "Allowed".to_string(),
+        trigger: "http".to_string(),
+    });
     Ok(Json(json!({ "created": created, "merged": merged })))
 }
 

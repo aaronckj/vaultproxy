@@ -602,6 +602,20 @@ impl ServiceRegistry {
                          file belongs at ./config/services.toml on the host.",
                         path, path
                     );
+                } else if e.kind() == std::io::ErrorKind::IsADirectory || e.raw_os_error() == Some(21) {
+                    // Issue (iter-26): IsADirectory is a distinct error kind on Linux
+                    // (EISDIR / errno 21). `read_to_string` on a directory returns this
+                    // OS error. The generic "check file permissions" message was
+                    // actively misleading — permissions on the *directory* are fine;
+                    // the operator has accidentally created a directory where a file
+                    // should be (e.g. `mkdir /config/services.toml` instead of
+                    // `touch /config/services.toml`).
+                    tracing::error!(
+                        "services.toml at {:?} is a DIRECTORY, not a file — starting with \
+                         empty registry. Remove the directory and create the file instead: \
+                         `rmdir {:?} && cp services.example.toml {:?}`",
+                        path, path, path
+                    );
                 } else {
                     tracing::warn!(
                         "could not read services.toml at {:?}: {} — starting with empty registry. \

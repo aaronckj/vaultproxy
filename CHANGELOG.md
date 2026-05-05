@@ -3,6 +3,78 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — iteration-26 audit fixes
+
+### Security fixes (iteration 26)
+
+- **Audit log coverage for all mutation handlers (iter-26)**: After 25 iterations
+  of handler additions, only `POST /proxy` and `GET /vault/folders?include_all=true`
+  emitted structured `AuditLog` entries. Every other mutation — `create_item`,
+  `update_item`, `delete_item`, `delete_folder`, `move_item`,
+  `upsert_connecterr_secrets`, and `POST /rotate` — was logged only to `tracing`
+  (ephemeral, not persisted). Added `state.audit_log.log(AuditEntry { ... })` to
+  each successful mutation path so operators have a persistent, queryable record
+  of every write operation via the audit-log dashboard.
+
+- **`services.toml` is a directory — clear error message (iter-26)**:
+  `from_toml_file()` called `std::fs::read_to_string(path)`, which returns
+  `EISDIR` (OS error 21) when the path is a directory. This fell through to
+  the generic "could not read services.toml — check file permissions" branch,
+  which is actively misleading: permissions on the directory are fine; the
+  operator has created a directory instead of a file (e.g. via
+  `mkdir /config/services.toml`). Added an explicit `IsADirectory` / errno-21
+  branch that emits: "services.toml at <path> is a DIRECTORY, not a file —
+  remove the directory and create the file instead."
+
+### UX improvements (iteration 26)
+
+- **`GET /vault/services` debugging endpoint (iter-26)**: There was no way for
+  an MCP server developer to verify which services are registered without
+  reading `services.toml` directly or inspecting startup logs. A new endpoint
+  returns service names, `base_url`, auth type, and auth-type-specific detail
+  (header name, param name, login path, etc.) for every registered service.
+  `vault_item` (the Vaultwarden credential name) is intentionally omitted to
+  avoid leaking credential naming conventions. The endpoint is on the open
+  router (same access posture as `GET /vault/health`).
+
+- **`GET /vault/health` enriched (iter-26)**: Added `vault_folder`, `service_count`,
+  and a `cache_note` field to the health response. The `vault_folder` field
+  lets callers confirm that the expected scope is active; `service_count`
+  provides a quick sanity-check of whether services.toml loaded correctly.
+  The `cache_note` makes explicit that `vault_item_count` is from the last
+  in-memory sync, not a live Vaultwarden query.
+
+## [Unreleased] — iteration-25 audit fixes
+
+### Security fixes (iteration 25)
+
+- **`Instant` overflow on absurdly large `expires_in` (iter-25)**: Vaultwarden
+  instances (or self-hosted configurations) can return `expires_in = 9999999`
+  or similar large values. Rust's `Instant::checked_add()` — not the panicking
+  `Instant + Duration` — is now used everywhere in the token expiry path.
+  Values above 7 days (604 800 s) are clamped and a warning is emitted; the
+  reactive 401 refresh path remains fully operational for any token that
+  outlives the cap window.
+
+- **Startup `vault_folder` existence check (iter-25)**: `VAULT_FOLDER` was
+  validated for format (non-empty, no slashes, no nulls) at parse time but not
+  for existence. A typo like `VAULT_FOLDER=vault_prox` would pass format
+  validation, yet every scoped handler would fall through to permissive mode
+  (returning all vault items) with no operator-visible warning. vault-proxy now
+  calls `find_folder_id_by_name_async` at startup and emits a prominent
+  `STARTUP: SECURITY` warning when the folder is absent from Vaultwarden.
+
+### Documentation fixes (iteration 25)
+
+- **CA cert rotation note (iter-25)**: The CA-cert client build loop in
+  `start_server` now logs explicitly that a process restart is required to
+  pick up rotated CA certificates, preventing silent credential-verification
+  failures when certs are rotated on disk while vault-proxy is running.
+
+- **README updates (iter-25)**: CLI reference table updated to include
+  `--env-write-root`, `--allow-root`, and `--launch`; security model section
+  expanded with token-staleness and folder-scope notes.
+
 ## [Unreleased] — iteration-23 audit fixes
 
 ### Security fixes (iteration 23)

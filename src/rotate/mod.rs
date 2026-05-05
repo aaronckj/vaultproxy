@@ -90,5 +90,18 @@ pub async fn handle_rotate(
         }
     }
 
+    // Issue (iter-26): Audit all rotation attempts regardless of success/failure.
+    // /rotate was previously not logged to the structured AuditLog (only to
+    // tracing). Operators need a persistent record of rotation attempts,
+    // especially for troubleshooting failed rotations.
+    state.audit_log.log(crate::security::audit_log::AuditEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        tool_name: "vault__rotate".to_string(),
+        args_summary: format!("service={}, strategy={}", req.service, req.strategy),
+        result_summary: format!("status={}: {}", result.status, result.message),
+        permission: "Allowed".to_string(),
+        trigger: "http".to_string(),
+    });
+
     Ok(Json(result))
 }
