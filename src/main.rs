@@ -558,6 +558,23 @@ async fn start_server(
     #[cfg(feature = "dashboard")]
     let dashboard_certs = certs.clone();
 
+    // Validate proxy_timeout: a value of 0 means every upstream request times
+    // out immediately, making the proxy entirely non-functional. Enforce a
+    // minimum of 1 second so operators catch the misconfiguration at startup
+    // rather than seeing every /proxy call return 504 with no obvious cause.
+    //
+    // iter-9 fix: previously PROXY_TIMEOUT=0 was silently accepted and passed
+    // to reqwest as Duration::from_secs(0), causing instant timeouts.
+    const PROXY_TIMEOUT_MIN_SECS: u64 = 1;
+    if args.proxy_timeout < PROXY_TIMEOUT_MIN_SECS {
+        anyhow::bail!(
+            "--proxy-timeout / PROXY_TIMEOUT must be at least {} second(s); got {} \
+             (a zero-second timeout makes every upstream request fail immediately)",
+            PROXY_TIMEOUT_MIN_SECS,
+            args.proxy_timeout
+        );
+    }
+
     // Build two HTTP clients:
     // - `http`: strict TLS verification (default) — for every module except UniFi.
     // - `http_permissive`: accepts invalid certs — only for UniFi UDM, which

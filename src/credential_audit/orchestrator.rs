@@ -209,11 +209,17 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         Ok(run_id)
     }
 
-    fn fail_run(&self, run_id: &str, _reason: &str) -> Result<()> {
+    /// Mark a run as failed, recording the failure reason in `audit_runs.fail_reason`
+    /// so operators can diagnose why a scan aborted.
+    ///
+    /// iter-9 fix: the `reason` parameter was previously prefixed with `_` (unused).
+    /// It was passed at call sites (`"engine_unreachable"`, `"engine_error: …"`) but
+    /// never stored, leaving `fail_reason` always NULL in the database.
+    fn fail_run(&self, run_id: &str, reason: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE audit_runs SET status='aborted_engine_error', finished_at=?1 WHERE run_id=?2",
-            params![&chrono::Utc::now().to_rfc3339(), run_id],
+            "UPDATE audit_runs SET status='aborted_engine_error', finished_at=?1, fail_reason=?2 WHERE run_id=?3",
+            params![&chrono::Utc::now().to_rfc3339(), reason, run_id],
         )?;
         Ok(())
     }

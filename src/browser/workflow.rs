@@ -433,6 +433,41 @@ impl RotationWorkflow {
 
         {
             let mut queue = approval_queue.write().await;
+            // Cap the queue at 64 entries. Each entry holds a base64 screenshot
+            // (20-50 KB); 64 entries ≈ 3 MB max. A buggy browser agent that
+            // repeatedly hits /browser/rotate without the dashboard consuming
+            // entries would otherwise grow memory without bound.
+            //
+            // Evict the oldest resolved (approved/denied) entry first; if none
+            // is found, evict the oldest entry regardless. This preserves
+            // pending requests as long as possible.
+            const APPROVAL_QUEUE_MAX: usize = 64;
+            if queue.len() >= APPROVAL_QUEUE_MAX {
+                // Try to remove the first non-pending entry.
+                let evict_idx = queue
+                    .iter()
+                    .position(|r| r.status != "pending")
+                    .or_else(|| if queue.is_empty() { None } else { Some(0) });
+                if let Some(idx) = evict_idx {
+                    queue.remove(idx);
+                    tracing::warn!(
+                        max = APPROVAL_QUEUE_MAX,
+                        "approval_queue at capacity — evicted oldest entry to make room"
+                    );
+                } else {
+                    // Queue is at cap and ALL entries are pending — do not enqueue.
+                    tracing::error!(
+                        max = APPROVAL_QUEUE_MAX,
+                        "approval_queue at capacity with all entries pending — \
+                         refusing new 2FA request to avoid memory exhaustion"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "approval queue is full ({} pending items) — \
+                         resolve or dismiss pending requests before retrying",
+                        queue.len()
+                    ));
+                }
+            }
             queue.push_back(request);
         }
 

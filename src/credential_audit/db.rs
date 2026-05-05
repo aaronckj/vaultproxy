@@ -60,6 +60,17 @@ const MIGRATIONS: &[(i32, &str)] = &[
     );
     "#,
     ),
+    (
+        3,
+        // iter-9: add fail_reason column to audit_runs so fail_run() can
+        // record why a scan aborted (e.g. "engine_unreachable",
+        // "engine_error: connection refused"). Previously the _reason
+        // argument was discarded, leaving operators with no diagnostic
+        // information about aborted runs.
+        r#"
+    ALTER TABLE audit_runs ADD COLUMN fail_reason TEXT;
+    "#,
+    ),
 ];
 
 /// Mark any audit_runs left in `running` (or paused) state as `aborted` with
@@ -176,5 +187,28 @@ mod tests {
             .query_row("SELECT count(*) FROM schema_migrations", [], |row| row.get(0))
             .unwrap();
         assert!(count >= 1);
+    }
+
+    /// iter-9: migration 3 adds `fail_reason` to audit_runs.
+    #[test]
+    fn migration_3_adds_fail_reason_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        // Write a fail_reason — would panic with "table has no column named
+        // fail_reason" if migration 3 didn't run.
+        conn.execute(
+            "INSERT INTO audit_runs(run_id, status, started_at, fail_reason)
+             VALUES ('r1', 'aborted_engine_error', '2026-05-05T00:00:00Z', 'engine_unreachable')",
+            [],
+        )
+        .expect("fail_reason column must exist after migration 3");
+        let reason: Option<String> = conn
+            .query_row(
+                "SELECT fail_reason FROM audit_runs WHERE run_id = 'r1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason.as_deref(), Some("engine_unreachable"));
     }
 }

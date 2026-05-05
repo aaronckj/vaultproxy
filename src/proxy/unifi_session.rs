@@ -37,6 +37,13 @@ pub(crate) fn fingerprint_creds(username: &str, password: &str) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
+/// Maximum number of distinct UniFi service entries in the session cache.
+/// Each entry is keyed by the service name from services.toml. A typical
+/// homelab has 1–3 controllers; 256 is a very generous cap that still
+/// prevents unbounded growth from a misconfigured or adversarial
+/// services.toml that registers hundreds of UniFi entries.
+const UNIFI_SESSION_CACHE_MAX: usize = 256;
+
 /// Per-service session cache. One entry per UniFi service name.
 #[derive(Default)]
 pub struct UnifiSessionCache {
@@ -50,7 +57,28 @@ impl UnifiSessionCache {
 
     /// Get (or lazily create) the mutex slot for a service. The slot wraps an
     /// `Option<SessionState>` — `None` means "no active session yet".
+    ///
+    /// If the cache is already at `UNIFI_SESSION_CACHE_MAX` entries and the
+    /// requested service is not already present, the insertion is refused and
+    /// a logged warning is emitted. The returned `None` causes the caller to
+    /// fall through to a bare (non-cached) API-key request — degraded
+    /// behaviour rather than memory exhaustion.
     pub fn slot(&self, service: &str) -> Arc<Mutex<Option<SessionState>>> {
+        // Fast path: already in cache.
+        if let Some(existing) = self.inner.get(service) {
+            return existing.clone();
+        }
+        // Slow path: insert with cap check.
+        if self.inner.len() >= UNIFI_SESSION_CACHE_MAX {
+            tracing::warn!(
+                service,
+                max = UNIFI_SESSION_CACHE_MAX,
+                "UnifiSessionCache at capacity — returning empty slot without caching; \
+                 check for a services.toml misconfiguration"
+            );
+            // Return an uncached slot so the caller can still proceed.
+            return Arc::new(Mutex::new(None));
+        }
         self.inner
             .entry(service.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(None)))
@@ -369,6 +397,31 @@ mod tests {
         let a = cache.slot("unifi_home");
         let b = cache.slot("unifi_home");
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    /// iter-9: verify the cache cap is enforced and does not panic.
+    /// Fill the cache to exactly UNIFI_SESSION_CACHE_MAX via unique keys,
+    /// then request one more new key — it must return a fresh (uncached) slot
+    /// and the cache size must stay at the cap.
+    #[tokio::test]
+    async fn slot_cap_is_enforced() {
+        let cache = UnifiSessionCache::new();
+        // Fill to cap.
+        for i in 0..UNIFI_SESSION_CACHE_MAX {
+            cache.slot(&format!("unifi_svc_{i}"));
+        }
+        assert_eq!(cache.inner.len(), UNIFI_SESSION_CACHE_MAX);
+        // One more new key — must not panic, must not grow the cache.
+        let overflow = cache.slot("unifi_overflow");
+        // The returned slot is a fresh independent Arc, not present in the map.
+        assert_eq!(
+            cache.inner.len(),
+            UNIFI_SESSION_CACHE_MAX,
+            "cache must not grow past the cap"
+        );
+        // The overflow slot is usable (not None-poisoned or locked).
+        let guard = overflow.lock().await;
+        assert!(guard.is_none(), "overflow slot must start as None");
     }
 
     #[tokio::test]

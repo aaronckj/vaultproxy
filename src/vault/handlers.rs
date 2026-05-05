@@ -48,11 +48,21 @@ pub struct CreateItemFieldInput {
 fn default_field_type() -> u8 { 1 }
 
 /// Reject URL values that don't pass a minimal SSRF policy: scheme must be
-/// http or https, and the host must not resolve to a cloud-metadata IP or
-/// link-local range. We deliberately do NOT inspect the path — that's the
-/// target API's concern — only the authority. Shared across any handler
-/// that builds an outbound URL from user-supplied input (currently
-/// `inject_creds` and `browser_rotate`).
+/// http or https, and the host must not resolve to a cloud-metadata IP,
+/// link-local range, or loopback address. We deliberately do NOT inspect
+/// the path — that's the target API's concern — only the authority. Shared
+/// across any handler that builds an outbound URL from user-supplied input
+/// (currently `inject_creds` and `browser_rotate`).
+///
+/// # Loopback blocking (iter-9 fix)
+///
+/// A crafted `services.toml` with `base_url = "http://127.0.0.1:3201/..."` could
+/// point the `/proxy` handler at vault-proxy itself, enabling a caller to
+/// read vault metadata or enumerate items via a `/proxy` → `/vault/items`
+/// loop-back. `is_allowed_outbound_url` is called by `inject_creds` and
+/// `browser_rotate` (both of which accept user-supplied URLs). Loopback
+/// addresses (`127.0.0.0/8`, `::1`, and the hostname `localhost`) are now
+/// blocked in addition to the existing link-local / cloud-metadata guards.
 pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     let url = match url::Url::parse(raw) {
         Ok(u) => u,
@@ -66,19 +76,20 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
         Some(h) => h,
         None => return false,
     };
-    // Block well-known cloud metadata hostnames outright.
+    // Block well-known cloud metadata hostnames and loopback hostname outright.
     const BLOCKED_HOSTS: &[&str] = &[
         "169.254.169.254",               // AWS/GCP/Azure IMDS
         "metadata.google.internal",      // GCP
         "metadata.aws.cloud",
         "metadata.azure.com",
         "fd00:ec2::254",                 // AWS IPv6 IMDS
+        "localhost",                     // loopback hostname — blocks loop-back into vault-proxy
     ];
     if BLOCKED_HOSTS.iter().any(|b| b.eq_ignore_ascii_case(host)) {
         return false;
     }
-    // If the host is a literal IP, also block link-local and loopback-to-
-    // other-container exposure of IMDS-adjacent ranges.
+    // If the host is a literal IP, also block loopback, link-local, and
+    // IMDS-adjacent ranges.
     // NOTE: url::Url::host_str() returns IPv6 addresses with enclosing
     // brackets (e.g. "[fe80::1]"). Rust's IpAddr parser does NOT accept
     // brackets, so we must strip them before parsing or the IPv6 link-local
@@ -88,12 +99,20 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
         match ip {
             std::net::IpAddr::V4(v4) => {
                 let octs = v4.octets();
+                // 127.0.0.0/8 — loopback (blocks loop-back into vault-proxy itself)
+                if octs[0] == 127 {
+                    return false;
+                }
                 // 169.254.0.0/16 — link-local / cloud metadata
                 if octs[0] == 169 && octs[1] == 254 {
                     return false;
                 }
             }
             std::net::IpAddr::V6(v6) => {
+                // ::1 — IPv6 loopback
+                if v6.is_loopback() {
+                    return false;
+                }
                 // fe80::/10 link-local
                 let seg = v6.segments();
                 if seg[0] & 0xffc0 == 0xfe80 {
@@ -2044,6 +2063,19 @@ mod ssrf_tests {
     fn non_http_schemes_are_blocked() {
         assert!(!is_allowed_outbound_url("ftp://example.com/"));
         assert!(!is_allowed_outbound_url("file:///etc/passwd"));
+    }
+
+    /// iter-9: loopback addresses and the hostname "localhost" must be blocked.
+    /// A services.toml with `base_url = "http://127.0.0.1:3201/vault/items"` would
+    /// let a /proxy call loop back into vault-proxy and read vault metadata.
+    #[test]
+    fn loopback_addresses_are_blocked() {
+        assert!(!is_allowed_outbound_url("http://127.0.0.1:3201/vault/items"), "127.0.0.1 must be blocked");
+        assert!(!is_allowed_outbound_url("http://127.0.0.1/"), "bare 127.0.0.1 must be blocked");
+        assert!(!is_allowed_outbound_url("http://127.1.2.3/api"), "127.x.y.z must be blocked");
+        assert!(!is_allowed_outbound_url("http://[::1]/api"), "::1 IPv6 loopback must be blocked");
+        assert!(!is_allowed_outbound_url("http://localhost/api"), "localhost hostname must be blocked");
+        assert!(!is_allowed_outbound_url("http://LOCALHOST:8080/"), "case-insensitive localhost must be blocked");
     }
 }
 
