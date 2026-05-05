@@ -189,8 +189,33 @@ pub async fn handle_proxy(
         format!("{}/{}", service.base_url.trim_end_matches('/'), path)
     };
 
-    // 3. Parse the HTTP method.
+    // 3. Parse and validate the HTTP method.
+    //
+    // Issue-1 (iter-5): CONNECT and TRACE are dangerous in a proxy context.
+    // CONNECT is used to establish TCP tunnels through HTTP proxies — if
+    // forwarded, it could allow an MCP caller to open arbitrary TCP connections
+    // to any host reachable from vault-proxy. reqwest would accept and forward
+    // a CONNECT method string because `Method::from_bytes` accepts any token.
+    // TRACE is the HTTP debugging echo method; it can reveal request headers
+    // (including auth credentials injected by vault-proxy) in the response body,
+    // which would completely undermine the credential-isolation guarantee.
+    // HEAD is allowed because it is a safe read method (same as GET, no body).
+    // OPTIONS is allowed for CORS preflight when services require it.
+    // Custom/extension methods are blocked for the same reasons as CONNECT —
+    // vault-proxy is a JSON API bridge, not a generic HTTP proxy.
     let method = req.method.to_uppercase();
+    let method_str = method.as_str();
+    const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+    if !ALLOWED_METHODS.contains(&method_str) {
+        return Err(proxy_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            format!(
+                "method '{}' is not allowed — vault-proxy accepts: {}",
+                req.method,
+                ALLOWED_METHODS.join(", ")
+            ),
+        ));
+    }
     let method = method.parse::<Method>().map_err(|_| {
         proxy_error(
             StatusCode::BAD_REQUEST,
@@ -202,11 +227,52 @@ pub async fn handle_proxy(
     // Log internal errors (which may contain vault item names, upstream IPs,
     // etc.) at debug level, but return a generic message to the caller so that
     // credential names and internal topology are never exposed in API responses.
+    //
+    // Issue-9 (iter-5): Distinguish timeout errors from other upstream failures.
+    // When `--proxy-timeout` fires, the reqwest error has `is_timeout() == true`.
+    // Before this fix, timeouts were reported as the generic "upstream request
+    // failed" 502, making them indistinguishable from DNS failures, connection
+    // refused, and TLS errors. Callers (particularly LLMs with retry logic)
+    // should know when to wait vs. when to give up immediately; a 504 Gateway
+    // Timeout with an explicit message gives them that signal. Internal details
+    // (service name, upstream IP) are still not included in the 504 body.
     let mut response = apply_auth_and_send(&state, service.auth.clone(), &target_url, method, &req)
         .await
         .map_err(|e| {
-            tracing::debug!("proxy auth/send error for service '{}': {:#}", req.service, e);
-            proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed".to_string())
+            // Detect timeout: reqwest wraps its own Error type; check the
+            // debug representation since anyhow wraps it. We also test for
+            // "timed out" as a belt-and-suspenders match for the OS-level
+            // "connection timed out" / "operation timed out" messages.
+            let is_timeout = {
+                // Walk the anyhow error chain looking for a reqwest::Error with
+                // is_timeout()==true, or a message containing "timed out".
+                let mut found = false;
+                if let Some(reqwest_err) = e.downcast_ref::<reqwest::Error>() {
+                    if reqwest_err.is_timeout() {
+                        found = true;
+                    }
+                }
+                if !found {
+                    let msg = format!("{:#}", e).to_lowercase();
+                    if msg.contains("timed out") || msg.contains("timeout") {
+                        found = true;
+                    }
+                }
+                found
+            };
+            if is_timeout {
+                tracing::debug!(
+                    "proxy timeout for service '{}': {:#}",
+                    req.service, e
+                );
+                proxy_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "upstream request timed out".to_string(),
+                )
+            } else {
+                tracing::debug!("proxy auth/send error for service '{}': {:#}", req.service, e);
+                proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed".to_string())
+            }
         })?;
 
     // 5. Sanitize the response body to strip prompt injection patterns.

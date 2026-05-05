@@ -87,7 +87,9 @@ login_path = "/api/auth/login"
 | `session` | `login_path`, `token_field` | Nginx Proxy Manager, Duplicati |
 | `unifi_dual` | `login_path` | UniFi OS (API key → session fallback) |
 
-Add `insecure_tls = true` for services with self-signed certificates (e.g. OPNsense).
+Add `insecure_tls = true` for services with self-signed certificates (e.g. OPNsense on a local LAN).
+
+> **Security warning:** `insecure_tls = true` disables all TLS certificate validation for that service. Credentials forwarded to the service are sent without certificate verification — a MITM attack on that service's IP cannot be detected. Only use this for LAN-local services with known self-signed certs. Never use it for internet-facing endpoints. A startup warning is logged for every service registered with this flag.
 
 ### Vault items
 
@@ -106,6 +108,18 @@ The `vault_item` string in `services.toml` is just a reference — credentials n
 
 ## Quickstart (Docker Compose)
 
+**Step 1:** Create your config directory and place your `services.toml` inside it:
+
+```bash
+mkdir -p ./config
+cp services.example.toml ./config/services.toml
+# Edit ./config/services.toml to match your services and vault item names
+```
+
+**Step 2:** In Vaultwarden, create a folder named `vault-proxy` and add one item per service, named to match the `vault_item` field in `services.toml` (e.g. `vault-proxy - Home Assistant`).
+
+**Step 3:** Start the setup wizard:
+
 ```yaml
 services:
   vaultproxy:
@@ -119,7 +133,23 @@ services:
     command: ["--setup"]   # Remove after first-run setup completes
 ```
 
-Run `docker compose up` with `--setup` to configure. The wizard prompts for your Vaultwarden URL, email, and master password. Credentials are stored encrypted in `/config/`. Restart without `--setup` for normal operation.
+```bash
+docker compose up
+```
+
+The wizard prompts for your Vaultwarden URL, email, and master password. Credentials are stored encrypted in `/config/keystore.json`.
+
+**Step 4:** Remove `command: ["--setup"]` from your compose file and restart:
+
+```bash
+docker compose up -d
+```
+
+The proxy is now running. Verify with:
+
+```bash
+curl http://127.0.0.1:3201/vault/health
+```
 
 **With TPM (bare metal):**
 ```bash

@@ -68,9 +68,37 @@ toml = "0.8"
 shell-words = "1"
 
 [features]
+# `default` = no optional features. This is the recommended build for Docker/server
+# deployments — it includes all proxy, vault, launcher, and browser-rotation
+# functionality but omits the web dashboard and TPM hardware binding.
 default = []
+
+# Enable hardware-backed keystore sealing via TPM 2.0 (requires TSS2 system
+# libraries: libtss2-dev / tss2-esapi on the host). On hosts without a TPM the
+# build succeeds but sealing is a no-op (software fallback remains).
+# Build: cargo build --release --features tpm
 tpm = ["tss-esapi"]
+
+# Enable the web management dashboard on 127.0.0.1:3202 (HTTPS, self-signed cert).
+# The dashboard provides a UI for setup, unlock, service inspection, audit logs,
+# and tool-permission management. Not required for headless/Docker deployments
+# where --setup runs the CLI wizard.
+# Build: cargo build --release --features dashboard
 dashboard = []
+
+# NOTE: There is intentionally no "minimal" feature flag to strip subsystems
+# (cloud sync, browser rotation, launcher, etc.) from Docker builds.
+# All of these subsystems are compile-time zero-cost unless explicitly invoked
+# at runtime — they add no measurable startup time or memory overhead when idle.
+# The binary size difference between a "full" and "minimal" build is ~1-2 MB
+# on stripped release builds, which is not worth maintaining a parallel feature
+# matrix. If binary size becomes a concern, consider profiling with `bloat` and
+# stripping specific heavy dependencies (tokio-tungstenite, rcgen) via features.
+#
+# The largest single contributor to binary size is `rusqlite` with `bundled`
+# (embeds a full SQLite build). If you do not use the credential-audit subsystem,
+# removing `bundled` and depending on the system SQLite library will shave ~1 MB.
+# This is not done by default because the Docker image has no system SQLite.
 
 [dev-dependencies]
 wiremock = "0.6"

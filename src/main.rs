@@ -495,6 +495,29 @@ async fn start_server(
     tracing::info!("registered {} services from {:?}: {:?}", registry.list().len(), services_path, registry.list());
 
     // Generate ephemeral mTLS certificates.
+    //
+    // Issue-6 (iter-5): These certs are regenerated on every startup — they are
+    // NOT persisted between restarts. This is intentional (no disk footprint,
+    // no stale key material), but it has a user-experience consequence:
+    // every restart produces a new self-signed cert with a new fingerprint,
+    // so browsers that pinned the previous cert (HSTS / cert pinning) will
+    // show a "certificate has changed" warning.
+    //
+    // The dashboard is accessed via localhost only, so the practical risk of
+    // a fresh cert is low. However, if you use a browser with strict HSTS or
+    // have previously clicked "Remember this exception", you may need to clear
+    // the security exception after a restart. This is a deliberate tradeoff:
+    //
+    //   Option A (current): ephemeral cert — no disk IO, no stale key, browser
+    //                       warning on restart.
+    //   Option B (future):  persist cert to /config/dashboard-tls.pem and only
+    //                       regenerate if the cert is missing, expired, or if
+    //                       --setup is re-run. Eliminates browser warnings at
+    //                       the cost of a file on disk.
+    //
+    // TODO: Implement option B (persisted dashboard cert) behind a
+    // `--persist-dashboard-cert` flag for operators who use the dashboard
+    // frequently and don't want the warning on every container restart.
     tracing::info!("generating ephemeral mTLS certificates");
     let certs = tpm::generate_mtls_certs()
         .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
@@ -912,14 +935,67 @@ async fn start_server(
     // rate-limit middleware can key on the client IP; without it the
     // `ConnectInfo` extension is absent and the limiter would collapse to a
     // single global bucket.
+    //
+    // Issue-5 (iter-5): Graceful shutdown on SIGTERM (Docker stop) and Ctrl-C.
+    //
+    // Without this, SIGTERM instantly kills the process mid-request. Docker
+    // sends SIGTERM and then waits 10s (configurable via stop_grace_period)
+    // before SIGKILL. With `with_graceful_shutdown`, axum stops accepting new
+    // connections immediately but waits for in-flight `/proxy` requests to
+    // complete before exiting — within Docker's grace window this is safe.
+    //
+    // NOTE: In-memory session token cache and decrypted keys are held in
+    // `AppState`. Rust's async drop for `Arc`-wrapped values runs on shutdown
+    // when the last strong reference is dropped — `SecureBuffer`s use `zeroize`
+    // on Drop, so key material is zeroed before the process exits. This does NOT
+    // require explicit zeroing here; it happens automatically as the `Arc<AppState>`
+    // is released when the server future completes.
+    //
+    // Sessions cached in `state.session_tokens` are in-memory only; they are
+    // not persisted and do not need explicit clearing on shutdown.
     tracing::info!("vault-proxy listening on {}", args.listen);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async {
+        // Wait for either SIGTERM (Docker stop / systemd) or Ctrl-C.
+        // On non-Unix platforms (e.g., Windows dev builds) only Ctrl-C is
+        // available; SIGTERM handling is Unix-specific.
+        let sigterm_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = {
+            #[cfg(unix)]
+            {
+                Box::pin(async {
+                    if let Ok(mut sig) = tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    ) {
+                        sig.recv().await;
+                    } else {
+                        // If we can't install SIGTERM handler, block forever
+                        // so the select! falls through to Ctrl-C only.
+                        std::future::pending::<()>().await;
+                    }
+                })
+            }
+            #[cfg(not(unix))]
+            {
+                Box::pin(std::future::pending::<()>())
+            }
+        };
+
+        tokio::select! {
+            _ = sigterm_fut => {
+                tracing::info!("received SIGTERM — draining in-flight requests before exit");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received Ctrl-C — draining in-flight requests before exit");
+            }
+        }
+    })
     .await?;
 
+    tracing::info!("vault-proxy shut down cleanly");
     Ok(())
 }
 

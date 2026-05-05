@@ -563,6 +563,34 @@ impl ServiceRegistry {
                 continue;
             }
 
+            // Issue-7 (iter-5): Validate vault_item name.
+            //
+            // The vault_item string is used as an exact-match key against the
+            // in-memory vault cache (linear scan by decrypted item name — no
+            // HTTP search call is made, so there is no search-API injection
+            // risk). However, a null-byte or empty vault_item would cause every
+            // `decrypt_password` / `decrypt_field` call for this service to
+            // return "item not found" at runtime, which is confusing to diagnose
+            // from logs. Rejecting them here gives an immediate, actionable error
+            // at startup rather than a mysterious 502 on first proxy call.
+            if svc.vault_item.is_empty() {
+                tracing::error!(
+                    "service '{}': vault_item is empty — every credential lookup will fail. \
+                     Set vault_item to the exact Vaultwarden item name (e.g. \
+                     'vault-proxy - Home Assistant'). Skipping.",
+                    svc.name
+                );
+                continue;
+            }
+            if svc.vault_item.contains('\0') {
+                tracing::error!(
+                    "service '{}': vault_item '{}' contains a null byte — \
+                     this is never a valid Vaultwarden item name. Skipping.",
+                    svc.name, svc.vault_item
+                );
+                continue;
+            }
+
             let base_url = svc.base_url.trim_end_matches('/').to_string();
 
             // Validate base_url against SSRF policy. This prevents a
@@ -691,6 +719,24 @@ impl ServiceRegistry {
                 }
             };
 
+            // Issue-3 (iter-5): Warn prominently when a service is registered
+            // with insecure_tls = true. Silently accepting invalid certs means
+            // the proxy will not detect MITM attacks or certificate substitution
+            // on that service — all auth credentials destined for it are at risk.
+            // The warning is emitted here (at registry load time) so it appears
+            // in container startup logs even if the service is never called.
+            // Operators who need this for LAN self-signed certs should understand
+            // the tradeoff; operators who copy services.example.toml without
+            // reading it should see this warning before anything goes wrong.
+            if svc.insecure_tls {
+                tracing::warn!(
+                    "service '{}': insecure_tls = true — TLS certificate validation is \
+                     DISABLED for this service. All credentials forwarded to '{}' are \
+                     sent without cert verification. Suitable only for LAN services with \
+                     known self-signed certs; never use for internet-facing endpoints.",
+                    svc.name, base_url
+                );
+            }
             registry.register(ServiceEntry {
                 name: svc.name,
                 base_url,
@@ -1353,5 +1399,36 @@ vault_item = "myproxy - HA"
         let f = write_toml(toml);
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.list().is_empty(), "name with null byte should be rejected");
+    }
+
+    // Issue-7 (iter-5): vault_item name validation tests.
+
+    #[test]
+    fn test_empty_vault_item_is_rejected() {
+        let f = write_toml(r#"
+[[service]]
+name = "ha"
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = ""
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.list().is_empty(),
+            "service with empty vault_item should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_null_byte_in_vault_item_is_rejected() {
+        // Null bytes in vault_item would silently cause "item not found" at
+        // runtime on every credential lookup — reject early at load time.
+        let toml = "[[service]]\nname = \"ha\"\nbase_url = \"http://192.0.2.1:8123\"\nauth = \"bearer\"\nvault_item = \"bad\x00item\"\n";
+        let f = write_toml(toml);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.list().is_empty(),
+            "vault_item with null byte should be rejected"
+        );
     }
 }

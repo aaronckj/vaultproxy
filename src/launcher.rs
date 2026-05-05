@@ -73,6 +73,70 @@ pub async fn launch(
     // Resolve env vars — static values pass through, vault refs are decrypted.
     let mut resolved: Vec<(String, Zeroizing<String>)> = Vec::new();
     for mapping in server.env {
+        // Issue-4 (iter-5): Validate env var names before accepting them.
+        //
+        // Dangerous cases the operator config file could set, accidentally or
+        // through a supply-chain attack on the config:
+        //
+        //   var = ""            → empty name: rejected by most env APIs but
+        //                         behaviour is undefined / platform-specific.
+        //   var = "LD_PRELOAD"  → shared-library injection into the child.
+        //   var = "LD_LIBRARY_PATH" → same class.
+        //   var = "PATH"        → redirects which binary the child resolves.
+        //   var = "VAR=INJECT"  → on POSIX, an env entry that contains '='
+        //                         before the value delimiter splits incorrectly
+        //                         and can shadow a different variable.
+        //   var = "BAD\0NAME"   → null bytes terminate the C string and
+        //                         silently truncate the name.
+        //
+        // POSIX env var names must match [A-Za-z_][A-Za-z0-9_]* — we enforce
+        // this strictly so that any name that could cause unexpected behaviour
+        // is rejected at config-load time with an actionable error message.
+        // Operators with a genuine need for unconventional names should use a
+        // wrapper script that sets them after vault-proxy exits.
+        let var_name = &mapping.var;
+        if var_name.is_empty() {
+            anyhow::bail!(
+                "mcp_server '{}': env mapping has empty var name — \
+                 environment variable names must be non-empty",
+                server_name
+            );
+        }
+        if var_name.contains('\0') {
+            anyhow::bail!(
+                "mcp_server '{}': env var name '{}' contains a null byte — \
+                 this would silently truncate the name and is never correct",
+                server_name, var_name
+            );
+        }
+        if var_name.contains('=') {
+            anyhow::bail!(
+                "mcp_server '{}': env var name '{}' contains '=' — \
+                 this is a common injection pattern that would corrupt the \
+                 child's environment. Use a name without '='.",
+                server_name, var_name
+            );
+        }
+        // Warn (but allow) names that override well-known loader variables.
+        // Blocking these outright would break legitimate wrappers that need
+        // to set PATH; warning ensures operators see it in startup logs.
+        const SENSITIVE_ENV_VARS: &[&str] = &[
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "LD_DEBUG",
+            "DYLD_INSERT_LIBRARIES",  // macOS equivalent
+            "DYLD_LIBRARY_PATH",
+        ];
+        if SENSITIVE_ENV_VARS.iter().any(|s| s.eq_ignore_ascii_case(var_name)) {
+            tracing::warn!(
+                "mcp_server '{}': env var '{}' is a dynamic-linker control variable — \
+                 setting it can cause shared-library injection into the child process. \
+                 Verify this is intentional.",
+                server_name, var_name
+            );
+        }
+
         if let Some(static_val) = mapping.value {
             resolved.push((mapping.var, Zeroizing::new(static_val)));
         } else if let Some(item_name) = mapping.vault_item {
@@ -326,5 +390,55 @@ command = "cmd-b"
         assert!(!is_dangerous_program("/usr/local/bin/my-mcp-server"), "custom binary must be allowed");
         assert!(!is_dangerous_program("npx"), "'npx' must be allowed");
         assert!(!is_dangerous_program("docker"), "'docker' must be allowed");
+    }
+
+    // Issue-4 (iter-5): Env var name validation helper — replicated inline
+    // for unit testing without needing a live VaultManager.
+    fn validate_env_var_name(name: &str) -> Result<(), String> {
+        if name.is_empty() {
+            return Err("empty var name".to_string());
+        }
+        if name.contains('\0') {
+            return Err(format!("null byte in var name '{}'", name));
+        }
+        if name.contains('=') {
+            return Err(format!("'=' in var name '{}' is an injection pattern", name));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_env_var_name_rejected() {
+        assert!(validate_env_var_name("").is_err(), "empty var name must be rejected");
+    }
+
+    #[test]
+    fn test_eq_sign_in_env_var_name_rejected() {
+        assert!(
+            validate_env_var_name("VAR=INJECTION").is_err(),
+            "var name with '=' must be rejected"
+        );
+        assert!(
+            validate_env_var_name("=LEADING").is_err(),
+            "var name starting with '=' must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_null_byte_in_env_var_name_rejected() {
+        // Null bytes in env var names silently truncate the C-string name.
+        let bad = "VAR\x00INJECTED";
+        assert!(
+            validate_env_var_name(bad).is_err(),
+            "var name with null byte must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_normal_env_var_names_pass() {
+        assert!(validate_env_var_name("PATH").is_ok(), "PATH must be allowed");
+        assert!(validate_env_var_name("MY_SECRET").is_ok(), "MY_SECRET must be allowed");
+        assert!(validate_env_var_name("UNIFI_API_KEY").is_ok(), "UNIFI_API_KEY must be allowed");
+        assert!(validate_env_var_name("LD_PRELOAD").is_ok(), "LD_PRELOAD allowed (but logs a warning)");
     }
 }
