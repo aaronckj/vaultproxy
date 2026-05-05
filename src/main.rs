@@ -601,6 +601,44 @@ async fn start_server(
     // we apply a 64 KB global floor. The one exception is the bulk-upsert
     // route for Connecterr secrets, which can carry many items — override
     // to 512 KB per-route.
+    //
+    // Security posture of internal / legacy endpoints (iter-6 audit):
+    //
+    // ALL routes below go through:
+    //   - `dns_rebinding_guard` (rejects non-localhost Host headers)
+    //   - `rate_limit_middleware` (token-bucket per source IP)
+    //
+    // BUT they do NOT go through HTTP authentication middleware. This is the
+    // intended design for a localhost-only sidecar: process isolation and the
+    // DNS-rebinding guard are the primary access controls.  The following
+    // endpoints have additional per-endpoint notes:
+    //
+    //   /handshake               — single-use; returns ephemeral mTLS private
+    //                              key to the *first* caller.  See the handler
+    //                              docstring for the race-condition caveat and
+    //                              the TODO to add a bootstrap token gate.
+    //
+    //   /vault/inject-creds      — internal HA config-flow helper; credentials
+    //                              are injected into HA and NOT returned to the
+    //                              caller. No credential-return risk, but any
+    //                              local process can trigger HA credential flows.
+    //
+    //   /vault/connecterr-secrets        — legacy Connecterr TypeScript API.
+    //   /vault/connecterr-secrets/upsert   Returns vault folder structure.
+    //                                       See handler docstrings for
+    //                                       public-release TODO.
+    //
+    //   /rotate                  — currently stubs only; MUST be auth-gated
+    //                              before live rotation strategies are wired.
+    //                              See handler docstring.
+    //
+    //   /browser/*               — localhost-only; triggers playwright
+    //                              automation. Any local caller can start or
+    //                              abort a browser-based rotation workflow.
+    //
+    // TODO(public-release): Evaluate adding a shared-secret bearer token
+    // layer for the above internal endpoints before any non-homelab
+    // deployment.
     use axum::extract::DefaultBodyLimit;
     let rate_limiter = security::rate_limit::default_rate_limiter();
     let app = Router::new()

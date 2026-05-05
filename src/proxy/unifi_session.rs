@@ -318,11 +318,31 @@ async fn login(base_url: &str, ctx: &UnifiDualAuthCtx) -> Result<SessionState> {
         return Err(anyhow!("unifi login returned http {}", resp.status()));
     }
 
+    // Extract X-CSRF-Token from the login response header.
+    //
+    // iter-6 audit: the CSRF token comes from the server response header, not
+    // from a JSON body field or a separate endpoint — so there is no
+    // "unexpected format" risk from the CSRF source. The `and_then` chain
+    // converts header bytes to UTF-8; if the header is absent or non-UTF-8,
+    // `csrf` is `None` and mutations simply omit the X-CSRF-Token header.
+    //
+    // Consequence of missing token: modern UDM firmware returns 401/403 on
+    // state-changing requests without a valid CSRF token, so the retry loop
+    // in `handle_request` will catch it as an auth failure and re-login.
+    // The CSRF header is never silently substituted or forged — the worst
+    // case is a re-login cycle, not a CSRF bypass.
     let csrf = resp
         .headers()
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+
+    if csrf.is_none() {
+        tracing::debug!(
+            "UniFi login succeeded but no X-CSRF-Token in response headers — \
+             state-changing requests may fail until UDM rejects and forces a re-login"
+        );
+    }
 
     // Start with a placeholder fingerprint; callers set it to the real
     // value after login so the session can be compared against future

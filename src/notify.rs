@@ -155,6 +155,23 @@ impl Notifier {
         .ok();
     }
 
+    /// Send a rotation-result notification.
+    ///
+    /// # Privacy note (iter-6 audit)
+    ///
+    /// `item` is the vault item name (e.g. `"vault-proxy - UniFi"`,
+    /// `"radarr"`). When the channel is `Ntfy`, this string is sent verbatim
+    /// to the operator-configured ntfy.sh topic — which may be a **public
+    /// third-party server** (`ntfy.sh`). This leaks the internal service
+    /// topology (which services exist, when they were rotated) to the ntfy.sh
+    /// operator.
+    ///
+    /// If this is a concern, operators should use a self-hosted ntfy instance
+    /// or the `email` channel, which queues to a local JSON file and never
+    /// contacts an external server directly.
+    ///
+    /// For the `Disabled` channel nothing is sent, so the item name is never
+    /// transmitted externally.
     pub async fn notify_rotation(&self, item: &str, success: bool) {
         let (title, msg) = if success {
             (

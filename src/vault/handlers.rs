@@ -541,6 +541,30 @@ pub async fn update_item(
 /// itself with the mTLS client cert/key that vault-proxy generated.
 /// One-time use: after the first successful handshake, subsequent calls
 /// are rejected to prevent key exfiltration.
+///
+/// # Security note (iter-6 audit)
+///
+/// This endpoint is **internal** to the Connecterr sidecar pair. It returns
+/// the ephemeral private key (`client_key_pem`) to whoever calls it first.
+/// The single-use flag (`handshake_completed`) prevents a *second* caller
+/// from reading the key, but it does nothing to prevent an *unauthorized
+/// first* caller (any process on localhost, or any browser tab exploiting a
+/// DNS-rebinding window before the legitimate Connecterr client starts).
+///
+/// For a public release, operators should be aware of this design constraint:
+/// - The window between vault-proxy startup and the first Connecterr handshake
+///   is the only time this is exploitable.
+/// - The sidecar is bound to 127.0.0.1 only, and the DNS rebinding guard
+///   blocks requests with non-localhost `Host` headers, which substantially
+///   reduces the attack surface.
+/// - A browser-based DNS rebinding attack that wins the race is theoretically
+///   possible. Mitigation: start Connecterr and vault-proxy as a unit
+///   (e.g. Docker Compose depends_on) so Connecterr completes the handshake
+///   before any untrusted code runs.
+///
+/// TODO(public-release): Consider requiring a pre-shared bootstrap token
+/// (e.g. written to a file only Connecterr can read) to gate the first
+/// handshake, eliminating the race entirely.
 pub async fn handshake(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Only allow handshake once — prevent key exfiltration after startup.
     if state.handshake_completed.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -1216,6 +1240,20 @@ pub struct InjectCredsRequest {
 ///
 /// This enables setting up HA integrations (UniFi, Plex, etc.) that require
 /// credentials, without exposing passwords to any external caller.
+///
+/// # Security note (iter-6 audit)
+///
+/// Credentials are decrypted internally and sent directly to HA's config-flow
+/// API — they are **never returned** in the HTTP response. This preserves the
+/// security model (credentials don't cross the MCP boundary).
+///
+/// However, the endpoint itself is unauthenticated: any local caller can
+/// trigger a credential injection into HA for any vault item. The impact is
+/// limited to HA integration setup flows (which require a valid HA token item
+/// in the vault), not arbitrary credential disclosure.
+///
+/// The `ha_url` and `flow_id` inputs are validated by `is_allowed_outbound_url`
+/// and `is_safe_flow_id` respectively to prevent SSRF.
 pub async fn inject_creds(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InjectCredsRequest>,
@@ -1628,6 +1666,22 @@ pub struct TotpRequest {
 /// Returns 503 if the vault is locked or unreachable. Both success and
 /// failure paths write to the persistent `AuditLog` so operators see
 /// connecterr secret-fetches in the dashboard's audit log.
+///
+/// # Security note (iter-6 audit)
+///
+/// This endpoint is **internal** to the legacy Connecterr TypeScript layer.
+/// It aggregates credential metadata from Vaultwarden and returns the result
+/// to any unauthenticated caller that can reach 127.0.0.1:3201. While the
+/// response contains only field *names* (never plaintext values), it does
+/// expose the internal structure of the vault folder, including service names
+/// and item names.
+///
+/// For a public release, this endpoint should be:
+///   1. Protected by the same bearer-token or mTLS scheme used elsewhere, OR
+///   2. Removed if the TypeScript Connecterr layer is no longer maintained.
+///
+/// TODO(public-release): Gate behind authentication or remove if legacy
+/// Connecterr TypeScript layer is no longer in use.
 pub async fn connecterr_secrets(
     State(state): State<Arc<AppState>>,
 ) -> (StatusCode, Json<Value>) {
@@ -1759,6 +1813,19 @@ pub async fn provide_totp(
 /// fails at runtime (e.g., network error to VW), items 1..N-1 are already
 /// persisted. Callers should expect idempotent retries — the CLI's upsert
 /// is safe to re-run.
+///
+/// # Security note (iter-6 audit)
+///
+/// This endpoint is **internal** to the legacy Connecterr CLI. Any
+/// unauthenticated caller on localhost can write arbitrary field names into
+/// the vault folder. While field *values* are not written by this endpoint
+/// (only field names / structural metadata), it could still be used to
+/// corrupt the vault folder structure. For a public release, consider:
+///   1. Protecting with authentication, OR
+///   2. Removing if the Connecterr CLI is no longer maintained.
+///
+/// TODO(public-release): Gate behind authentication or remove if legacy
+/// Connecterr CLI layer is no longer in use.
 pub async fn upsert_connecterr_secrets(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpsertConnecterrSecretsRequest>,

@@ -157,16 +157,91 @@ impl AuditLog {
         summary
     }
 
-    /// Create a result summary string, truncated.
+    /// Create a result summary string with sensitive values masked, then
+    /// truncated.
+    ///
+    /// Issue-6 (iter-6): The previous implementation serialised the result
+    /// JSON verbatim into the audit log. An upstream service that returns a
+    /// body containing credential-adjacent field names (e.g. `{"token":
+    /// "eyJ…"}`, `{"password": "hunter2"}`, `{"api_key": "sk-…"}`) would
+    /// persist those values to disk in plaintext. The audit log is world-
+    /// readable by any process running as the same UID as vault-proxy.
+    ///
+    /// Fix: apply the same `SENSITIVE_FIELDS` masking used by `summarize_args`
+    /// so values in known-sensitive keys are replaced with `***` before the
+    /// entry is written. Non-object result shapes (arrays, scalars) are
+    /// serialised as-is but still truncated.
     pub fn summarize_result(result: &serde_json::Value) -> String {
-        let s = result.to_string();
-        truncate_str(&s, MAX_SUMMARY_LEN)
+        let summary = if let Some(obj) = result.as_object() {
+            let mut parts = Vec::new();
+            for (k, v) in obj {
+                let val = if SENSITIVE_FIELDS.iter().any(|f| k.to_lowercase().contains(f)) {
+                    "***".to_string()
+                } else {
+                    truncate_str(&v.to_string(), 50)
+                };
+                parts.push(format!("{}={}", k, val));
+            }
+            parts.join(", ")
+        } else {
+            result.to_string()
+        };
+        truncate_str(&summary, MAX_SUMMARY_LEN)
     }
 }
 
 impl Drop for AuditLog {
     fn drop(&mut self) {
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Regression test for iter-6: `summarize_result` must mask values of
+    /// known-sensitive keys, not just truncate verbatim JSON.
+    #[test]
+    fn summarize_result_masks_sensitive_fields() {
+        let result = json!({
+            "status": "ok",
+            "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+            "password": "hunter2",
+            "api_key": "sk-1234567890",
+            "items_count": 42,
+        });
+        let summary = AuditLog::summarize_result(&result);
+        // Sensitive values must not appear in the summary.
+        assert!(
+            !summary.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            "token value must be masked: {summary}"
+        );
+        assert!(!summary.contains("hunter2"), "password must be masked: {summary}");
+        assert!(!summary.contains("sk-1234567890"), "api_key must be masked: {summary}");
+        // Non-sensitive fields must still appear.
+        assert!(summary.contains("status"), "status key must appear: {summary}");
+        assert!(summary.contains("items_count"), "items_count key must appear: {summary}");
+        // Masked fields show ***.
+        assert!(summary.contains("***"), "masked value must be *** in: {summary}");
+    }
+
+    /// summarize_args (pre-existing) should still mask sensitive fields.
+    #[test]
+    fn summarize_args_masks_sensitive_fields() {
+        let args = json!({ "service": "plex", "password": "s3cr3t", "url": "http://x" });
+        let summary = AuditLog::summarize_args(&args);
+        assert!(!summary.contains("s3cr3t"), "password must be masked: {summary}");
+        assert!(summary.contains("service"), "service key must appear: {summary}");
+    }
+
+    /// Non-object result (e.g. array) is still serialised without crashing.
+    #[test]
+    fn summarize_result_handles_non_object() {
+        let result = json!(["a", "b", "c"]);
+        let summary = AuditLog::summarize_result(&result);
+        assert!(!summary.is_empty());
     }
 }
 
