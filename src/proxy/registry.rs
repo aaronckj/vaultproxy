@@ -580,7 +580,7 @@ mod tests {
     fn test_unifi_dual_auth() {
         let registry = ServiceRegistry::from_config(&sample_config());
         let svc = registry.get("unifi_home").unwrap();
-        assert_eq!(svc.base_url, "https://10.0.0.1/proxy/network");
+        assert_eq!(svc.base_url, "https://192.0.2.2/proxy/network");
         match &svc.auth {
             AuthPattern::UnifiDual { vault_item, login_path } => {
                 assert_eq!(vault_item, "Connecterr - UniFi");
@@ -612,11 +612,11 @@ mod from_vault_tests {
     #[test]
     fn from_vault_registers_ha_with_bearer_auth() {
         let blob = json!({
-            "ha": { "home": { "url": "http://10.0.0.115:8123" } }
+            "ha": { "home": { "url": "http://192.0.2.3:8123" } }
         });
         let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("ha_home").expect("ha_home should be registered");
-        assert_eq!(entry.base_url, "http://10.0.0.115:8123");
+        assert_eq!(entry.base_url, "http://192.0.2.3:8123");
         match &entry.auth {
             AuthPattern::Bearer { vault_item } => assert_eq!(vault_item, "Connecterr - Home Assistant"),
             _ => panic!("expected Bearer auth"),
@@ -625,19 +625,19 @@ mod from_vault_tests {
 
     #[test]
     fn from_vault_registers_opnsense_with_basic_auth_and_api_suffix() {
-        let blob = json!({ "opnsense": { "main": { "url": "https://10.0.0.167" } } });
+        let blob = json!({ "opnsense": { "main": { "url": "https://192.0.2.4" } } });
         let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("opnsense_main").expect("opnsense_main should be registered");
-        assert_eq!(entry.base_url, "https://10.0.0.167/api");
+        assert_eq!(entry.base_url, "https://192.0.2.4/api");
         assert!(matches!(entry.auth, AuthPattern::Basic { .. }));
     }
 
     #[test]
     fn from_vault_registers_unifi_with_proxy_network_suffix() {
-        let blob = json!({ "unifi": { "home": { "url": "https://10.0.0.1", "site": "default" } } });
+        let blob = json!({ "unifi": { "home": { "url": "https://192.0.2.2", "site": "default" } } });
         let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
         let entry = reg.get("unifi_home").expect("unifi_home should be registered");
-        assert_eq!(entry.base_url, "https://10.0.0.1/proxy/network");
+        assert_eq!(entry.base_url, "https://192.0.2.2/proxy/network");
         assert!(matches!(entry.auth, AuthPattern::UnifiDual { .. }));
     }
 
