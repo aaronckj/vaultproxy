@@ -1,0 +1,23 @@
+# mcp-vault-proxy — example Docker Compose deployment
+#
+# FIRST RUN:
+#   1. Uncomment the `command:` line below
+#   2. Run: docker compose up
+#   3. The wizard will prompt for your Vaultwarden URL, email, and master password
+#   4. Once setup completes, comment out `command:` again and restart
+#
+# The encrypted keystore is stored in ./config/ — back it up.
+
+services:
+  mcp-vault-proxy:
+    image: ghcr.io/ajarratt/mcp-vault-proxy:latest
+    restart: unless-stopped
+    network_mode: host          # Required: proxy must bind to 127.0.0.1:3201
+    volumes:
+      - ./config:/config        # Encrypted keystore lives here
+    environment:
+      VAULT_FOLDER: vault-proxy           # Must match your Vaultwarden folder name
+      PROXY_TIMEOUT: "120"
+      # NTFY_URL: https://ntfy.sh/your-topic    # Optional: push alert notifications
+      # LITELLM_URL: http://localhost:4000       # Optional: browser rotation feature only
+    # command: ["--setup"]      # Uncomment for first-run setup wizard
