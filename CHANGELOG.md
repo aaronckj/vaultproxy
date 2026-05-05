@@ -3,6 +3,65 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — iteration-36 concurrent reload guard and final gaps
+
+### Security / correctness fixes (iteration 36)
+
+- **Concurrent `reload-services` race condition fixed (iter-36, CRITICAL)**:
+  Two simultaneous `POST /vault/reload-services` calls previously both built
+  independent registries and CA-cert maps, then raced on three separate
+  write-lock acquisitions (`registry` → `ca_cert_clients` → `cached_folder_id`).
+  Because the three locks are taken sequentially, call A could win the
+  `registry` write lock while call B won the `ca_cert_clients` write lock,
+  leaving the process with a registry from A and a CA-cert map from B. For
+  services with `ca_cert_path`, all subsequent proxy calls would find no
+  matching entry in the stale client map and silently fall back to the default
+  TLS client.
+
+  Fixed by adding `reload_mutex: tokio::sync::Mutex<()>` to `AppState` and
+  acquiring it at the top of `reload_services`. This serialises the reads and
+  all three write-lock acquisitions into one critical section. SIGHUP is
+  unaffected (it processes signals serially in its own task).
+
+- **`proxy_timeout` stored in `AppState` (iter-36)**: `POST /vault/reload-services`
+  previously re-read `PROXY_TIMEOUT` from the environment at reload time. This
+  is now stored as `AppState::proxy_timeout` (captured and validated at startup)
+  so reloads always use the startup value, consistent with the SIGHUP handler
+  which already captured `args.proxy_timeout` via closure.
+
+### Changes in this release
+
+- `AppState` gains two new fields: `proxy_timeout: u64` and
+  `reload_mutex: tokio::sync::Mutex<()>`. Any code constructing `AppState`
+  directly (tests, embedders) must be updated.
+
+## [0.1.9] — iteration-35 config_dir correctness and test coverage
+
+### Correctness fixes (iteration 35)
+
+- **`config_dir` stored in `AppState` (iter-35)**: `POST /vault/reload-services`
+  previously read `CONFIG_DIR` from the environment at reload time. In container
+  orchestrators that inject env var changes without restarting the process, this
+  could cause the reload handler to read `services.toml` from a different path
+  than the one used at startup. `config_dir` is now captured at startup and stored
+  in `AppState`, ensuring all reload operations use the original path.
+
+- **`cargo doc` warnings cleared (iter-35)**: Fixed 8 rustdoc warnings introduced
+  in iter-33: unresolved intra-doc links (`from_toml_file`, `mcp_server`), unclosed
+  HTML tags (`Vec<u8>`, `<id>`, `<vault-folder>`, `<Service>`), and a bare URL not
+  wrapped in backticks.
+
+### Tests (iteration 35)
+
+- **`reload-services` integration tests (iter-35)**: Three HTTP-level tests covering
+  the happy path (new services.toml → 200 + correct count), the rollback path
+  (empty file with existing registry → 409 Conflict), and the auth path (no bearer
+  token → 401 Unauthorized).
+
+- **`credaudit/scan/start` 503 integration test (iter-35)**: Verifies that
+  `POST /audit/credaudit/scan/start` returns 503 (not 500 or a panic) when the
+  credential audit engine is unreachable.
+
 ## [0.1.8] — iteration-34 correctness and production hardening
 
 ### Features (iteration 34)

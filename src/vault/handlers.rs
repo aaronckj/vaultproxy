@@ -2609,6 +2609,23 @@ pub async fn reload_services(
 ) -> (axum::http::StatusCode, Json<Value>) {
     use crate::proxy::registry::ServiceRegistry;
 
+    // iter-36: serialise concurrent reload calls under a dedicated mutex.
+    //
+    // Without this guard two simultaneous `POST /vault/reload-services`
+    // requests both build new registries and CA-cert maps independently, then
+    // race on three separate write-lock acquisitions. Because the three locks
+    // are taken sequentially (registry → ca_cert_clients → cached_folder_id),
+    // it is possible for call A to win lock 1 and call B to win lock 2, leaving
+    // the process with a registry from A but a CA-cert map from B. Services
+    // with `ca_cert_path` would then silently fall back to the default TLS
+    // client on every subsequent proxy call.
+    //
+    // Holding `_reload_guard` for the entire handler serialises all reads and
+    // the three write-lock acquisitions into one critical section. SIGHUP is
+    // not affected: it runs in a dedicated task that processes signals serially
+    // in a loop and never contends on this mutex.
+    let _reload_guard = state.reload_mutex.lock().await;
+
     // iter-35: use the config_dir captured at startup (stored in AppState) rather
     // than reading CONFIG_DIR from the environment at reload time. Container
     // orchestrators can inject env var changes without restarting the process;
@@ -2655,11 +2672,10 @@ pub async fn reload_services(
     }
 
     // Rebuild CA-cert clients for any services that specify ca_cert_path.
-    // We read proxy_timeout from the environment for consistency with startup.
-    let proxy_timeout_secs: u64 = std::env::var("PROXY_TIMEOUT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(120);
+    // iter-36: use the proxy_timeout stored in AppState at startup rather than
+    // re-reading the environment variable at reload time, which could differ
+    // if a container orchestrator injected an env change without a restart.
+    let proxy_timeout_secs = state.proxy_timeout;
 
     let mut new_ca_clients = std::collections::HashMap::new();
     for svc_name in new_registry.list() {
@@ -2707,6 +2723,10 @@ pub async fn reload_services(
     let new_services: Vec<String> = new_registry.list().iter().map(|s| s.to_string()).collect();
 
     // Atomically swap registry and CA-cert clients.
+    // The reload_mutex above ensures no other reload task races on these three
+    // write-lock acquisitions; within a single reload they are still sequential
+    // (not a single atomic operation), but the window is now bounded to this
+    // task only.
     *state.registry.write().await = new_registry;
     *state.ca_cert_clients.write().await = new_ca_clients;
     // Invalidate cached folder_id so the next vault mutation re-resolves it.

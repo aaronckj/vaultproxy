@@ -1077,6 +1077,10 @@ async fn start_server(
         // iter-35: store startup config_dir so reload-services never reads
         // CONFIG_DIR from the environment at reload time.
         config_dir: config_dir.to_string(),
+        // iter-36: store validated proxy_timeout so reload-services uses
+        // the startup value, not a potentially-changed env var.
+        proxy_timeout: args.proxy_timeout,
+        reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
     });
 
     // Build router with rate limiting on sensitive endpoints.

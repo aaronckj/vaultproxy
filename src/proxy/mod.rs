@@ -167,6 +167,46 @@ pub struct AppState {
     /// in `AppState` ensures the reload handler is always consistent with
     /// the startup path.
     pub config_dir: String,
+
+    /// Proxy timeout in seconds — captured from `--proxy-timeout` / `PROXY_TIMEOUT`
+    /// at startup and stored here so `POST /vault/reload-services` rebuilds
+    /// CA-cert clients with the same timeout that was validated at startup,
+    /// rather than re-reading the environment variable at reload time.
+    ///
+    /// Issue (iter-36): the reload handler previously called
+    /// `std::env::var("PROXY_TIMEOUT")` at reload time. Container orchestrators
+    /// can inject env var changes without restarting the process; this could
+    /// silently change the effective timeout on the next reload. Storing the
+    /// validated startup value in `AppState` keeps reload behaviour consistent.
+    pub proxy_timeout: u64,
+
+    /// Serialises concurrent `POST /vault/reload-services` calls.
+    ///
+    /// Issue (iter-36): without this mutex, two simultaneous reload requests
+    /// both read `services.toml`, both build independent registries and
+    /// CA-cert client maps, and then race on three separate write-lock
+    /// acquisitions:
+    ///
+    ///   1. `registry.write()`
+    ///   2. `ca_cert_clients.write()`
+    ///   3. `cached_folder_id.write()`
+    ///
+    /// Because these are three distinct locks, the last winner of lock (1) may
+    /// not be the same task that wins lock (2), leaving the process with a
+    /// registry from call A and `ca_cert_clients` from call B. For services
+    /// that use `ca_cert_path`, every subsequent proxy call would look up the
+    /// service in the new registry but find no matching entry in the stale
+    /// client map, silently falling back to the default TLS client.
+    ///
+    /// Holding this mutex for the entire reload serialises the reads and all
+    /// three write-lock acquisitions into one critical section. SIGHUP runs in
+    /// its own tokio task and does not contend on this mutex (it processes
+    /// signals serially in a loop); the mutex only guards HTTP-triggered
+    /// concurrent reloads.
+    ///
+    /// Wrapped in `Arc` because `tokio::sync::Mutex` is not `Clone` and
+    /// `AppState` derives `Clone` for use with `axum::extract::State`.
+    pub reload_mutex: Arc<tokio::sync::Mutex<()>>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -1427,6 +1467,8 @@ mod integration_tests {
             cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
             env_write_root: String::new(),
             config_dir: "/config".to_string(),
+            proxy_timeout: 120,
+            reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
