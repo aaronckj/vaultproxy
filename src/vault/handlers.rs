@@ -839,11 +839,17 @@ pub async fn write_env(
             })),
         );
     }
-    // Refuse path-traversal attempts ("/envs/..").
-    if req.target_path.contains("/../") || req.target_path.ends_with("/..") {
+    // Refuse any path-traversal attempts — block every path whose components
+    // include a `.` or `..` segment.  The previous check only caught `/../`
+    // (interior) and `/..` (trailing-slash form), missing cases like:
+    //   "/envs/.."       (ends with `..` without preceding `/`)
+    //   "/envs/./sub"    (single-dot kept as-is by std::fs on some kernels)
+    // Splitting on `/` and checking each segment is comprehensive.
+    let has_traversal = req.target_path.split('/').any(|seg| seg == ".." || seg == ".");
+    if has_traversal {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "target_path must not contain '..'"})),
+            Json(json!({"error": "target_path must not contain '.' or '..' segments"})),
         );
     }
 
@@ -1248,7 +1254,14 @@ pub async fn inject_creds(
             Ok(s) => s.to_string(),
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "password is not valid UTF-8"}))),
         },
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("vault item '{}': {}", req.vault_item, e)}))),
+        Err(e) => {
+            // Log the detail (vault item name, underlying error) for operators
+            // but return a generic 400 to callers — vault item names are
+            // considered internal topology that should not be exposed in API
+            // responses reachable by MCP callers.
+            tracing::warn!("inject_creds: decrypt password for '{}': {:#}", req.vault_item, e);
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "vault credential not found or decryption failed"})));
+        }
     };
 
     // 2. Get HA token from vault (stored in notes field)
@@ -1257,8 +1270,14 @@ pub async fn inject_creds(
             Ok(s) => s.to_string(),
             Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "HA token is not valid UTF-8"}))),
         },
-        Ok(None) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("no notes in '{}'", req.ha_token_item)}))),
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("HA token decrypt: {}", e)}))),
+        Ok(None) => {
+            tracing::warn!("inject_creds: no notes on ha_token_item '{}'", req.ha_token_item);
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "HA token vault item has no notes field"})));
+        }
+        Err(e) => {
+            tracing::warn!("inject_creds: HA token decrypt for '{}': {:#}", req.ha_token_item, e);
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "HA token vault credential not found or decryption failed"})));
+        }
     };
 
     // 3. Build the flow submission payload
@@ -1921,5 +1940,32 @@ mod ssrf_tests {
     fn non_http_schemes_are_blocked() {
         assert!(!is_allowed_outbound_url("ftp://example.com/"));
         assert!(!is_allowed_outbound_url("file:///etc/passwd"));
+    }
+}
+
+#[cfg(test)]
+mod write_env_traversal_tests {
+    /// Validate the path-traversal check used by `write_env`.
+    ///
+    /// The previous implementation only blocked `/../` (interior) and `/..`
+    /// (trailing-slash form), missing `/envs/..` (no trailing slash after
+    /// the `..` segment) and `/envs/./sub` (single-dot segment).
+    #[test]
+    fn dotdot_variants_are_all_blocked() {
+        fn has_traversal(p: &str) -> bool {
+            p.split('/').any(|seg| seg == ".." || seg == ".")
+        }
+
+        // Previously missed cases
+        assert!(has_traversal("/envs/.."), "/envs/.. must be blocked");
+        assert!(has_traversal("/envs/../etc/passwd"), "/envs/../etc/passwd must be blocked");
+        assert!(has_traversal("/envs/./sub"), "/envs/./sub (single-dot) must be blocked");
+
+        // Already caught by old check
+        assert!(has_traversal("/envs/sub/../etc"), "interior .. must be blocked");
+
+        // Normal paths must pass
+        assert!(!has_traversal("/envs/myapp.env"), "normal path should be allowed");
+        assert!(!has_traversal("/envs/sub/myapp.env"), "nested normal path should be allowed");
     }
 }

@@ -162,15 +162,27 @@ pub async fn handle_proxy(
     );
 
     // 1. Look up the service in the registry.
+    // Use a generic "not found" message — echoing req.service verbatim would
+    // let an attacker enumerate registered service names via trial-and-error.
     let service = state.registry.get(&req.service).ok_or_else(|| {
         proxy_error(
             StatusCode::NOT_FOUND,
-            format!("unknown service '{}'", req.service),
+            "unknown service".to_string(),
         )
     })?;
 
     // 2. Build the target URL.
+    // Reject path segments that could escape the registered base_url via
+    // directory traversal.  reqwest does NOT normalise `..` segments in the
+    // URL path before sending, so `base/../../etc` would be forwarded verbatim
+    // to the upstream HTTP client and could reach unintended endpoints.
     let path = req.path.trim_start_matches('/');
+    if path.split('/').any(|seg| seg == ".." || seg == ".") {
+        return Err(proxy_error(
+            StatusCode::BAD_REQUEST,
+            "path must not contain '.' or '..' segments".to_string(),
+        ));
+    }
     let target_url = if path.is_empty() {
         service.base_url.clone()
     } else {
@@ -187,9 +199,15 @@ pub async fn handle_proxy(
     })?;
 
     // 4. Apply auth and send the request.
+    // Log internal errors (which may contain vault item names, upstream IPs,
+    // etc.) at debug level, but return a generic message to the caller so that
+    // credential names and internal topology are never exposed in API responses.
     let mut response = apply_auth_and_send(&state, service.auth.clone(), &target_url, method, &req)
         .await
-        .map_err(|e| proxy_error(StatusCode::BAD_GATEWAY, e.to_string()))?;
+        .map_err(|e| {
+            tracing::debug!("proxy auth/send error for service '{}': {:#}", req.service, e);
+            proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed".to_string())
+        })?;
 
     // 5. Sanitize the response body to strip prompt injection patterns.
     crate::security::sanitize::sanitize_json(&mut response.body);
@@ -664,4 +682,43 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
 
 fn proxy_error(code: StatusCode, message: String) -> (StatusCode, Json<ProxyError>) {
     (code, Json(ProxyError { error: message }))
+}
+
+// -------------------------------------------------------------------------- //
+// Tests                                                                        //
+// -------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod path_traversal_tests {
+    /// Replicate the path-segment check used in `handle_proxy` so the logic
+    /// can be unit-tested without standing up a full AppState.
+    fn has_traversal(path: &str) -> bool {
+        let path = path.trim_start_matches('/');
+        path.split('/').any(|seg| seg == ".." || seg == ".")
+    }
+
+    #[test]
+    fn double_dot_segment_is_blocked() {
+        assert!(has_traversal("../etc/passwd"), "../etc/passwd must be blocked");
+        assert!(has_traversal("/../../root"), "leading ../ must be blocked");
+        assert!(has_traversal("api/../secret"), "interior .. must be blocked");
+        assert!(has_traversal(".."), "bare .. must be blocked");
+    }
+
+    #[test]
+    fn single_dot_segment_is_blocked() {
+        assert!(has_traversal("./local"), "./local must be blocked");
+        assert!(has_traversal("api/./v1"), "interior . must be blocked");
+    }
+
+    #[test]
+    fn normal_paths_are_allowed() {
+        assert!(!has_traversal("/api/v1/users"), "normal path must pass");
+        assert!(!has_traversal("stat/sta"), "path without slashes must pass");
+        assert!(!has_traversal("/api/s/default/stat/sta"), "deep path must pass");
+        assert!(!has_traversal(""), "empty path must pass");
+        // A path component that contains dots but is not exactly `.` or `..` is fine.
+        assert!(!has_traversal("file.json"), "dotted filename must pass");
+        assert!(!has_traversal("v3.1/items"), "version with dot must pass");
+    }
 }

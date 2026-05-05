@@ -189,12 +189,25 @@ Request body:
   "method": "POST",
   "path": "/api/services/light/turn_on",
   "body": { "entity_id": "light.living_room" },
-  "headers": {},
-  "query": {}
+  "headers": { "X-Custom-Header": "value" },
+  "query": { "format": "json" }
 }
 ```
 
-The `service` name must match a registered service in your Vaultwarden folder. The proxy injects auth and returns the upstream HTTP status + body.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `service` | string | yes | Registered service name (from `services.toml`) |
+| `method` | string | no | HTTP method — defaults to `"GET"` |
+| `path` | string | yes | Path appended to the service's `base_url`. Must not contain `.` or `..` segments. |
+| `body` | object | no | JSON body forwarded verbatim to the downstream service |
+| `headers` | object | no | Extra headers merged into the downstream request (string values only) |
+| `query` | object | no | Extra query parameters appended to the URL |
+
+The proxy injects the registered auth credential, forwards the request, and returns:
+- On success: the upstream HTTP status code and JSON body
+- On proxy error: a `{"error": "..."}` JSON body with a 4xx or 5xx status
+
+**Smart MCP servers** should set `VAULT_PROXY_URL` (default `http://127.0.0.1:3201`) to locate the sidecar. All proxy calls go to `$VAULT_PROXY_URL/proxy`.
 
 ## Why not just use env vars?
 

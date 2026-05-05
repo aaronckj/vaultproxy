@@ -117,6 +117,23 @@ pub async fn rate_limit_middleware(
 }
 
 /// Create a default rate limiter: 60 requests per 60-second window.
+///
+/// # Shared-IP bucket limitation
+///
+/// The rate limiter keys on `(route, client_ip)`.  When vault-proxy is used
+/// as a sidecar, all MCP servers run on `127.0.0.1` — they all share the
+/// **same** bucket for each route.  This means:
+///
+/// - A single LLM session making 1 call/s hits the 60 req/60s cap in one
+///   minute with nothing left for other concurrent MCP servers.
+/// - The limit does protect against runaway loops and mis-configured clients,
+///   but it is not per-caller isolation.
+///
+/// TODO: Introduce per-caller identity (e.g. an `X-Caller-Id` header set by
+/// each MCP server's configuration) so the bucket can be keyed on
+/// `(route, caller_id)` instead of the always-identical loopback IP.  Until
+/// then, operators running many concurrent MCP servers may need to raise this
+/// limit via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` env vars (not yet wired).
 pub fn default_rate_limiter() -> RateLimiter {
     RateLimiter::new(60, 60)
 }

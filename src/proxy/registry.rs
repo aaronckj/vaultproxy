@@ -122,7 +122,21 @@ impl ServiceRegistry {
     }
 
     /// Register a service entry.
+    ///
+    /// If a service with the same name is already registered, the new entry
+    /// overwrites it (last-write-wins) and a warning is emitted.  This is
+    /// intentional for dynamic re-registration from vault data, but operators
+    /// should not have duplicate names in `services.toml` — the warning makes
+    /// the silent overwrite visible in logs.
     pub fn register(&mut self, entry: ServiceEntry) {
+        if let Some(existing) = self.entries.get(&entry.name) {
+            tracing::warn!(
+                "service '{}': duplicate registration — '{}' will be overwritten by '{}'",
+                entry.name,
+                existing.base_url,
+                entry.base_url,
+            );
+        }
         self.entries.insert(entry.name.clone(), entry);
     }
 
@@ -1082,5 +1096,32 @@ vault_item = "myproxy - Evil"
 "#);
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.get("evil6").is_none(), "fe80:: link-local base_url should be rejected");
+    }
+
+    #[test]
+    fn test_duplicate_name_last_write_wins() {
+        // Two [[service]] entries with the same name — only the second survives.
+        // `register()` now emits a tracing::warn for this, but we can only assert
+        // the observable behaviour (last entry is kept) in a unit test.
+        let f = write_toml(r#"
+[[service]]
+name = "ha"
+base_url = "http://192.0.2.1:8123"
+auth = "bearer"
+vault_item = "myproxy - HA"
+
+[[service]]
+name = "ha"
+base_url = "http://192.0.2.2:8123"
+auth = "bearer"
+vault_item = "myproxy - HA v2"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("ha").expect("service should be registered");
+        // Last-write-wins: the second entry should be present.
+        assert_eq!(svc.base_url, "http://192.0.2.2:8123",
+            "duplicate name: second entry should overwrite first");
+        // Only one entry should exist (no phantom first entry).
+        assert_eq!(registry.list().len(), 1, "should have exactly one entry after dedup");
     }
 }

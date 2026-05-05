@@ -310,6 +310,12 @@ async fn start_server(
     // Launch mode: resolve credentials from Vaultwarden and exec a dumb MCP server.
     // This check runs BEFORE any other startup work (cloud sync, registry loading, etc.)
     // because --launch replaces the server process rather than starting a sidecar.
+    //
+    // NOTE: `launcher::launch` calls `std::process::exit` on success, which skips
+    // Rust destructors including the VaultManager's HTTP client (benign — all
+    // outstanding connections are torn down by the OS).  This is intentional:
+    // `exec` semantics require process replacement, not graceful shutdown.
+    // Background tokio tasks spawned below are never reached in this branch.
     if let Some(ref server_name) = args.launch {
         return crate::launcher::launch(server_name, config_dir, &vault_arc).await;
     }
