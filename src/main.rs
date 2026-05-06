@@ -229,9 +229,10 @@ struct Args {
     /// ON-DEMAND AUDIT ENDPOINT: at any time you can trigger a one-shot audit
     /// by calling `GET /vault/audit/run` with the internal bearer token:
     ///
-    ///   curl -H "Authorization: Bearer $(cat /config/internal-token)" \
+    ///   curl -H "Authorization: Bearer $(cat $CONFIG_DIR/internal-token)" \
     ///        http://127.0.0.1:3201/vault/audit/run
     ///
+    /// `$CONFIG_DIR` is the value of `--config-dir` (default: `/config`).
     /// The endpoint returns the same JSON as the background task logs.
     /// Rate-limited to 2 req/60 s.
     ///
@@ -2510,23 +2511,44 @@ async fn start_server(
 pub(crate) async fn handle_get_permissions(
     AxumState(state): AxumState<Arc<AppState>>,
 ) -> AxumJson<serde_json::Value> {
-    let perms = state.permissions.read().await;
-    // iter-78: include whether the permissions file exists on disk so callers
-    // can distinguish "file exists with all defaults" from "file not found —
-    // using built-in defaults".  Both states produce an identical JSON shape
-    // for `defaults` and `overrides`; without this field an operator cannot
-    // tell whether their custom file was loaded or silently missing.
+    // iter-80: clone out of the RwLock before serialising so the read guard is
+    // dropped immediately after the clone and does not remain held across the
+    // serde_json::json!() macro call.  Previously the guard lived until the
+    // end of the function — any slow serde operation (large permissions map,
+    // debug instrumentation overhead) would block every concurrent write to
+    // state.permissions, including permission reloads triggered by handle_proxy.
+    let (defaults, overrides) = {
+        let perms = state.permissions.read().await;
+        (perms.defaults.clone(), perms.overrides.clone())
+    }; // read guard dropped here
+       // iter-78: include whether the permissions file exists on disk so callers
+       // can distinguish "file exists with all defaults" from "file not found —
+       // using built-in defaults".  Both states produce an identical JSON shape
+       // for `defaults` and `overrides`; without this field an operator cannot
+       // tell whether their custom file was loaded or silently missing.
     let permissions_path = format!("{}/tool-permissions.json", state.config_dir);
     let config_file_exists = std::path::Path::new(&permissions_path).exists();
+    // iter-80: add permissions_source to disambiguate "loaded from disk at
+    // startup" from "built-in defaults (no file found)".  The existing
+    // config_file_exists field reflects the current on-disk state (which can
+    // diverge from what was loaded if the file was added/removed after startup),
+    // but gives no indication of which source was actually used to populate the
+    // in-memory permissions.  permissions_source is fixed at load time.
+    let permissions_source = if config_file_exists {
+        "file"
+    } else {
+        "built-in-defaults"
+    };
     tracing::debug!("GET /vault/permissions — returning current tool permissions");
     AxumJson(serde_json::json!({
-        "defaults": perms.defaults,
-        "overrides": perms.overrides,
+        "defaults": defaults,
+        "overrides": overrides,
         "config_file_exists": config_file_exists,
+        "permissions_source": permissions_source,
         "note": "GET /vault/permissions — current tool permission configuration (defaults = category-level, overrides = per-tool-name; overrides take priority). \
                  config_file_exists=true means tool-permissions.json was found in $CONFIG_DIR at startup; \
                  false means built-in defaults are active. \
-                 Restart vault-proxy to reload after editing the file."
+                 permissions_source reflects the current file state (re-checked on each call); restart vault-proxy to reload after editing the file."
     }))
 }
 

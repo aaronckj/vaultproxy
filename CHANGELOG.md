@@ -3,6 +3,53 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.23] — iteration 79-80 (close-out): iter-79 config_file_exists test, iter-80 permissions read-guard clone, docstring path, permissions_source field
+
+### Bug fixes (iter-79–80)
+
+- **iter-79: config_file_exists integration test uses tempfile::TempDir (iter-79, LOW)**:
+  The new `get_vault_permissions_config_file_exists_true_when_file_present` test
+  creates a temporary directory via `tempfile::tempdir()`, which returns a
+  `TempDir` guard that deletes the directory on drop.  No manual cleanup is
+  needed and test failures cannot leave artifacts in `/tmp`.  Confirmed clean —
+  no action required.
+
+- **`handle_get_permissions` held RwLock across serde serialisation (iter-80, MEDIUM)**:
+  `state.permissions.read().await` was called at the top of the handler and the
+  guard was kept live through the entire `serde_json::json!()` macro expansion.
+  Any slow serialisation pass (large permissions map, debug instrumentation) would
+  block concurrent writers to `state.permissions` — including live permission
+  reloads triggered by `handle_proxy`.  Fixed by cloning `defaults` and `overrides`
+  out of the lock in a scoped block, dropping the guard before `serde_json::json!`
+  runs.  `src/main.rs:2514-2524`.
+
+- **`--audit-interval-secs` docstring hardcoded `/config/internal-token` (iter-80, LOW)**:
+  The CLI help text for `--audit-interval-secs` showed
+  `$(cat /config/internal-token)` — the old default path that predates the
+  `--config-dir` flag.  Operators using a non-default `--config-dir` would get
+  a misleading path.  Updated to `$CONFIG_DIR/internal-token` with a clarifying
+  note that `$CONFIG_DIR` is the `--config-dir` value (default: `/config`).
+  The `<config-dir>` angle-bracket form was avoided because `rustdoc` warns on
+  unclosed HTML tags.  `src/main.rs:232-235`.
+
+### Improvements (iter-80)
+
+- **`GET /vault/permissions` response adds `permissions_source` field (iter-80, LOW)**:
+  The existing `config_file_exists` field reflects the current on-disk state and
+  can diverge from what was actually loaded if the file is added or removed after
+  startup.  Added `permissions_source: "file" | "built-in-defaults"` derived
+  from the current file-existence check, giving callers a clear machine-readable
+  indicator without a separate API call.  Updated the `note` string to explain
+  that `permissions_source` is re-evaluated on each call.  `src/main.rs:2531-2549`.
+
+### Verification (iter-80)
+
+- `cargo test --all-targets`: 258 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: 0 diff lines (clean).
+- `cargo doc --no-deps`: 0 warnings.
+- CI v0.2.22: fmt/clippy/test steps all passed; Docker push in progress at audit time.
+
 ## [0.2.22] — iteration 78: ntfy body plain text, permissions rate-limit, MissedTickBehavior::Skip, config_file_exists, startup log, integration test
 
 ### Bug fixes (iter-78)
