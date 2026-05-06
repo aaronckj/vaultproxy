@@ -3,6 +3,86 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.2] — iterations 43–45: IPv6 URL fix, session_login race, reverse-proxy URL, validation polish
+
+### Bugs fixed
+
+- **IPv6 listen address produced invalid VAULT_PROXY_URL (iter-43, HIGH)**:
+  `--listen [::]:3201` (or `--listen [::1]:3201`) caused `VAULT_PROXY_URL` to
+  be injected as `http://::1:3201` — an invalid URL because the colons in the
+  IPv6 address are ambiguous with the port delimiter. RFC 3986 §3.2.2 requires
+  square brackets: `http://[::1]:3201`. Smart MCP servers receiving the
+  unbracketed form failed to parse the URL and fell back to direct credential
+  env vars, defeating the proxy model. Fixed: IPv6 addresses are now bracketed
+  when building the injected URL.
+
+- **`session_login()` SIGHUP race produced opaque 502 (iter-44, LOW)**:
+  When a SIGHUP reload removed a `session` service between `handle_proxy`
+  dispatching the request and `session_login` looking up `base_url` in the
+  registry, the registry scan returned `None` and the error propagated as a
+  generic "cannot determine" message. Fixed: the `ok_or_else` now emits a
+  clear message naming the vault item and explaining the SIGHUP race, making
+  the 502 log actionable. The vault item name is included in the server-side
+  error message (consistent with existing proxy error logging); it is never
+  returned to the HTTP caller.
+
+- **Per-service `timeout_secs` not applied in `session_login()` (iter-42, MEDIUM)**:
+  The `session_login()` POST to `login_path` used the global `state.http`
+  client (with `--proxy-timeout`, default 120 s), ignoring `ServiceEntry::
+  timeout_secs`. A service with `timeout_secs = 5` would hang for up to 120 s
+  on a failed login round-trip. Fixed: `session_login` now looks up the
+  service's `timeout_secs` and applies it via `RequestBuilder::timeout()`.
+
+- **UniFi dual-auth hardcoded 30 s timeout (iter-42, MEDIUM)**:
+  Both the API-key probe and session-login clients in `unifi_session.rs` used
+  `Duration::from_secs(30)` regardless of `ServiceEntry::timeout_secs`. Fixed:
+  `UnifiRequestCtx` now carries `timeout_secs: Option<u64>`; both clients use
+  `effective_timeout = timeout_secs.unwrap_or(30)`.
+
+### Features
+
+- **`VAULT_PROXY_PUBLIC_URL` env var (iter-44)**:
+  Operators who run vault-proxy behind a TLS-terminating reverse proxy (nginx,
+  Caddy, Traefik) can now set `VAULT_PROXY_PUBLIC_URL=https://vault-proxy.example.com`
+  to control the `VAULT_PROXY_URL` value injected into smart MCP servers
+  launched via `--launch`. Without this, vault-proxy always derived the URL
+  from the (loopback) `--listen` address, forcing smart servers to use HTTP
+  over the loopback rather than the HTTPS front-end.
+
+- **`VAULT_PROXY_PUBLIC_URL` startup validation (iter-45)**:
+  `VAULT_PROXY_PUBLIC_URL` is now validated at `--launch` time: the value must
+  start with `http://` or `https://`, have a non-empty host, and must not end
+  with a trailing slash (which would produce double-slash paths in downstream
+  calls). `--check` also validates the env var when set, giving operators an
+  early-warning before deployment.
+
+### Documentation / quality
+
+- **Stale `vault/mod.rs:143` TODO resolved (iter-45)**:
+  The `items` field doc-comment said "implement a background refresh task
+  (TODO)" — the feature was implemented in iter-37 via
+  `--vault-refresh-interval-secs`. Updated to reference the implemented flag.
+
+- **`VAULT_PROXY_PUBLIC_URL` added to README CLI reference table (iter-45)**:
+  The env var introduced in iter-44 was missing from the operator CLI table.
+  Added with description, valid values, and trailing-slash warning.
+
+- **`VAULT_REFRESH_INTERVAL_SECS=0` log level raised to INFO (iter-42, LOW)**:
+  When the background refresh is disabled (the default), the confirmation
+  message was logged at DEBUG. Operators running with INFO filter had no
+  positive confirmation that the background task was intentionally absent.
+  Changed to INFO so it appears at the same level as the "task started" message.
+
+- **`TIMEOUT_SECS_WARN_THRESHOLD` named constant (iter-42)**:
+  The magic number `600` in per-service timeout validation is now a named
+  constant `TIMEOUT_SECS_WARN_THRESHOLD` with inline rationale.
+
+- **`services.example.toml` documents `timeout_secs` (iter-42)**:
+  The new optional field was missing from the example file.
+
+- **Wiremock timeout behavior test (iter-42)**:
+  Added `per_service_timeout_fires_on_slow_upstream` to `registry.rs` tests.
+
 ## [0.2.1] — iteration-42: per-service timeout completeness
 
 ### Bugs fixed

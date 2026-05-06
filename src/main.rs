@@ -294,6 +294,59 @@ async fn main() -> anyhow::Result<()> {
             services_path.display(),
             registry.list()
         );
+
+        // iter-45: also validate VAULT_PROXY_PUBLIC_URL when it is set.
+        // This env var is only consumed at --launch time but is easily
+        // misconfigured and has no other validation path. --check is the
+        // natural place for operators to verify their full env configuration
+        // before deploying. An invalid value (wrong scheme, trailing slash,
+        // empty host) would silently inject a broken VAULT_PROXY_URL into
+        // every smart MCP server launched by vault-proxy.
+        if let Ok(public_url) = std::env::var("VAULT_PROXY_PUBLIC_URL") {
+            if !public_url.is_empty() {
+                let mut url_ok = true;
+                if !public_url.starts_with("http://") && !public_url.starts_with("https://") {
+                    eprintln!(
+                        "vaultproxy check: WARN — VAULT_PROXY_PUBLIC_URL='{}' must start with \
+                         'http://' or 'https://' — this will cause --launch to exit with an error",
+                        public_url
+                    );
+                    url_ok = false;
+                }
+                if url_ok {
+                    let after_scheme = public_url
+                        .trim_start_matches("http://")
+                        .trim_start_matches("https://");
+                    let host = after_scheme.split('/').next().unwrap_or("");
+                    if host.is_empty() {
+                        eprintln!(
+                            "vaultproxy check: WARN — VAULT_PROXY_PUBLIC_URL='{}' has an empty \
+                             host component — use a full URL such as \
+                             'https://vault-proxy.example.com'",
+                            public_url
+                        );
+                        url_ok = false;
+                    }
+                }
+                if url_ok && public_url.ends_with('/') {
+                    eprintln!(
+                        "vaultproxy check: WARN — VAULT_PROXY_PUBLIC_URL='{}' ends with a \
+                         trailing slash — this will cause --launch to exit with an error. \
+                         Remove the trailing slash: '{}'",
+                        public_url,
+                        public_url.trim_end_matches('/')
+                    );
+                    url_ok = false;
+                }
+                if url_ok {
+                    println!(
+                        "vaultproxy check: VAULT_PROXY_PUBLIC_URL='{}' — looks valid.",
+                        public_url
+                    );
+                }
+            }
+        }
+
         std::process::exit(0);
     }
 

@@ -139,8 +139,9 @@ pub struct VaultManager {
     /// vault-proxy has started, the old encrypted blob is served until
     /// `sync()` runs. For most homelab use cases this is acceptable (credentials
     /// change infrequently). If live credential refresh is needed, call
-    /// `POST /vault/resync` after each Vaultwarden update, or implement a
-    /// background refresh task (TODO).
+    /// `POST /vault/resync` after each Vaultwarden update, or use the
+    /// `--vault-refresh-interval-secs` flag (implemented in iter-37) to enable
+    /// an automatic background refresh on a configurable interval.
     items: RwLock<HashMap<String, (String, EncryptedCipher)>>,
     /// Folder name → folder ID index, populated during sync. Deduped by name
     /// (HashMap semantics), so not suitable for surfacing duplicate-name

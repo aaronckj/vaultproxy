@@ -377,13 +377,60 @@ pub async fn launch(
     // servers to use unencrypted loopback instead of the HTTPS front-end.
     //
     // If `VAULT_PROXY_PUBLIC_URL` is set in vault-proxy's environment, use it
-    // as the injected VAULT_PROXY_URL.  The operator is responsible for
-    // ensuring it points to a reachable address; we only validate that it is
-    // non-empty.  The mcp-servers.toml `env` list (processed after this
-    // injection) can still override VAULT_PROXY_URL for a specific server —
-    // `VAULT_PROXY_PUBLIC_URL` is purely a process-wide default.
+    // as the injected VAULT_PROXY_URL.  The mcp-servers.toml `env` list
+    // (processed after this injection) can still override VAULT_PROXY_URL for a
+    // specific server — `VAULT_PROXY_PUBLIC_URL` is purely a process-wide default.
+    //
+    // Issue (iter-45): Validate VAULT_PROXY_PUBLIC_URL at launch time so
+    // operators get a clear error instead of injecting a malformed URL into
+    // the child environment.  Requirements:
+    //   - Must start with "http://" or "https://".
+    //   - Must not end with '/' (trailing slashes would produce double-slash
+    //     paths when the smart server appends "/proxy" to the URL).
+    //   - Must have a non-empty host component (rejects "http://" and "https://").
+    //
+    // A trailing slash is rejected as an error (not just a warning) because
+    // "https://vault-proxy.example.com/" would cause every smart server to call
+    // "https://vault-proxy.example.com//proxy" — a subtle bug that produces
+    // 404s on path-sensitive reverse proxies.
+    fn validate_public_url(url: &str) -> Result<(), String> {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' must start with 'http://' or 'https://'",
+                url
+            ));
+        }
+        // Strip scheme and check host is non-empty.
+        let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
+        let host = after_scheme.split('/').next().unwrap_or("");
+        if host.is_empty() {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' has an empty host — \
+                 use a full URL such as 'https://vault-proxy.example.com'",
+                url
+            ));
+        }
+        if url.ends_with('/') {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' must not end with a trailing slash — \
+                 use 'https://vault-proxy.example.com' not 'https://vault-proxy.example.com/'",
+                url
+            ));
+        }
+        Ok(())
+    }
+
     let vault_proxy_url = match std::env::var("VAULT_PROXY_PUBLIC_URL") {
         Ok(public_url) if !public_url.is_empty() => {
+            // Validate before injecting so a misconfigured URL fails loudly here
+            // rather than silently producing broken VAULT_PROXY_URL in the child.
+            if let Err(e) = validate_public_url(&public_url) {
+                anyhow::bail!(
+                    "VAULT_PROXY_PUBLIC_URL is invalid: {} — \
+                     fix the value or unset the variable to use the derived loopback URL",
+                    e
+                );
+            }
             tracing::info!(
                 "--launch '{}': VAULT_PROXY_PUBLIC_URL is set; injecting '{}' as VAULT_PROXY_URL \
                  (overrides derived loopback URL '{}')",
@@ -837,5 +884,74 @@ command = "cmd-b"
              got stdout: {}",
             stdout,
         );
+    }
+
+    // Issue (iter-45): Unit tests for VAULT_PROXY_PUBLIC_URL validation.
+    // Replicates the `validate_public_url` helper inline (matching the
+    // production code in `launch()`) so it can be tested in isolation.
+    fn validate_public_url_test(url: &str) -> Result<(), String> {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' must start with 'http://' or 'https://'",
+                url
+            ));
+        }
+        let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
+        let host = after_scheme.split('/').next().unwrap_or("");
+        if host.is_empty() {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' has an empty host component",
+                url
+            ));
+        }
+        if url.ends_with('/') {
+            return Err(format!(
+                "VAULT_PROXY_PUBLIC_URL '{}' must not end with a trailing slash",
+                url
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_vault_proxy_public_url_valid() {
+        assert!(validate_public_url_test("https://vault-proxy.example.com").is_ok(),
+            "HTTPS URL without trailing slash must be valid");
+        assert!(validate_public_url_test("http://127.0.0.1:3201").is_ok(),
+            "HTTP loopback URL must be valid");
+        assert!(validate_public_url_test("https://vault-proxy.example.com:8443").is_ok(),
+            "HTTPS URL with non-standard port must be valid");
+    }
+
+    #[test]
+    fn test_vault_proxy_public_url_invalid_scheme() {
+        let e = validate_public_url_test("not-a-url");
+        assert!(e.is_err(), "bare string without scheme must be rejected");
+        assert!(e.unwrap_err().contains("must start with"), "error message must name the requirement");
+
+        assert!(validate_public_url_test("ftp://example.com").is_err(),
+            "ftp:// scheme must be rejected");
+        assert!(validate_public_url_test("").is_err(),
+            "empty string must be rejected (no scheme)");
+    }
+
+    #[test]
+    fn test_vault_proxy_public_url_empty_host() {
+        let e = validate_public_url_test("http://");
+        assert!(e.is_err(), "'http://' with no host must be rejected");
+        assert!(e.unwrap_err().contains("empty host"), "error message must name empty host");
+
+        assert!(validate_public_url_test("https://").is_err(),
+            "'https://' with no host must be rejected");
+    }
+
+    #[test]
+    fn test_vault_proxy_public_url_trailing_slash() {
+        let e = validate_public_url_test("https://vault-proxy.example.com/");
+        assert!(e.is_err(), "trailing slash must be rejected");
+        assert!(e.unwrap_err().contains("trailing slash"), "error message must name trailing slash");
+
+        assert!(validate_public_url_test("http://127.0.0.1:3201/").is_err(),
+            "trailing slash on loopback URL must also be rejected");
     }
 }

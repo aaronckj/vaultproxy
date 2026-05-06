@@ -237,6 +237,7 @@ cargo build --release --features tpm
 | `--allow-root` | — | — | Suppress the root-user security warning (see below) |
 | `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
 | `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. Setting `VAULT_REFRESH_INTERVAL_SECS=""` (empty string) is an error and vault-proxy will exit with a parse error. |
+| — | `VAULT_PROXY_PUBLIC_URL` | — | Public-facing URL injected as `VAULT_PROXY_URL` into MCP servers launched via `--launch`. Use this when vault-proxy sits behind a reverse proxy (nginx, Caddy, Traefik) that terminates TLS — e.g. `VAULT_PROXY_PUBLIC_URL=https://vault-proxy.example.com`. Must be a valid `http://` or `https://` URL without a trailing slash. When unset, vault-proxy derives the URL from the `--listen` address. |
 | — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
 
 > **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as
