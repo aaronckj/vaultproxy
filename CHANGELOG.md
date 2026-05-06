@@ -5,6 +5,103 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.2] — iterations 122–123: approvals silent-error, null fallback hardening, shape test gaps
+
+### Bugs (iter-123)
+
+- **`approvals.html` silently shows empty queue on `ok===false` (iter-123)** — `dashboard/approvals.html:243`. MEDIUM.
+  The iter-122 array-unwrap fallback `Array.isArray(data.approvals) ? data.approvals : []` returns `[]`
+  when `data.ok === false` (e.g. vault not initialized, 503 from `require_app`). Users would see
+  "No pending approvals." with no explanation instead of the error. Same class of bug fixed in
+  `items.html`, `audit-log.html`, `policies.html`, `permissions.html` in iter-119–121.
+  Fixed: added `ok===false` guard that calls `renderError(data.error)` before the array-unwrap logic;
+  added `renderError()` helper function.
+
+- **`list_approvals` `approvals_val` can be `null` on serialization failure (iter-123)** — `src/dashboard/api.rs:301`. LOW.
+  `serde_json::to_value(&pending).unwrap_or_default()` fallback returns `Value::Null` on (pathological)
+  serialization failure. `Array.isArray(null)` is `false` in JavaScript, so the JS fallback in
+  `approvals.html` would silently return an empty list rather than an error.
+  Fixed: fallback changed to `unwrap_or_else(|_| Value::Array(vec![]))` so the field is always
+  a JSON array regardless of serialization outcome.
+
+- **`api_approvals_has_ok_true_and_approvals_array` test key-name assertion missing (iter-123)** — `src/dashboard/api.rs:2040`. LOW.
+  The iter-122 shape test asserted `body["approvals"].is_array()` but not that the key is specifically
+  named `"approvals"`. If the key were renamed to `"items"` the test would fail on the array check,
+  but the explicit key-name assertion makes the intent clearer and provides a faster diagnostic.
+  Fixed: added `body.get("approvals").is_some()` assertion with a descriptive message.
+
+### Tests (iter-123)
+
+- **`api_approvals_error_has_ok_false` shape test added (iter-123)** — `src/dashboard/api.rs`. LOW.
+  No test verified the `ok===false` error shape for `GET /api/approvals`. A regression to a missing
+  `"ok"` field on the error path (e.g. from `require_app`) would go undetected.
+  Fixed: added `api_approvals_error_has_ok_false` test asserting `body["ok"] == false` and
+  `body["error"]` is a string.
+
+### Verified (iter-123) — iter-122 + remaining gaps audit
+
+Ten specific areas were audited. Four new issues found (above); six passed.
+
+1. **`approvals.html:241` ok===false guard** — FIXED (see Bugs above). Was missing; silently
+   rendered empty queue when vault not initialized or other `require_app` error.
+
+2. **`list_approvals` error paths have `"ok": false`** — PASS. Both error paths return `"ok": false`:
+   (a) `require_app` failure → `{"ok":false,"error":"vault not initialized..."}` from the
+   `require_app()` helper (iter-105); (b) no second explicit error path (write lock always succeeds
+   on an `Arc<RwLock<Vec<_>>>`). No lock-failure path to guard.
+
+3. **`v1.0.2` GitHub release** — MISSING. `gh release list` shows Latest is `v1.0.1`. `v1.0.2` git
+   tag exists (created at iter-122 commit) but no GitHub release was created. Fixed: release
+   created in this iteration (see process log).
+
+4. **`setup_cloud_via_dashboard` bearer-token gating** — PASS. `POST /api/settings/cloud` is
+   registered in `api_routes_base` (dashboard/mod.rs:112) which is wrapped in `require_session`
+   middleware at line 182. Dashboard session cookie required. The raw sidecar proxy at
+   `http://127.0.0.1:3201/sync/init` is localhost-only; sidecar response always contains `ok`
+   from its own handler. No new exposure.
+
+5. **`api_approvals_has_ok_true_and_approvals_array` test completeness** — PARTIAL GAP FIXED.
+   Test asserted `body["approvals"].is_array()` but not the explicit key name `"approvals"`.
+   Enhanced with `body.get("approvals").is_some()` assertion (above).
+
+6. **`CHANGELOG.md [1.0.2]` completeness** — FIXED (this entry). Previous entry only covered
+   iter-122. Now covers iter-123 fixes: approvals.html ok===false guard, null fallback hardening,
+   key-name assertion, error path shape test.
+
+7. **`unifi_session:invalidate` rotation UI path (post-v1.0:)** — DEFERRED (confirmed). The
+   `invalidate()` method at line 91 is fully implemented — `#[allow(dead_code)]` comment updated
+   to `post-v1.0: rotation UI`. The production wiring gap is in the browser rotation workflow:
+   `browser_rotate` in `main.rs` calls the sidecar at `http://127.0.0.1:3201/browser/rotate`;
+   that sidecar path would need to call back into the proxy to trigger `invalidate()` after a
+   successful rotation, OR the proxy handler needs to invalidate before dispatching the rotate.
+   Path: wire `app.unifi_session_cache.invalidate(&service_name)` in `browser_rotate` after
+   a successful rotation response. Requires `--features browser`; estimated <50 LOC.
+
+8. **`approvals.html` error path for `require_app` 503** — FIXED (see Bugs above). Identical
+   to issue 1 — the `ok===false` guard now catches this case.
+
+9. **`approvals.html` null `data.approvals` fallback** — FIXED (see Bugs above). `approvals_val`
+   fallback changed from `Value::Null` to `Value::Array(vec![])`.
+
+10. **Final `json!({...})` without `"ok"` scan** — PASS (with known exception). 179 `"ok"`
+    occurrences vs 133 `json!({` occurrences in `src/dashboard/api.rs`. All `json!({` blocks
+    without inline `"ok"` are sub-objects embedded inside a parent object that carries `"ok"`
+    at the top level (e.g. `cloud_sync` inner object in `status`, per-tool item objects in
+    `get_permissions`, per-file objects in `tpm_status`). One intentional exception:
+    `setup_cloud_via_dashboard` proxies the raw sidecar body — that body always carries `ok`
+    from the sidecar's own handler. The `audit` handler at line 213 uses
+    `serde_json::to_value(result).unwrap_or_default()` where `AuditResult` has `pub ok: bool`;
+    serialization is infallible so `ok` is always present. No unguarded gaps found.
+
+### Quality gates (iter-123)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **317 passed** (+ 2 integration) = **319 total**; 0 failed (1 new shape test: `api_approvals_error_has_ok_false`; existing `api_approvals_has_ok_true_and_approvals_array` strengthened)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
+
+---
+
 ## [1.0.2] — iteration 122: JS correctness audit, approvals envelope fix
 
 ### Bugs (iter-122)

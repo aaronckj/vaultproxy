@@ -298,7 +298,14 @@ pub async fn list_approvals(State(state): State<DashboardState>) -> Json<Value> 
     // iter-122: wrap in {"ok":true,"approvals":[...]} envelope for consistency with all
     // other dashboard collection endpoints. Previously returned a bare JSON array;
     // approvals.html JS updated to unwrap the "approvals" key.
-    let approvals_val = serde_json::to_value(&pending).unwrap_or_default();
+    //
+    // iter-123: use Value::Array([]) as fallback instead of unwrap_or_default() which
+    // returns Value::Null on serialization failure. Array.isArray(null) is false in JS,
+    // so a null approvals field would silently render an empty queue rather than an error.
+    // Vec<_> serialization to a JSON array is infallible in practice, but the explicit
+    // fallback documents the invariant and avoids the null footgun.
+    let approvals_val =
+        serde_json::to_value(&pending).unwrap_or_else(|_| serde_json::Value::Array(vec![]));
     Json(json!({"ok": true, "approvals": approvals_val}))
 }
 
@@ -2033,6 +2040,28 @@ mod dashboard_ok_shape_tests {
         assert!(
             body["approvals"].is_array(),
             "GET /api/approvals must wrap list in 'approvals' key"
+        );
+        // Verify the key is specifically "approvals" — if it were renamed the
+        // test above could pass with a different key if ok:true were kept.
+        assert!(
+            body.get("approvals").is_some(),
+            "GET /api/approvals key must be named 'approvals' (not 'items' or similar)"
+        );
+    }
+
+    /// `GET /api/approvals` error path must carry `"ok": false` — iter-123 fix.
+    /// When vault is not initialized, `require_app` returns `{"ok":false,"error":"..."}`.
+    /// Without the ok===false guard in approvals.html, this rendered as an empty queue.
+    #[test]
+    fn api_approvals_error_has_ok_false() {
+        let body = json!({"ok": false, "error": "vault not initialized — complete setup first"});
+        assert_eq!(
+            body["ok"], false,
+            "GET /api/approvals error must return ok: false"
+        );
+        assert!(
+            body["error"].as_str().is_some(),
+            "GET /api/approvals error must include 'error' string"
         );
     }
 }

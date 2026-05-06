@@ -231,6 +231,16 @@
             });
         }
 
+        function renderError(msg) {
+            var container = document.getElementById('queue-container');
+            clearChildren(container);
+            var div = document.createElement('div');
+            div.className = 'empty-state';
+            div.style.color = 'var(--error, #f38ba8)';
+            div.textContent = 'Error: ' + msg;
+            container.appendChild(div);
+        }
+
         function loadApprovals() {
             fetch('/api/approvals')
                 .then(function (res) {
@@ -238,6 +248,16 @@
                     return res.json();
                 })
                 .then(function (data) {
+                    // iter-123: guard ok===false before unwrapping (mirrors items.html,
+                    // audit-log.html etc. fixed in iter-119–121). An api error returns
+                    // {"ok":false,"error":"..."} — without this guard the fallback
+                    // Array.isArray(data.approvals) returns false and list becomes [],
+                    // silently showing "No pending approvals." instead of the error.
+                    if (data && data.ok === false) {
+                        renderError(data.error || 'unknown server error');
+                        updateRefreshIndicator(true);
+                        return;
+                    }
                     // iter-122: server now returns {"ok":true,"approvals":[...]} envelope.
                     // Array.isArray fallback retained for graceful rollback.
                     var list = Array.isArray(data) ? data : (Array.isArray(data.approvals) ? data.approvals : []);
