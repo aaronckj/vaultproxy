@@ -283,8 +283,14 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
+        // iter-44: advise operators to inspect log output for per-service
+        // warnings (timeout_secs >= 600, insecure_tls, etc.) that are emitted
+        // via `tracing::warn!` during from_toml_file — they appear on stderr
+        // but are not reflected in the stdout summary above.
         println!(
-            "vaultproxy check: OK — {accepted} service(s) registered from {}: {:?}",
+            "vaultproxy check: OK — {accepted} service(s) registered from {}: {:?}. \
+             Check log output above for per-service warnings (e.g. timeout_secs >= 600, \
+             insecure_tls = true).",
             services_path.display(),
             registry.list()
         );

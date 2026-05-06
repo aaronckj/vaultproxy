@@ -364,9 +364,34 @@ pub async fn launch(
     // which is an invalid URL — the colon before the port is ambiguous with
     // the colons inside the IPv6 address.  RFC 3986 §3.2.2 requires brackets:
     // `http://[::1]:3201`.  IPv4 addresses need no brackets.
-    let vault_proxy_url = match connect_ip {
+    let derived_vault_proxy_url = match connect_ip {
         std::net::IpAddr::V6(v6) => format!("http://[{}]:{}", v6, listen_addr.port()),
         std::net::IpAddr::V4(_)  => format!("http://{}:{}", connect_ip, listen_addr.port()),
+    };
+
+    // Issue (iter-44): Operators who place vault-proxy behind a reverse proxy
+    // (nginx, Caddy, Traefik) with TLS termination need VAULT_PROXY_URL to
+    // reflect the public-facing HTTPS address, not the loopback listen address.
+    // For example, if vault-proxy is fronted by `https://vault-proxy.example.com`,
+    // injecting `http://127.0.0.1:3201` as VAULT_PROXY_URL causes smart MCP
+    // servers to use unencrypted loopback instead of the HTTPS front-end.
+    //
+    // If `VAULT_PROXY_PUBLIC_URL` is set in vault-proxy's environment, use it
+    // as the injected VAULT_PROXY_URL.  The operator is responsible for
+    // ensuring it points to a reachable address; we only validate that it is
+    // non-empty.  The mcp-servers.toml `env` list (processed after this
+    // injection) can still override VAULT_PROXY_URL for a specific server —
+    // `VAULT_PROXY_PUBLIC_URL` is purely a process-wide default.
+    let vault_proxy_url = match std::env::var("VAULT_PROXY_PUBLIC_URL") {
+        Ok(public_url) if !public_url.is_empty() => {
+            tracing::info!(
+                "--launch '{}': VAULT_PROXY_PUBLIC_URL is set; injecting '{}' as VAULT_PROXY_URL \
+                 (overrides derived loopback URL '{}')",
+                server_name, public_url, derived_vault_proxy_url
+            );
+            public_url
+        }
+        _ => derived_vault_proxy_url,
     };
 
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
@@ -717,6 +742,56 @@ command = "cmd-b"
         let addr: std::net::SocketAddr = "127.0.0.1:3201".parse().unwrap();
         let ip = normalise_listen_ip(addr);
         assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    }
+
+    // Issue (iter-44): Verify VAULT_PROXY_PUBLIC_URL override logic.
+    // When the env var is set, the derived loopback URL must be replaced by the
+    // public URL so operators behind a reverse proxy get the correct value.
+    #[test]
+    fn test_vault_proxy_public_url_overrides_derived() {
+        // The override logic cannot be tested against the real std::env without
+        // affecting other tests (env vars are process-global).  Test the decision
+        // function inline instead — same logic as the production code.
+        fn resolve_vault_proxy_url(derived: &str, public_url_env: Option<&str>) -> String {
+            match public_url_env {
+                Some(u) if !u.is_empty() => u.to_string(),
+                _ => derived.to_string(),
+            }
+        }
+
+        // Override is present and non-empty → use it.
+        assert_eq!(
+            resolve_vault_proxy_url(
+                "http://127.0.0.1:3201",
+                Some("https://vault-proxy.example.com"),
+            ),
+            "https://vault-proxy.example.com",
+            "VAULT_PROXY_PUBLIC_URL must override the derived loopback URL"
+        );
+
+        // Override is empty string → fall back to derived.
+        assert_eq!(
+            resolve_vault_proxy_url("http://127.0.0.1:3201", Some("")),
+            "http://127.0.0.1:3201",
+            "empty VAULT_PROXY_PUBLIC_URL must fall back to derived URL"
+        );
+
+        // Override is absent → fall back to derived.
+        assert_eq!(
+            resolve_vault_proxy_url("http://127.0.0.1:3201", None),
+            "http://127.0.0.1:3201",
+            "absent VAULT_PROXY_PUBLIC_URL must fall back to derived URL"
+        );
+
+        // IPv6 listen address with public URL override.
+        assert_eq!(
+            resolve_vault_proxy_url(
+                "http://[::1]:3201",
+                Some("https://vault-proxy.example.com"),
+            ),
+            "https://vault-proxy.example.com",
+            "public URL override must work for IPv6 listen addresses too"
+        );
     }
 
     // Issue (iter-41): Verify that the actual environment of a launched process

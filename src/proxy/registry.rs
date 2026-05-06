@@ -1203,9 +1203,13 @@ impl ServiceRegistry {
                     );
                     continue;
                 }
-                Some(t) if t > TIMEOUT_SECS_WARN_THRESHOLD => {
+                // iter-44: use >= so that exactly 600 s also triggers the
+                // warning.  The constant comment documents 600 as "the risk
+                // boundary" — `t > 600` silently let the boundary value itself
+                // pass without a warning, contradicting the documented intent.
+                Some(t) if t >= TIMEOUT_SECS_WARN_THRESHOLD => {
                     tracing::warn!(
-                        "service '{}': timeout_secs = {} exceeds the {} s warn threshold. \
+                        "service '{}': timeout_secs = {} meets or exceeds the {} s warn threshold. \
                          Very long per-service timeouts can stall the rate-limit bucket. \
                          Consider whether this service genuinely needs this timeout. \
                          To express 'no timeout', omit the key entirely (uses global --proxy-timeout).",

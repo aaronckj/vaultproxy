@@ -830,7 +830,21 @@ async fn session_login(
             }
             None
         })
-        .ok_or_else(|| anyhow::anyhow!("cannot determine base URL for session login"))?
+        // iter-44: if the registry scan returns None it means the service
+        // was removed from the registry between the initial `handle_proxy`
+        // lookup (which already cloned the ServiceEntry and released the
+        // lock) and this `session_login` call.  This is a SIGHUP/reload
+        // race: the operator triggered a reload that removed the service
+        // between dispatch and login.  Return a clear error so the caller's
+        // 502 log shows the cause rather than a generic "cannot determine"
+        // message.
+        .ok_or_else(|| anyhow::anyhow!(
+            "session login: service with vault item '{}' not found in registry — \
+             the service may have been removed by a concurrent SIGHUP reload \
+             between request dispatch and login; the in-flight request will fail \
+             with 502 and the next request will use the updated registry",
+            vault_item
+        ))?
     };
 
     let login_url = format!(
