@@ -27,7 +27,12 @@
 
 services:
   vaultproxy:
-    image: ghcr.io/aaronckj/vaultproxy:latest
+    # Build from source (recommended until a published image exists for your version).
+    # The CI workflow (.github/workflows/docker-publish.yml) publishes
+    # ghcr.io/aaronckj/vaultproxy:<tag> on each version tag push.
+    # Once a published image exists, replace `build: .` with:
+    #   image: ghcr.io/aaronckj/vaultproxy:latest
+    build: .
     restart: unless-stopped
     network_mode: host          # Required: proxy must bind to 127.0.0.1:3201 on the host
     volumes:

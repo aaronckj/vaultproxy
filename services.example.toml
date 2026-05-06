@@ -1,5 +1,54 @@
 # vaultproxy service configuration
-# Copy to your --config-dir as services.toml and edit to match your setup.
+# ──────────────────────────────────────────────────────────────────────────────
+# HOW TO USE THIS FILE
+#
+# 1. Copy this file to your config directory as services.toml:
+#      cp services.example.toml ./config/services.toml
+#
+# 2. Edit the [[service]] blocks below to match your services.
+#    Delete any services you don't use — unused blocks don't cause errors, but
+#    clean configs are easier to maintain.
+#
+# 3. Validate the file before deploying:
+#      vaultproxy --check --config-dir ./config
+#    This parses services.toml, checks SSRF rules, and prints OK or error details.
+#    No Vaultwarden connection or credentials are required.
+#
+# 4. Restart vault-proxy (or send SIGHUP / call POST /vault/reload-services)
+#    to pick up changes.
+#
+# ── WHAT IS vault_item? ───────────────────────────────────────────────────────
+#
+# `vault_item` is the NAME of an item in your Vaultwarden folder (default folder
+# name: "vault-proxy", controlled by VAULT_FOLDER).  vault-proxy looks up that
+# item at startup and uses its password field (or a custom field) as the auth
+# credential.  The actual secret never leaves vault-proxy.
+#
+# Example: for a Home Assistant service with
+#     vault_item = "vault-proxy - Home Assistant"
+# you must have an item named exactly "vault-proxy - Home Assistant" in the
+# "vault-proxy" folder in Vaultwarden, with the Bearer token in the password field.
+#
+# ── FIELDS OVERVIEW ───────────────────────────────────────────────────────────
+#
+# Required for every service:
+#   name       — identifier used in POST /proxy requests: {"service": "ha_home", ...}
+#   base_url   — scheme + host + optional path prefix of the downstream service
+#   auth       — auth method: bearer | header | query_param | basic | session | unifi_dual
+#   vault_item — Vaultwarden item name that holds the credential
+#
+# Optional:
+#   insecure_tls = true   — skip TLS cert verification (only for self-signed LAN services)
+#   ca_cert = "/path"     — path to a PEM CA cert for services with a private CA
+#
+# Auth-specific required fields (see README for full reference):
+#   header:       header_name (e.g. "X-Api-Key")
+#   query_param:  param_name  (e.g. "apikey")
+#   basic:        key_field, secret_field (names of the custom fields in Vaultwarden)
+#   session:      login_path, token_field
+#   unifi_dual:   login_path
+# ──────────────────────────────────────────────────────────────────────────────
+
 # Each [[service]] block registers one service with the proxy.
 # The `name` field is what you pass as "service" in POST /proxy requests.
 # The `vault_item` field must match an item name in your Vaultwarden vault-proxy folder.

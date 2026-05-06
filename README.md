@@ -168,7 +168,13 @@ cp services.example.toml ./config/services.toml
 ```yaml
 services:
   vaultproxy:
-    image: ghcr.io/aaronckj/vaultproxy:latest
+    # Build locally — see Dockerfile in the repo root.
+    # A pre-built image (ghcr.io/aaronckj/vaultproxy:latest) is published
+    # automatically on each version tag via the GitHub Actions CI workflow
+    # (.github/workflows/docker-publish.yml).  If the image is not yet
+    # available for your version, use `build: .` to build it from source.
+    build: .
+    # image: ghcr.io/aaronckj/vaultproxy:latest  # uncomment once CI has published
     restart: unless-stopped
     network_mode: host
     volumes:
@@ -230,7 +236,7 @@ cargo build --release --features tpm
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
 | `--allow-root` | — | — | Suppress the root-user security warning (see below) |
 | `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
-| `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. |
+| `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. Setting `VAULT_REFRESH_INTERVAL_SECS=""` (empty string) is an error and vault-proxy will exit with a parse error. |
 | — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
 
 > **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as
@@ -350,7 +356,7 @@ cargo build --release --features dashboard
 For MCP servers that don't support vault-proxy natively, use launcher mode to inject credentials at spawn time:
 
 ```bash
-vault-proxy --launch unifi-network
+vaultproxy --launch unifi-network
 ```
 
 Configure servers in `mcp-servers.toml` inside your `--config-dir`:

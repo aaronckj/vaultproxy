@@ -637,7 +637,9 @@ async fn start_server(
     // `exec` semantics require process replacement, not graceful shutdown.
     // Background tokio tasks spawned below are never reached in this branch.
     if let Some(ref server_name) = args.launch {
-        return crate::launcher::launch(server_name, config_dir, &vault_arc).await;
+        // Issue (iter-39): pass listen_addr so VAULT_PROXY_URL is synthesised
+        // from the actual --listen address rather than a hard-coded default.
+        return crate::launcher::launch(server_name, config_dir, &vault_arc, args.listen).await;
     }
 
     // Cloud sync setup — activates when cloud credentials exist in keystore
@@ -2358,9 +2360,16 @@ mod bg_refresh_tests {
     ///
     /// We drive a synthetic version of the production loop with `tokio::time`
     /// paused so the test runs in microseconds.
-    #[tokio::test]
+    ///
+    /// Issue (iter-39): use `start_paused = true` instead of calling
+    /// `tokio::time::pause()` inside the test body.  `start_paused` initialises
+    /// the per-test runtime with time paused from the very first poll, which is
+    /// the correct way to use frozen time.  `tokio::time::pause()` is a global
+    /// mutation that would affect every timer in the same runtime — with
+    /// `start_paused` each `#[tokio::test]` gets its own isolated runtime so
+    /// the freeze is scoped to this test only.
+    #[tokio::test(start_paused = true)]
     async fn background_refresh_skips_first_tick_and_fires_on_interval() {
-        tokio::time::pause();
 
         let fire_count = Arc::new(AtomicUsize::new(0));
         let counter = fire_count.clone();
@@ -2405,9 +2414,9 @@ mod bg_refresh_tests {
 
     /// When `sync()` fails, the task must NOT increment its counter but MUST
     /// continue to the next interval rather than panicking or exiting.
-    #[tokio::test]
+    // Issue (iter-39): same `start_paused = true` rationale as above.
+    #[tokio::test(start_paused = true)]
     async fn background_refresh_continues_after_failure() {
-        tokio::time::pause();
 
         let fire_count = Arc::new(AtomicUsize::new(0));
         let counter = fire_count.clone();

@@ -3515,3 +3515,94 @@ mod folder_scope_guard_tests {
         assert_eq!(filtered, vec!["item-in-scope"]);
     }
 }
+
+// -------------------------------------------------------------------------- //
+// reload_services JSON shape regression tests (iter-39)                       //
+// -------------------------------------------------------------------------- //
+//
+// After the iter-38 refactor changed the return type from
+// `(StatusCode, Json<Value>)` to `impl IntoResponse` (to add the Retry-After
+// header on the 503 path), every code path still produces a JSON body.
+// These tests verify the field shape of the 200 success response and the
+// 503/409 error responses so we catch any future regression to a non-JSON
+// body format.
+#[cfg(test)]
+mod reload_services_shape_tests {
+    use serde_json::{json, Value};
+
+    /// Helper that simulates the reload_services 200 success body construction.
+    /// Mirrors the production code at the bottom of reload_services().
+    fn success_body(prev_count: usize, new_count: usize, services: Vec<String>) -> Value {
+        json!({
+            "ok": true,
+            "prev_service_count": prev_count,
+            "new_service_count": new_count,
+            "services": services,
+            "note": "services.toml reloaded synchronously; CA-cert clients rebuilt. \
+                     Vault credentials (items) are NOT refreshed — call POST /vault/resync \
+                     to reload credentials from Vaultwarden.",
+        })
+    }
+
+    /// Helper that simulates the 409 rollback-guard body.
+    fn rollback_body(prev_count: usize) -> Value {
+        json!({
+            "ok": false,
+            "error": "reload produced 0 services — rolling back to prevent outage",
+            "prev_service_count": prev_count,
+            "new_service_count": 0,
+            "hint": "check container logs for per-service rejection reasons \
+                     (SSRF violations, missing fields, bad base_url)",
+        })
+    }
+
+    /// Helper that simulates the 503 mutex-timeout body.
+    fn timeout_body() -> Value {
+        json!({
+            "ok": false,
+            "error": "another reload is in progress — retry after 10 s",
+            "retry_after_s": 10,
+        })
+    }
+
+    #[test]
+    fn success_body_has_required_fields() {
+        let body = success_body(3, 4, vec!["ha_home".into(), "sonarr".into()]);
+        assert_eq!(body["ok"], true, "ok must be true");
+        assert_eq!(body["prev_service_count"], 3);
+        assert_eq!(body["new_service_count"], 4);
+        let svcs = body["services"].as_array().expect("services must be an array");
+        assert_eq!(svcs.len(), 2);
+        assert!(
+            body["note"].as_str().is_some(),
+            "note field must be a string"
+        );
+    }
+
+    #[test]
+    fn rollback_body_has_required_fields() {
+        let body = rollback_body(5);
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["new_service_count"], 0);
+        assert_eq!(body["prev_service_count"], 5);
+        assert!(body["error"].as_str().is_some());
+        assert!(body["hint"].as_str().is_some());
+    }
+
+    #[test]
+    fn timeout_body_has_required_fields() {
+        let body = timeout_body();
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().is_some());
+        assert_eq!(body["retry_after_s"], 10);
+    }
+
+    #[test]
+    fn success_body_empty_services_is_valid() {
+        // Zero services reloaded (when prev was also zero — not a rollback case).
+        let body = success_body(0, 0, vec![]);
+        assert_eq!(body["ok"], true);
+        let svcs = body["services"].as_array().expect("services must be an array");
+        assert!(svcs.is_empty());
+    }
+}

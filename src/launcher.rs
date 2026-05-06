@@ -46,10 +46,18 @@ struct EnvMapping {
 /// This function **does not return** on success — it calls `std::process::exit`
 /// with the child's exit code, mirroring the child's lifecycle. On failure it
 /// returns an `Err` so the caller can report the error and exit.
+///
+/// `listen_addr` is the `--listen` address vault-proxy is bound to (or will
+/// bind to).  It is injected as `VAULT_PROXY_URL` into the child's environment
+/// so that smart MCP servers that discover the proxy via that variable find the
+/// correct URL without the operator having to set it manually.  The value is
+/// derived from the actual `--listen` CLI argument rather than a hard-coded
+/// default so it stays correct when the operator changes the port.
 pub async fn launch(
     server_name: &str,
     config_dir: &str,
     vault: &crate::vault::VaultManager,
+    listen_addr: std::net::SocketAddr,
 ) -> Result<()> {
     let path = Path::new(config_dir).join("mcp-servers.toml");
     let content = std::fs::read_to_string(&path)
@@ -318,6 +326,19 @@ pub async fn launch(
     let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
                              "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
 
+    // Issue (iter-39): Smart MCP servers discover the proxy via VAULT_PROXY_URL.
+    // When `--launch` uses env_clear() the child's environment is wiped, so
+    // VAULT_PROXY_URL (if the operator set it in the shell before invoking
+    // vault-proxy) would be absent — the smart server falls back to direct
+    // credential env vars, defeating the point of the proxy.
+    //
+    // We synthesise VAULT_PROXY_URL from the actual --listen address so it is
+    // always correct regardless of which port the operator chose.  This value
+    // takes precedence over any VAULT_PROXY_URL the operator may have set in the
+    // mcp-servers.toml `env` list (that list is processed after this injection
+    // and would overwrite it — intentional, giving the operator the last word).
+    let vault_proxy_url = format!("http://{}", listen_addr);
+
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
     // (Command::status() does not redirect them). This is intentional: MCP
     // servers communicate over stdio; their stdout MUST reach the MCP client
@@ -350,6 +371,11 @@ pub async fn launch(
         .envs(safe_parent_vars.iter().filter_map(|k| {
             std::env::var(k).ok().map(|v| (k.to_string(), v))
         }))
+        // Issue (iter-39): Inject VAULT_PROXY_URL so smart MCP servers find the
+        // proxy sidecar at the correct address.  Set it before the per-server
+        // `env` mappings so an explicit `var = "VAULT_PROXY_URL"` in the config
+        // can override it (operator has the last word).
+        .env("VAULT_PROXY_URL", &vault_proxy_url)
         .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .status()
         .map_err(|e| {
