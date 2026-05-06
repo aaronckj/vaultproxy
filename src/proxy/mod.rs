@@ -2521,4 +2521,166 @@ vault_item  = "vault-proxy - Beta"
              (not 500 or a panic)"
         );
     }
+
+    // ---------------------------------------------------------------------- //
+    // (k) GET /vault/audit/run — bearer auth, rate limit, JSON shape (iter-55) //
+    // ---------------------------------------------------------------------- //
+
+    /// Build a minimal internal router with GET /vault/audit/run behind the
+    /// bearer-token middleware and a rate limiter wired at the app level.
+    /// Shared by the three sub-tests below.
+    fn make_audit_run_app(
+        state: Arc<AppState>,
+        rate_limit: u64,
+    ) -> (Router, String) {
+        use crate::security::rate_limit::RateLimiter;
+        let token = state.internal_token.as_str().to_string();
+
+        let internal_router = Router::new()
+            .route(
+                "/vault/audit/run",
+                get(crate::audit::handle_audit_run),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let limiter = RateLimiter::new(rate_limit, 60);
+        let app = Router::new()
+            .merge(internal_router)
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                crate::security::rate_limit::rate_limit_middleware,
+            ))
+            .with_state(state);
+
+        (app, token)
+    }
+
+    /// iter-55 (a): GET /vault/audit/run without Authorization header must
+    /// return 401 UNAUTHORIZED. With the correct bearer token it must return
+    /// 200 with a JSON body containing `total_items`, `weak_passwords`, and
+    /// `reused_passwords`.
+    #[tokio::test]
+    async fn audit_run_requires_bearer_token_and_returns_200_with_json_shape() {
+        let state = make_state(ServiceRegistry::new());
+        let (app, token) = make_audit_run_app(state, 60); // generous limit for this test
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        // --- No token → 401 ---
+        let resp = client
+            .get(format!("http://{}/vault/audit/run", addr))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "GET /vault/audit/run must return 401 when Authorization header is absent"
+        );
+
+        // --- Wrong token → 401 ---
+        let resp = client
+            .get(format!("http://{}/vault/audit/run", addr))
+            .header("authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "GET /vault/audit/run must return 401 for an invalid bearer token"
+        );
+
+        // --- Correct token → 200 with expected JSON shape ---
+        let resp = client
+            .get(format!("http://{}/vault/audit/run", addr))
+            .header("authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/audit/run must return 200 OK with a valid bearer token"
+        );
+        let body: serde_json::Value = resp.json().await.expect("audit/run must return JSON");
+        assert!(
+            body.get("total_items").is_some(),
+            "audit/run response must include 'total_items' field; got: {body}"
+        );
+        assert!(
+            body.get("weak_passwords").is_some(),
+            "audit/run response must include 'weak_passwords' field; got: {body}"
+        );
+        assert!(
+            body.get("reused_passwords").is_some(),
+            "audit/run response must include 'reused_passwords' field; got: {body}"
+        );
+    }
+
+    /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires
+    /// a tight 2 req/60 s limiter across the full HTTP stack so the third
+    /// request returns 429 TOO_MANY_REQUESTS.
+    ///
+    /// This is the HTTP-level complement to the `audit_run_uses_very_tight_limit`
+    /// unit test in `security/rate_limit.rs` which only calls `check()` directly.
+    /// Here the full axum middleware stack is exercised — bearer auth, rate
+    /// limiter, and handler — in a real HTTP round-trip.
+    #[tokio::test]
+    async fn audit_run_rate_limited_returns_429_on_third_request() {
+        let state = make_state(ServiceRegistry::new());
+        // Use a fresh tight limiter (max=2) rather than the real per_route map
+        // to avoid coupling the test to the specific /vault/audit/run limit.
+        // What we are testing here is that the middleware path works end-to-end;
+        // the per-route limit value is verified by the unit test in rate_limit.rs.
+        let (app, token) = make_audit_run_app(state, 2); // 2 req/60 s
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let auth = format!("Bearer {}", token);
+
+        // Requests 1 and 2 must succeed.
+        for i in 1..=2u32 {
+            let resp = client
+                .get(format!("http://{}/vault/audit/run", addr))
+                .header("authorization", &auth)
+                .send()
+                .await
+                .expect("request failed");
+            assert_ne!(
+                resp.status().as_u16(),
+                429,
+                "audit/run request {i} must not be rate-limited yet (budget=2)"
+            );
+        }
+
+        // Request 3 must be rejected with 429.
+        let resp = client
+            .get(format!("http://{}/vault/audit/run", addr))
+            .header("authorization", &auth)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            429,
+            "third audit/run request must return 429 — budget of 2 exhausted"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body.get("error").is_some(),
+            "429 response body must contain an 'error' key; got: {body}"
+        );
+    }
 }

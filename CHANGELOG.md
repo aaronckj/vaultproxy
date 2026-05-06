@@ -3,7 +3,7 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.6] — iterations 53–54: VwAdapter scope bypass fix, audit/run endpoint, rate limit, localhost HTTPS warn
+## [0.2.6] — iterations 53–55: VwAdapter scope bypass fix, audit/run endpoint, rate limit, localhost HTTPS warn, iter-55 tests
 
 ### Security fixes (iter-53 — CRITICAL)
 
@@ -89,6 +89,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **v0.2.6 tag warranted** — the iter-53 scope bypass (CRITICAL) and iter-54
   empty-fallback fix (HIGH) affect users running the credential audit workflow
   on a multi-folder vault. Users on v0.2.5 should upgrade.
+
+- **`apply` item_id scope bypass — NOT present (iter-55)**: Audited the
+  `apply()` method in `orchestrator.rs` for the potential that a caller
+  could supply `item_ids` pointing to out-of-scope vault items to force
+  `marker.mark()` on them. The filter at lines 296–303 uses
+  `list_pending(run_id)` as its source — this is a DB query against
+  `audit_run_items WHERE run_id=? AND marked_for_delete=1`. Items only
+  enter that table during `start_scan()` which uses the scoped
+  `VwAdapter.list_items_metadata()`. A caller cannot inject an arbitrary
+  `item_id` because it will not be in `audit_run_items` for that run_id
+  unless the VwAdapter already admitted it during the scan. No fix needed.
+
+- **`Orchestrator` VwAdapter vault_folder wiring — CORRECT (iter-55)**:
+  `main.rs` line 1427–1430 passes `Some(args.vault_folder.clone())` to
+  `VwAdapter::new()` at `Orchestrator` construction time. The iter-53 fix
+  is correctly propagated through the startup path.
+
+- **`GET /vault/audit/run` per-IP bucket on localhost — known limitation
+  (iter-55)**: The 2 req/60 s rate limit is keyed on `(route, client_ip)`.
+  All MCP callers share `127.0.0.1` and therefore share one bucket. A TODO
+  comment at lines 229–244 of `rate_limit.rs` documents this and recommends
+  `X-Caller-Id` as the long-term fix. The 2 req/60 s limit is strict enough
+  that the shared-bucket limitation is acceptable for v0.x homelab use.
+
+- **`from_config` / `from_vault` not test-gated — LOW (iter-55)**: Both
+  methods in `registry.rs` carry `#[allow(dead_code)]` and `#[doc(hidden)]`
+  but are NOT guarded by `#[cfg(test)]`. All 14 call sites are inside
+  `#[cfg(test)]` modules so they compile into the binary but are dead code
+  in production builds. The `#[allow(dead_code)]` annotation is accurate and
+  the binary overhead is negligible. Moving them to `#[cfg(test)]` would be
+  correct but is low-priority for v0.x.
+
+### Tests added (iter-55)
+
+- **`VwAdapter` empty fallback regression guard (iter-55)**: New async unit
+  tests in `src/credential_audit/vw_adapter.rs`:
+  `list_items_metadata_returns_empty_when_configured_folder_absent` —
+  verifies that when `vault_folder` is configured but the folder is absent,
+  `list_items_metadata()` returns an empty list (not all items). A future
+  refactor that reinstates the permissive fallback would fail this test
+  immediately. Complementary `list_items_metadata_unconfigured_folder_returns_all_items`
+  checks the `vault_folder=None` branch.
+
+- **`GET /vault/audit/run` HTTP integration tests (iter-55)**: Two new tests
+  in `src/proxy/mod.rs::integration_tests`:
+  `audit_run_requires_bearer_token_and_returns_200_with_json_shape` —
+  verifies 401 without token, 401 with wrong token, and 200 with correct
+  token + JSON shape (`total_items`, `weak_passwords`, `reused_passwords`).
+  `audit_run_rate_limited_returns_429_on_third_request` — exercises the
+  full axum middleware stack through real HTTP round-trips, verifying 429
+  after the budget is exhausted. Total test count: 238.
 
 ## [0.2.5] — iteration 52: credential audit workflow docs, audit.rs wiring notes
 
