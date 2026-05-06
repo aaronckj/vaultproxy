@@ -2577,7 +2577,10 @@ pub(crate) async fn handle_get_permissions(
         "built-in-defaults"
     };
     tracing::debug!("GET /vault/permissions — returning current tool permissions");
+    // iter-109: add "ok": true for consistency with all other success bodies;
+    // callers checking body["ok"] were getting undefined instead of true here.
     AxumJson(serde_json::json!({
+        "ok": true,
         "defaults": defaults,
         "overrides": overrides,
         "config_file_exists": config_file_exists,

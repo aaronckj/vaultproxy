@@ -557,6 +557,9 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     let tpm_feature_compiled = false;
 
     Json(json!({
+        // iter-109: add "ok": true so health callers checking body["ok"] receive
+        // a defined sentinel matching all other success bodies in this codebase.
+        "ok": true,
         "status": "ok",
         // iter-33: include binary version so monitoring systems and operators
         // can confirm which release is running without shelling into the container.
@@ -714,13 +717,13 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// configured but the folder is absent, returning an empty list is the correct
 /// safe default — the caller gets a clear empty result and the WARN log
 /// (emitted below) tells the operator exactly what to do.
-pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedItem>> {
+pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Value> {
     let items = state.vault.list_items().await;
 
     // Find the folder_id that corresponds to vault_folder (cached after first call).
     let vault_folder_id = resolve_vault_folder_id(&state).await;
 
-    let filtered = match vault_folder_id {
+    let filtered: Vec<MaskedItem> = match vault_folder_id {
         Some(ref folder_id) => items
             .into_iter()
             .filter(|item| item.folder_id.as_deref() == Some(folder_id.as_str()))
@@ -747,7 +750,11 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
         }
     };
 
-    Json(filtered)
+    // iter-109: wrap in an object with "ok": true so callers checking
+    // body["ok"] receive the standard success sentinel. Previously this
+    // returned a bare JSON array which was the only non-object success body
+    // in the entire codebase, making it an outlier for consumers.
+    Json(json!({ "ok": true, "items": filtered }))
 }
 
 /// `GET /vault/duplicates` — find items that share the same
@@ -1713,6 +1720,10 @@ pub async fn test_credential(
                 return (
                     StatusCode::OK,
                     Json(json!({
+                        // iter-109: add "ok": true for consistency with all other
+                        // success bodies; callers checking body["ok"] were getting
+                        // undefined instead of true on all test_credential success paths.
+                        "ok": true,
                         "reachable": true,
                         "http_status": status,
                         "authenticated": authenticated,
@@ -1727,6 +1738,7 @@ pub async fn test_credential(
                     return (
                         StatusCode::OK,
                         Json(json!({
+                            "ok": true,
                             "reachable": true,
                             "http_status": status,
                             "authenticated": authenticated,
@@ -1746,6 +1758,7 @@ pub async fn test_credential(
             (
                 StatusCode::OK,
                 Json(json!({
+                    "ok": true,
                     "reachable": true,
                     "http_status": status,
                     "authenticated": authenticated,
@@ -1758,6 +1771,10 @@ pub async fn test_credential(
         Err(e) => (
             StatusCode::OK,
             Json(json!({
+                // iter-109: add "ok": true — network-unreachable is a successful
+                // probe result (the proxy did its job); the caller uses "reachable"
+                // to distinguish connectivity from authentication outcomes.
+                "ok": true,
                 "reachable": false,
                 "http_status": 0,
                 "authenticated": false,
@@ -2169,13 +2186,13 @@ pub async fn delete_folder(
     if !req.confirm {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "confirm must be true to delete" })),
+            Json(json!({ "ok": false, "error": "confirm must be true to delete" })),
         );
     }
     if req.id.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "id is required" })),
+            Json(json!({ "ok": false, "error": "id is required" })),
         );
     }
 
@@ -2194,6 +2211,7 @@ pub async fn delete_folder(
                 return (
                     StatusCode::FORBIDDEN,
                     Json(json!({
+                        "ok": false,
                         "error": format!(
                             "cannot delete the vault-proxy folder ('{}') — \
                              deleting it would break all credential lookups. \
@@ -2234,7 +2252,7 @@ pub async fn delete_folder(
             tracing::error!("delete folder failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "ok": false, "error": e.to_string() })),
             )
         }
     }
@@ -2251,7 +2269,7 @@ pub async fn move_item(
     if req.id.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "id is required" })),
+            Json(json!({ "ok": false, "error": "id is required" })),
         );
     }
 
@@ -2272,7 +2290,7 @@ pub async fn move_item(
             None => {
                 return (
                     StatusCode::NOT_FOUND,
-                    Json(json!({"error": "item not found"})),
+                    Json(json!({ "ok": false, "error": "item not found" })),
                 )
             }
         };
@@ -2283,6 +2301,7 @@ pub async fn move_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} is not in the vault-proxy folder ('{}') — \
                                  move_item only moves items owned by vault-proxy",
@@ -2295,6 +2314,7 @@ pub async fn move_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} has no folder — move_item only moves items \
                                  inside the vault-proxy folder ('{}')",
@@ -2329,7 +2349,7 @@ pub async fn move_item(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "folder_id or folder_name is required" })),
+                Json(json!({ "ok": false, "error": "folder_id or folder_name is required" })),
             );
         }
     };
@@ -2364,7 +2384,7 @@ pub async fn move_item(
             tracing::error!("move cipher failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "ok": false, "error": e.to_string() })),
             )
         }
     }
@@ -2382,13 +2402,13 @@ pub async fn delete_item(
     if !req.confirm {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "confirm must be true to delete" })),
+            Json(json!({ "ok": false, "error": "confirm must be true to delete" })),
         );
     }
     if req.id.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "id is required" })),
+            Json(json!({ "ok": false, "error": "id is required" })),
         );
     }
 
@@ -2409,7 +2429,7 @@ pub async fn delete_item(
             None => {
                 return (
                     StatusCode::NOT_FOUND,
-                    Json(json!({"error": "item not found"})),
+                    Json(json!({ "ok": false, "error": "item not found" })),
                 )
             }
         };
@@ -2420,6 +2440,7 @@ pub async fn delete_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} is not in the vault-proxy folder ('{}') — \
                                  delete_item only removes items owned by vault-proxy",
@@ -2432,6 +2453,7 @@ pub async fn delete_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} has no folder — delete_item only removes items \
                                  inside the vault-proxy folder ('{}')",
@@ -2478,7 +2500,7 @@ pub async fn delete_item(
             tracing::error!("delete cipher failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "ok": false, "error": e.to_string() })),
             )
         }
     }
@@ -2905,6 +2927,10 @@ pub async fn generate_totp(
                 Ok(code) => (
                     StatusCode::OK,
                     Json(json!({
+                        // iter-109: add "ok": true for consistency with all other
+                        // success bodies; callers checking body["ok"] were getting
+                        // undefined (no field) instead of true on the happy path.
+                        "ok": true,
                         "code": code,
                         "expires_in": crate::totp::seconds_remaining(),
                     })),
@@ -3007,7 +3033,8 @@ pub async fn decrypt_notes(
 
     match state.vault.decrypt_notes(item_name) {
         Ok(Some(buf)) => match buf.as_str() {
-            Ok(s) => (StatusCode::OK, Json(json!({"notes": s}))).into_response(),
+            // iter-109: add "ok": true for consistency with all other success bodies.
+            Ok(s) => (StatusCode::OK, Json(json!({ "ok": true, "notes": s }))).into_response(),
             Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "notes content is not valid UTF-8"})),
