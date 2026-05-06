@@ -139,6 +139,29 @@ struct Args {
     #[arg(long)]
     launch: Option<String>,
 
+    /// Persist the dashboard TLS certificate across restarts.
+    ///
+    /// By default the dashboard TLS certificate is ephemeral — a fresh
+    /// self-signed certificate is generated on every startup, causing the
+    /// browser to show a "certificate has changed" warning after each restart.
+    ///
+    /// When this flag is set, vault-proxy:
+    ///   1. On the first run, generates the certificate as normal and writes it
+    ///      to `{config_dir}/dashboard.crt` and `{config_dir}/dashboard.key`
+    ///      (mode 0600, atomic write via tempfile+rename).
+    ///   2. On subsequent runs, reads the certificate back from disk instead of
+    ///      generating a new one — the browser warning disappears after the
+    ///      first run.
+    ///
+    /// The persisted certificate is a self-signed ECDSA P-256 cert valid until
+    /// 2099-12-31. It is NOT bound to the TPM-sealed keystore — the cert
+    /// material is stored in plaintext PEM alongside the other config files.
+    /// Deleting `dashboard.crt` and `dashboard.key` forces regeneration.
+    ///
+    /// Equivalent env var: `PERSIST_DASHBOARD_CERT=1`.
+    #[arg(long, env = "PERSIST_DASHBOARD_CERT")]
+    persist_dashboard_cert: bool,
+
     /// Suppress the root-user security warning.
     ///
     /// vault-proxy emits a prominent warning when run as uid 0 (root) because
@@ -649,9 +672,30 @@ async fn main() -> anyhow::Result<()> {
 /// resource leak.
 #[cfg(feature = "dashboard")]
 async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()> {
-    // Generate ephemeral mTLS certificates for HTTPS
+    // Generate (or load persisted) mTLS certificates for the dashboard.
+    // iter-113: when --persist-dashboard-cert is set, attempt to read back a
+    // previously-saved server cert+key so the browser doesn't warn on restart.
     let certs =
         tpm::generate_mtls_certs().map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    let dashboard_server_cert_pem;
+    let dashboard_server_key_pem;
+    if args.persist_dashboard_cert {
+        match tpm::load_persisted_dashboard_cert(config_dir) {
+            Some(persisted) => {
+                dashboard_server_cert_pem = persisted.server_cert_pem;
+                dashboard_server_key_pem = persisted.server_key_pem;
+            }
+            None => {
+                // First run: save and use the freshly-generated cert.
+                tpm::persist_dashboard_cert(config_dir, &certs);
+                dashboard_server_cert_pem = certs.server_cert_pem.clone();
+                dashboard_server_key_pem = certs.server_key_pem.clone();
+            }
+        }
+    } else {
+        dashboard_server_cert_pem = certs.server_cert_pem.clone();
+        dashboard_server_key_pem = certs.server_key_pem.clone();
+    };
 
     // Shared channel: dashboard writes the setup password here after setup/unlock,
     // the polling loop reads it to decrypt credentials.
@@ -675,8 +719,8 @@ async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()
     let dash_addr = args.dashboard_listen;
 
     let dash_tls_config = {
-        let cert_pem = certs.server_cert_pem.as_bytes().to_vec();
-        let key_pem = certs.server_key_pem.as_bytes().to_vec();
+        let cert_pem = dashboard_server_cert_pem.as_bytes().to_vec();
+        let key_pem = dashboard_server_key_pem.as_bytes().to_vec();
         axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
             .await
             .expect("failed to build dashboard TLS config")
@@ -1059,35 +1103,55 @@ async fn start_server(
         }
     }
 
-    // Generate ephemeral mTLS certificates.
+    // Generate (or load persisted) mTLS certificates for the dashboard.
     //
-    // Issue-6 (iter-5): These certs are regenerated on every startup — they are
-    // NOT persisted between restarts. This is intentional (no disk footprint,
-    // no stale key material), but it has a user-experience consequence:
-    // every restart produces a new self-signed cert with a new fingerprint,
-    // so browsers that pinned the previous cert (HSTS / cert pinning) will
-    // show a "certificate has changed" warning.
+    // Issue-6 (iter-5): Certs were regenerated on every startup — a fresh
+    // self-signed cert with a new fingerprint caused a "certificate has changed"
+    // browser warning after every restart.
     //
-    // The dashboard is accessed via localhost only, so the practical risk of
-    // a fresh cert is low. However, if you use a browser with strict HSTS or
-    // have previously clicked "Remember this exception", you may need to clear
-    // the security exception after a restart. This is a deliberate tradeoff:
+    // iter-113: `--persist-dashboard-cert` / PERSIST_DASHBOARD_CERT resolves this.
+    // When the flag is set:
+    //   1. First run: generate as normal, save server cert+key to
+    //      {config_dir}/dashboard.crt and dashboard.key (mode 0600, atomic).
+    //   2. Subsequent runs: load the saved cert+key — browser sees the same
+    //      identity and the "cert changed" warning disappears.
     //
-    //   Option A (current): ephemeral cert — no disk IO, no stale key, browser
-    //                       warning on restart.
-    //   Option B (future):  persist cert to /config/dashboard-tls.pem and only
-    //                       regenerate if the cert is missing, expired, or if
-    //                       --setup is re-run. Eliminates browser warnings at
-    //                       the cost of a file on disk.
+    // The mTLS CA and client certs (used for the /handshake endpoint) are always
+    // regenerated fresh — only the dashboard server cert (used by the HTTPS
+    // listener on 3202) is persisted. This keeps the mTLS material ephemeral
+    // (forward secrecy) while stabilising the only user-visible cert.
     //
-    // TODO: Implement option B (persisted dashboard cert) behind a
-    // `--persist-dashboard-cert` flag for operators who use the dashboard
-    // frequently and don't want the warning on every container restart.
-    tracing::info!("generating ephemeral mTLS certificates");
-    let certs =
-        tpm::generate_mtls_certs().map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    // When the flag is NOT set, behaviour is identical to pre-iter-113:
+    // a fully ephemeral cert set is generated on every startup.
+    tracing::info!("generating mTLS certificates");
+    let certs = tpm::generate_mtls_certs()
+        .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+
+    // When --persist-dashboard-cert is active, try to read back a previously
+    // saved server cert+key and splice it into the freshly-generated CertMaterial
+    // so the dashboard TLS identity remains stable across restarts.
     #[cfg(feature = "dashboard")]
-    let dashboard_certs = certs.clone();
+    let dashboard_certs = if args.persist_dashboard_cert {
+        match tpm::load_persisted_dashboard_cert(config_dir) {
+            Some(mut persisted) => {
+                // Splice: keep the ephemeral CA/client material (for /handshake
+                // mTLS), but use the stable server cert+key for the dashboard.
+                persisted.ca_cert_pem = certs.ca_cert_pem.clone();
+                persisted.client_cert_pem = certs.client_cert_pem.clone();
+                persisted.client_key_pem = certs.client_key_pem.clone();
+                persisted
+            }
+            None => {
+                // First run or files missing — save and use the freshly-generated cert.
+                tpm::persist_dashboard_cert(config_dir, &certs);
+                certs.clone()
+            }
+        }
+    } else {
+        certs.clone()
+    };
+    #[cfg(not(feature = "dashboard"))]
+    let _ = args.persist_dashboard_cert; // suppress unused-variable warning when dashboard is off
 
     // Validate proxy_timeout: a value of 0 means every upstream request times
     // out immediately, making the proxy entirely non-functional. Enforce a

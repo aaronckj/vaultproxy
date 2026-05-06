@@ -24,6 +24,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-beta.7] — iteration 113: persist-dashboard-cert, migration guide, v1.0.0 readiness
+
+### Features (iter-113) — persist dashboard TLS cert across restarts
+
+- **`--persist-dashboard-cert` / `PERSIST_DASHBOARD_CERT` flag (iter-113)** — `src/main.rs`, `src/tpm.rs`. HIGH (v1.0.0 blocker).
+  The ephemeral dashboard certificate (regenerated on every restart) caused a browser
+  "certificate has changed" warning after every container restart, making the dashboard
+  frustrating to use in production. Added `--persist-dashboard-cert` flag (env:
+  `PERSIST_DASHBOARD_CERT=1`) that:
+  - **First run:** generates the server cert normally, writes it to
+    `{config_dir}/dashboard.crt` and `{config_dir}/dashboard.key` (mode 0600,
+    atomic tempfile+rename via `safe_write_config`).
+  - **Subsequent runs:** reads the saved cert back from disk — browser sees the same
+    identity, warning disappears.
+  The mTLS CA and client certs (used for the `/handshake` endpoint) remain ephemeral
+  (forward secrecy). Only the dashboard server cert is persisted. The flag is wired
+  into both `start_server` and `start_dashboard_only`. Deleting `dashboard.crt` +
+  `dashboard.key` forces regeneration on next startup. Not bound to the TPM-sealed
+  keystore — cert material is stored in plaintext PEM alongside other config files.
+  `load_persisted_dashboard_cert` and `persist_dashboard_cert` in `src/tpm.rs` are
+  gated `#[cfg(feature = "dashboard")]` to eliminate dead-code warnings in headless
+  builds.
+
+### Documentation (iter-113) — operator migration guide
+
+- **Upgrading from v0.2.x to v1.0.0 section added to README** — `README.md`. MEDIUM.
+  After 113 iterations of breaking changes, no consolidated upgrade path existed.
+  Added "Upgrading from v0.2.x to v1.0.0" section documenting: (a) the four
+  bare-array → envelope breaking changes (iter-109 through iter-112) with a
+  migration diff pattern, (b) the `"ok": true/false` sentinel requirement, and
+  (c) non-breaking response changes. Also added `--persist-dashboard-cert` to the
+  CLI reference table.
+
+### Quality gates (iter-113)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo build` (headless) — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **292 passed**; 0 failed
+- `cargo clippy --features browser,dashboard --all-targets -- -D warnings` — 0 errors, 0 warnings
+
+---
+
 ## [1.0.0-beta.6] — iteration 112: final format pass, v1.0.0 readiness assessment
 
 ### Bugs (iter-112) — remaining bare-array JSON responses

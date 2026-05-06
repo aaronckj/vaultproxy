@@ -220,6 +220,92 @@ fn unseal_from_tpm_inner(sealed_path: &str, tmp_dir: &str) -> anyhow::Result<Vec
     Ok(output.stdout)
 }
 
+// -------------------------------------------------------------------------- //
+// Persisted dashboard certificate                                            //
+// -------------------------------------------------------------------------- //
+
+/// Try to load a previously-persisted dashboard cert from `{config_dir}/dashboard.crt`
+/// and `{config_dir}/dashboard.key`. Only compiled when the `dashboard` feature is
+/// enabled (the functions are called exclusively from `#[cfg(feature = "dashboard")]`
+/// blocks in `main.rs`).  Returns `None` if either file is missing or
+/// if either PEM fails to round-trip through rcgen's parser (cert is corrupt/truncated).
+/// The caller should fall through to `generate_mtls_certs()` and then call
+/// `persist_dashboard_cert()` to save the freshly-generated material.
+#[cfg(feature = "dashboard")]
+pub fn load_persisted_dashboard_cert(config_dir: &str) -> Option<CertMaterial> {
+    let crt_path = format!("{}/dashboard.crt", config_dir);
+    let key_path = format!("{}/dashboard.key", config_dir);
+
+    let server_cert_pem = std::fs::read_to_string(&crt_path).ok()?;
+    let server_key_pem = std::fs::read_to_string(&key_path).ok()?;
+
+    // Minimal sanity check — ensure the PEM headers are present so we detect
+    // truncated/corrupt files before handing them to rustls.
+    if !server_cert_pem.contains("-----BEGIN CERTIFICATE-----")
+        || !server_key_pem.contains("-----BEGIN")
+    {
+        tracing::warn!(
+            "persist_dashboard_cert: {} or {} appears corrupt — will regenerate",
+            crt_path,
+            key_path
+        );
+        return None;
+    }
+
+    tracing::info!(
+        "persist_dashboard_cert: loaded existing dashboard cert from {}",
+        crt_path
+    );
+
+    // We only need server_cert_pem and server_key_pem for the dashboard TLS
+    // listener.  The other fields are not persisted (client cert / CA are
+    // ephemeral and used only for the mTLS handshake endpoint, not the dashboard).
+    // We generate fresh ephemeral material for the mTLS components and splice in
+    // the saved server cert+key so the dashboard gets a stable identity.
+    Some(CertMaterial {
+        ca_cert_pem: String::new(), // not persisted; regenerated ephemerely by caller
+        server_cert_pem,
+        server_key_pem,
+        client_cert_pem: String::new(), // not persisted
+        client_key_pem: String::new(),  // not persisted
+    })
+}
+
+/// Write the server cert + key PEM from `material` to
+/// `{config_dir}/dashboard.crt` and `{config_dir}/dashboard.key` atomically
+/// (mode 0600).  Errors are logged as warnings but do not abort startup —
+/// the ephemeral cert is still used for this session.
+#[cfg(feature = "dashboard")]
+pub fn persist_dashboard_cert(config_dir: &str, material: &CertMaterial) {
+    let crt_path = format!("{}/dashboard.crt", config_dir);
+    let key_path = format!("{}/dashboard.key", config_dir);
+
+    if let Err(e) =
+        crate::secure::safe_write_config(&crt_path, material.server_cert_pem.as_bytes())
+    {
+        tracing::warn!(
+            "persist_dashboard_cert: failed to write {}: {} — dashboard cert will remain ephemeral",
+            crt_path,
+            e
+        );
+        return;
+    }
+    if let Err(e) =
+        crate::secure::safe_write_config(&key_path, material.server_key_pem.as_bytes())
+    {
+        tracing::warn!(
+            "persist_dashboard_cert: failed to write {}: {} — dashboard cert will remain ephemeral",
+            key_path,
+            e
+        );
+        return;
+    }
+    tracing::info!(
+        "persist_dashboard_cert: saved dashboard cert to {} (stable across restarts)",
+        crt_path
+    );
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SealedBundle {
     ctx: Vec<u8>,
