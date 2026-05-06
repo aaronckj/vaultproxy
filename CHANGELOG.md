@@ -5,7 +5,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] — iteration 117: post-v1.0.0 stability pass, v1.1.0 planning
+## [1.0.1] — iteration 118: CI OCI version arg, items.html unwrap verification
+
+### Bugs (iter-118)
+
+- **CI workflow missing `IMAGE_VERSION` build arg (iter-118)** — `.github/workflows/docker-publish.yml:124`. MEDIUM.
+  Iter-117 added `ARG IMAGE_VERSION="1.0.0"` and OCI labels to the Dockerfile, but the CI build step
+  only passed `BUILDKIT_INLINE_CACHE=1` under `build-args`. The `org.opencontainers.image.version` label
+  was therefore always `"1.0.0"` regardless of the git tag being built. Fixed: added
+  `IMAGE_VERSION=${{ github.ref_name }}` to the `build-args` block so every tagged release
+  (e.g. `v1.0.1`) stamps the correct version into the image label.
+
+### Verified (iter-118) — no action required
+
+- **`items.html` correctly unwraps `itemsResp.items`** — `dashboard/items.html:103-105`. Confirmed.
+  Line 105 uses `Array.isArray(itemsResp) ? itemsResp : (itemsResp.items || [])` — graceful fallback
+  for both the new envelope format and any bare-array rollback scenario. No fix needed.
+
+- **`browser_status` — two separate handlers, not a duplicate fix** — `src/dashboard/api.rs:428,431`
+  vs `src/main.rs:2869`. Confirmed distinct. The `main.rs` handler serves the internal bearer-token
+  route `/browser/status` (for TypeScript callers); `dashboard/api.rs` serves `/api/browser/status`
+  (for dashboard JS). Iter-117 correctly fixed both independently.
+
+- **`GET /api/credentials` all three paths have `"ok": true`** — `src/dashboard/api.rs:1392,1403,1419`.
+  Confirmed: not-configured, unlocked, and locked branches all return `"ok": true`.
+
+- **`GET /api/setup-status` line 1369 discrepancy** — CHANGELOG cited line 1369 but the handler is
+  `handle_setup_status` at line 1373; line 1369 is the `handle_reset` success path. The setup-status
+  handler at line 1378 correctly includes `"ok": true`. No code defect.
+
+- **`[1.0.1]` CHANGELOG at top, before `[1.0.0]`** — Confirmed correct placement.
+
+- **Dashboard JS parsers unaffected by new `"ok"` key** — All 11 iter-117 handlers add `"ok"` to
+  JSON objects. Dashboard JS accesses named keys (`data.tools`, `data.state`, `data.items`, etc.) —
+  no code uses `Object.keys(data)[0]` ordering or array-style indexing on object responses.
+  `permissions.html:102` uses `Object.keys(groups)` on a locally-built `groups` object, not on
+  the API response. Safe.
+
+- **Connecterr TS client calls `/vault/items`, not `/api/items`** — `Connecterr/src/sidecar-client.ts:235`.
+  Confirmed: `listVaultItems()` calls `GET /vault/items` (proxy endpoint). The dashboard-only
+  `GET /api/items` endpoint is consumed only by `items.html`. No Connecterr update needed.
+
+- **`SyncStatus` + `configured_vault_folder` in Connecterr** — No `SyncStatus` type or
+  `/sync/status` call found in `sidecar-client.ts`. TypeScript ignores extra fields on `as` casts
+  regardless; no breakage possible.
+
+### Quality gates (iter-118)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets -- -D warnings` — 0 warnings
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets` — **258 passed**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **301 passed** (+ 2 integration) = **303 total**; 0 failed
+
+---
 
 ### Bugs (iter-117) — dashboard `"ok"` sentinel gaps and diagnostic completeness
 
