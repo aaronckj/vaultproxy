@@ -3,6 +3,52 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.4] — iterations 49–51: playwright guard, credential_audit 404, fmt, audit clarity
+
+### Bugs fixed
+
+- **`browser_rotate` missing playwright guard (iter-50, HIGH)**: `POST
+  /browser/rotate` returned `{"status":"started"}` when `playwright/agent.py`
+  was absent, then silently failed in the background task.  Fixed: the handler
+  now checks `/app/playwright/agent.py`, `./playwright/agent.py`, and the new
+  `PLAYWRIGHT_AGENT_PATH` env var before spawning; returns a clear 501 with an
+  actionable message when none is found (iter-51 also adds `PLAYWRIGHT_AGENT_PATH`
+  support to the check).
+
+- **`credential_audit` endpoints returned 200 for unknown `run_id` (iter-50,
+  MEDIUM)**: `GET /audit/credaudit/review_pending/{run_id}` returned `200 []`
+  instead of 404 when the run_id was unknown, making it indistinguishable from a
+  run with no pending items.  `POST /audit/credaudit/apply` similarly returned
+  `200 {"applied":0,...}` for a non-existent run_id.  Fixed: `list_pending` and
+  `apply` now call `run_exists()` via `Orchestrator` and the handlers map the
+  "not found" error to `404 NOT_FOUND` with a descriptive JSON body.
+
+- **`cargo fmt` failure on `src/sync/cloud.rs` (iter-51)**: An inline comment
+  on a `#[allow(dead_code)]` attribute did not meet `rustfmt` style (comment
+  must be on the next line, not trailing the attribute).  Would have failed CI
+  `cargo fmt --check`.  Fixed by running `cargo fmt`.
+
+### Tests added
+
+- **`credential_audit::orchestrator` — run_exists and 404 paths (iter-51)**:
+  Four new unit tests using an in-memory SQLite database:
+  `run_exists_returns_false_for_unknown_run`,
+  `run_exists_returns_true_after_insert`,
+  `list_pending_unknown_run_id_returns_not_found_error`,
+  `list_pending_known_run_id_returns_ok_empty`,
+  `apply_unknown_run_id_returns_not_found_error`.
+
+### Documentation / clarity
+
+- **`audit.rs` — module distinction clarified (iter-51)**: Added a prominent
+  comment explaining that `src/audit.rs` (in-process HMAC-based health analyser)
+  is completely separate from `src/credential_audit/` (external engine sidecar
+  system).  Previously the two could be confused.
+
+- **`browser/mod.rs` and `credential_audit/mod.rs` — v1.0 TODO specifics
+  (iter-51)**: The `#![allow(dead_code)]` TODO notes now list concrete
+  completion criteria instead of the vague "v1.0 checklist" phrasing.
+
 ## [0.2.3] — iterations 46–48: O(n²) fix, vision-model guard, toolchain components
 
 ### Bugs fixed

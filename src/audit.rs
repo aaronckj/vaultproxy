@@ -1,6 +1,17 @@
 // iter-50: scaffold module — not yet fully wired to production call sites.
+//
+// NOTE: This module (`src/audit.rs`) is the *local* credential health analyser
+// that runs entirely inside the proxy process using HMAC fingerprints.  It is
+// DISTINCT from `src/credential_audit/` which is the multi-pass audit system
+// that talks to the external credential-audit engine sidecar.  Do not merge or
+// remove either without updating the other.
+//
+// Remove `#![allow(dead_code)]` and this comment block once `run_audit` is
+// called from the audit-log dashboard or a scheduled endpoint (v1.0 target).
 #![allow(dead_code)]
-//! Security audit — analyzes credential health without exposing passwords.
+//! In-process credential health audit — analyzes weak/reused passwords without
+//! exposing plaintext to any external system.  Passwords are HMAC-fingerprinted
+//! with an ephemeral key and zeroized immediately after use.
 
 use crate::vault::VaultManager;
 use hmac::{Hmac, Mac};

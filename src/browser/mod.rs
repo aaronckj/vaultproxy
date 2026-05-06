@@ -1,6 +1,12 @@
 // iter-50: scaffold module — PlaywrightProcess and Pass-2 vision workflow are
-// not fully wired to production call sites yet.  Remove this once all browser/*
-// items on the v1.0 checklist are complete.
+// not fully wired to all production call sites yet.
+//
+// TODO(v1.0): Remove `#![allow(dead_code)]` once the following are complete:
+//   - `PlaywrightProcess` used directly from browser_rotate background task
+//   - `VisionModel` wired into the workflow for all screenshot-analysis steps
+//   - `WorkflowState` exposed via the dashboard status endpoint
+//   There is no separate milestone ticket yet; track under the v1.0 label in
+//   the project issue tracker.
 #![allow(dead_code)]
 
 pub mod playwright;

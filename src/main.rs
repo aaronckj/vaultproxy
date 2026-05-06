@@ -2130,21 +2130,38 @@ async fn browser_rotate(
     // check the handler returns {"status":"started"} and then the background
     // task immediately fails with a "failed to spawn playwright agent" error
     // buried in the logs — the caller has no indication the request was
-    // rejected.  Check both candidate paths here so the HTTP response itself
+    // rejected.  Check all candidate paths here so the HTTP response itself
     // is the first signal of the misconfiguration.
+    //
+    // iter-51: Also check PLAYWRIGHT_AGENT_PATH env var so a custom install
+    // location set at runtime is honoured in this pre-flight check (the Pass-2
+    // engine already reads CRED_AUDIT_AGENT_PATH; browser_rotate uses the same
+    // binary).  Without this, setting PLAYWRIGHT_AGENT_PATH to a non-default
+    // path would still trigger the "not found" error even when the file exists.
     //
     // This is a pre-flight check only — the actual spawn happens inside the
     // tokio::spawn below and is still guarded by its own error handler.  A
     // race between this check and the spawn (e.g. file deleted between the
     // two points) will still produce the log-level error, but the common
     // "never configured" case now returns a clear 501.
-    let playwright_available = std::path::Path::new("/app/playwright/agent.py").exists()
-        || std::path::Path::new("./playwright/agent.py").exists();
+    let playwright_available = {
+        let default_paths = ["/app/playwright/agent.py", "./playwright/agent.py"];
+        let env_path = std::env::var("PLAYWRIGHT_AGENT_PATH").ok();
+        let env_exists = env_path
+            .as_deref()
+            .map(|p| std::path::Path::new(p).exists())
+            .unwrap_or(false);
+        env_exists
+            || default_paths
+                .iter()
+                .any(|p| std::path::Path::new(p).exists())
+    };
     if !playwright_available {
         return AxumJson(serde_json::json!({
             "error": "browser rotation is not available — playwright/agent.py was not found. \
-                      Mount the playwright/ directory into the container at /app/playwright/ \
-                      or place agent.py at ./playwright/agent.py relative to the working directory."
+                      Mount the playwright/ directory into the container at /app/playwright/, \
+                      place agent.py at ./playwright/agent.py, or set PLAYWRIGHT_AGENT_PATH \
+                      to a custom location."
         }));
     }
 

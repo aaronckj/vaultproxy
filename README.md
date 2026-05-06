@@ -212,6 +212,8 @@ curl http://127.0.0.1:3201/vault/services
 
 > **Internal token:** vault-proxy generates a 64-character hex bearer token at startup and writes it to `$CONFIG_DIR/internal-token` (mode 0600). Internal endpoints (`/vault/connecterr-secrets`, `/vault/connecterr-secrets/upsert`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <token>`. The Connecterr TypeScript side reads this file automatically. If you are integrating a custom client, read `CONFIG_DIR/internal-token` and include it as `Authorization: Bearer <value>` on calls to those endpoints.
 
+> **`/browser/rotate` — requires `playwright/agent.py`:** `POST /browser/rotate` drives a Playwright browser session to log into the target site and change the password. It requires `playwright/agent.py` to be present at `/app/playwright/agent.py`, `./playwright/agent.py` (relative to the working directory), or a custom path set via `PLAYWRIGHT_AGENT_PATH`. If the file is not found, the endpoint returns `501` with an actionable error message instead of silently succeeding and failing in the background. `LITELLM_URL` and `VISION_MODEL` must also be set — missing either returns a `400` before any browser is spawned.
+
 > **`/rotate` endpoint — planned for a future release:** `POST /rotate` is defined and gated behind the internal token, but all rotation strategies (`sonarr`, `radarr`) currently return `501 Not Implemented`. The stub is present for API compatibility with planned v0.2 tooling. Do not build production workflows on this endpoint until a full strategy implementation is shipped.
 
 > **`write_env` feature:** `POST /vault/write-env` (which decrypts a vault item and writes its credentials as env-var lines to a file) is disabled by default (`501 Not Implemented`). Enable it by setting `ENV_WRITE_ROOT` to a directory that the proxy is allowed to write into (e.g. `ENV_WRITE_ROOT=/envs`). The endpoint enforces that `target_path` begins with this prefix.
@@ -281,9 +283,9 @@ vault-proxy includes a built-in credential health scanner that detects weak, reu
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `POST /audit/credaudit/scan/start` | public | Start a new audit run. Returns `{"run_id": "..."}`. |
-| `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `{"status": "...", "items": [...]}`. |
-| `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations from the review. Body: `{"run_id": "...", "approvals": [...]}`. |
+| `POST /audit/credaudit/scan/start` | public | Start a new audit run. Returns `{"run_id": "..."}`. Returns `409` if a scan is already running; `503` if the engine sidecar is unreachable. |
+| `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `200 [...]` on success. Returns `404` with `{"error": "run_id '...' not found — no scan has been started with this ID"}` for an unknown `run_id`. |
+| `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations. Body: `{"run_id": "...", "dry_run": true, "item_ids": [...], "confirm_bulk": false}`. `dry_run` defaults to `true` — you must explicitly pass `"dry_run": false` to write changes. Returns `404` for an unknown `run_id`. Requires `confirm_bulk: true` when applying more than 50 items without explicit `item_ids`. |
 
 Results are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
 

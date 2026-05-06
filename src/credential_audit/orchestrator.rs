@@ -683,3 +683,167 @@ fn map_verdict_to_status(v: &Pass2Verdict) -> (&'static str, bool) {
         | Pass2Verdict::NoLoginForm => ("untestable", false),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credential_audit::{
+        db::run_migrations, engine_client::EngineClient, marker::Marker, pass2::Pass2Engine,
+        vault_adapter::VaultAdapter,
+    };
+    use crate::vault::VaultManager;
+    use rusqlite::Connection;
+    use std::sync::Arc;
+
+    /// Minimal no-op VaultAdapter for orchestrator unit tests that do not
+    /// reach the vault.
+    struct StubVault;
+
+    #[async_trait::async_trait]
+    impl VaultAdapter for StubVault {
+        async fn list_items_metadata(
+            &self,
+        ) -> Result<Vec<crate::credential_audit::engine_client::EngineInputItem>> {
+            Ok(vec![])
+        }
+        async fn item_secrets(
+            &self,
+            _item_id: &str,
+        ) -> Result<crate::credential_audit::vault_adapter::VaultItemSecrets> {
+            Ok(crate::credential_audit::vault_adapter::VaultItemSecrets {
+                password: None,
+                totp_seed: None,
+                api_key_value: None,
+            })
+        }
+        async fn item_password_hash(&self, _item_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn item_username(&self, _item_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn item_url_host(&self, _item_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        async fn item_url(&self, _item_id: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    /// Build an in-memory Orchestrator with a migrated SQLite DB.
+    fn make_orch() -> Orchestrator<StubVault> {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        run_migrations(&conn).expect("migrations");
+        let engine = EngineClient::new("http://127.0.0.1:0"); // never called in these tests
+        let vault_arc = Arc::new(VaultManager::new_stub());
+        let pass2 = Arc::new(Pass2Engine::new(
+            Arc::new(engine.clone()),
+            "/nonexistent/agent.py".to_string(),
+            None,
+        ));
+        Orchestrator {
+            vault: Arc::new(StubVault),
+            engine,
+            marker: Marker::new(vault_arc),
+            conn: Arc::new(std::sync::Mutex::new(conn)),
+            pass2,
+        }
+    }
+
+    // ---- run_exists --------------------------------------------------------
+
+    /// `run_exists` returns false for an unknown run_id (the happy-path
+    /// precondition for the 404 guards in `list_pending` and `apply`).
+    #[test]
+    fn run_exists_returns_false_for_unknown_run() {
+        let orch = make_orch();
+        let exists = orch
+            .run_exists("00000000-0000-0000-0000-000000000000")
+            .expect("run_exists must not error on empty DB");
+        assert!(!exists, "unknown run_id must not be reported as existing");
+    }
+
+    /// `run_exists` returns true after a row is inserted.
+    #[test]
+    fn run_exists_returns_true_after_insert() {
+        let orch = make_orch();
+        {
+            let conn = orch.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO audit_runs(run_id, status, started_at) VALUES ('r1', 'completed', '2026-05-05T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        let exists = orch.run_exists("r1").expect("run_exists must not error");
+        assert!(exists, "inserted run must be reported as existing");
+    }
+
+    // ---- list_pending (review_pending) → 404 path --------------------------
+
+    /// `list_pending` with an unknown run_id returns `Err` containing
+    /// "not found" so the handler can map it to 404.
+    #[test]
+    fn list_pending_unknown_run_id_returns_not_found_error() {
+        let orch = make_orch();
+        let result = orch.list_pending("nonexistent-run-id");
+        assert!(
+            result.is_err(),
+            "list_pending must return Err for unknown run_id"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "error message must contain 'not found' for the handler's 404 match; got: {msg}"
+        );
+    }
+
+    /// `list_pending` for a known run_id returns Ok (empty list here since no
+    /// items are marked for deletion yet — regression check for the happy path).
+    #[test]
+    fn list_pending_known_run_id_returns_ok_empty() {
+        let orch = make_orch();
+        {
+            let conn = orch.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO audit_runs(run_id, status, started_at) VALUES ('run-ok', 'completed', '2026-05-05T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        let result = orch.list_pending("run-ok");
+        assert!(
+            result.is_ok(),
+            "list_pending must return Ok for a known run_id; got: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap().len(),
+            0,
+            "no items marked_for_delete yet → empty list"
+        );
+    }
+
+    // ---- apply → 404 path --------------------------------------------------
+
+    /// `apply` with an unknown run_id propagates the "not found" error from
+    /// `list_pending` so the handler can map it to 404.
+    #[tokio::test]
+    async fn apply_unknown_run_id_returns_not_found_error() {
+        let orch = make_orch();
+        let result = orch
+            .apply(
+                "nonexistent-run-id",
+                None,  // item_ids
+                true,  // dry_run — no vault writes attempted
+                false, // confirm_bulk
+            )
+            .await;
+        assert!(result.is_err(), "apply must return Err for unknown run_id");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not found"),
+            "error message must contain 'not found' so the handler maps to 404; got: {msg}"
+        );
+    }
+}

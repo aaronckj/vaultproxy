@@ -36,7 +36,8 @@ pub struct CloudClient {
     /// Organization keys: org_id → (enc_key, mac_key).
     org_keys: HashMap<String, (SecureBuffer, SecureBuffer)>,
     /// KDF iterations used for key derivation (needed for password change).
-    #[allow(dead_code)] // read by change_master_password (v1.0: Bitwarden cloud password change)
+    #[allow(dead_code)]
+    // read by change_master_password (v1.0: Bitwarden cloud password change)
     kdf_iterations: u32,
     http: Client,
     /// API key credentials for re-authentication when token expires.
