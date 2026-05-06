@@ -803,20 +803,29 @@ async fn session_login(
         ));
     }
 
-    // Determine the base URL for the service that owns this login endpoint.
+    // Determine the base URL and per-service timeout for this login endpoint.
     // The `login_path` is relative to the service's base_url.  We find the
     // matching registry entry by scanning for the vault item — there will be
     // exactly one match for each session service.
-    // iter-28: registry is RwLock — acquire read lock briefly, collect result,
-    // release before the async HTTP call below.
-    let base_url = {
+    //
+    // iter-28: registry is RwLock — acquire read lock briefly, collect both
+    // base_url and timeout_secs in a single scan, then release before the
+    // async HTTP call below.
+    //
+    // iter-43: merge the two separate registry scans from iter-42 into one.
+    // The iter-42 fix extracted timeout_secs in a second `state.registry.read()`
+    // block that ran after the first lock was already dropped, acquiring and
+    // releasing the lock twice for the same entry.  A single pass extracts both
+    // fields atomically, halving lock acquisitions and eliminating the window
+    // where a SIGHUP reload could return different entries for the two scans.
+    let (base_url, timeout_secs): (String, Option<u64>) = {
         let reg = state.registry.read().await;
         let names = reg.list();
         names.iter().find_map(|name| {
             let entry = reg.get(name)?;
             if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
                 if vi == vault_item {
-                    return Some(entry.base_url.clone());
+                    return Some((entry.base_url.clone(), entry.timeout_secs));
                 }
             }
             None
@@ -829,32 +838,6 @@ async fn session_login(
         base_url.trim_end_matches('/'),
         login_path
     );
-
-    // Issue (iter-42): Apply the per-service timeout_secs to the login request.
-    //
-    // Previously, session_login() used `state.http.post(...)` directly, which
-    // is the global client with the global --proxy-timeout baked in. A service
-    // with `timeout_secs = 5` would wait up to 120 s (the global default) on
-    // the login round-trip even though the operator intended a 5-second budget.
-    //
-    // We look up the ServiceEntry while we already have the registry read lock
-    // (the base_url scan above) and carry the timeout_secs out alongside it.
-    // Applying it via RequestBuilder::timeout() mirrors how build_request()
-    // applies it for the real API call.
-    let timeout_secs: Option<u64> = {
-        let reg = state.registry.read().await;
-        let names = reg.list();
-        names.iter().find_map(|name| {
-            let entry = reg.get(name)?;
-            if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
-                if vi == vault_item {
-                    return Some(entry.timeout_secs);
-                }
-            }
-            None
-        })
-        .flatten()
-    };
 
     // Build the login body using the configured login_include_username flag.
     let login_body = build_session_login_body(state, vault_item, login_include_username)?;

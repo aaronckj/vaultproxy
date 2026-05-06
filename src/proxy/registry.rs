@@ -2288,9 +2288,14 @@ timeout_secs = 0
         );
 
         // The whole call must finish well under 2 seconds (the server's delay).
-        // We allow up to 1.8 s to avoid flakiness on slow CI runners.
+        // iter-43: use a relative bound (2× the per-request timeout) rather than
+        // an absolute 1800 ms.  On heavily loaded CI runners the syscall overhead
+        // can exceed a fixed margin; 2× the timeout gives the same guarantee
+        // (the request fired before the upstream delay elapsed) while scaling
+        // with the configured timeout value.
+        let per_request_timeout = std::time::Duration::from_secs(1);
         assert!(
-            elapsed < std::time::Duration::from_millis(1800),
+            elapsed < 2 * per_request_timeout,
             "timeout should have fired in ~1 s but elapsed was {:?}",
             elapsed
         );

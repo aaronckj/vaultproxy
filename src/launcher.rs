@@ -359,7 +359,15 @@ pub async fn launch(
         }
         ip => ip,
     };
-    let vault_proxy_url = format!("http://{}:{}", connect_ip, listen_addr.port());
+    // Issue (iter-43): IPv6 addresses require square brackets in URLs.
+    // `format!("http://{}:{}", ipv6_addr, port)` produces `http://::1:3201`
+    // which is an invalid URL — the colon before the port is ambiguous with
+    // the colons inside the IPv6 address.  RFC 3986 §3.2.2 requires brackets:
+    // `http://[::1]:3201`.  IPv4 addresses need no brackets.
+    let vault_proxy_url = match connect_ip {
+        std::net::IpAddr::V6(v6) => format!("http://[{}]:{}", v6, listen_addr.port()),
+        std::net::IpAddr::V4(_)  => format!("http://{}:{}", connect_ip, listen_addr.port()),
+    };
 
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
     // (Command::status() does not redirect them). This is intentional: MCP
@@ -664,13 +672,23 @@ command = "cmd-b"
         }
     }
 
+    // Issue (iter-43): Replicates the URL-building logic inline for unit tests.
+    // IPv6 addresses require square brackets per RFC 3986 §3.2.2;
+    // `format!("http://{}:{}", ::1, 3201)` produces the invalid `http://::1:3201`.
+    fn build_vault_proxy_url(ip: std::net::IpAddr, port: u16) -> String {
+        match ip {
+            std::net::IpAddr::V6(v6) => format!("http://[{}]:{}", v6, port),
+            std::net::IpAddr::V4(_)  => format!("http://{}:{}", ip, port),
+        }
+    }
+
     #[test]
     fn test_vault_proxy_url_ipv4_wildcard_normalised() {
         let addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
         let ip = normalise_listen_ip(addr);
         assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             "0.0.0.0 must be normalised to 127.0.0.1 for VAULT_PROXY_URL");
-        assert_eq!(format!("http://{}:{}", ip, addr.port()), "http://127.0.0.1:3201");
+        assert_eq!(build_vault_proxy_url(ip, addr.port()), "http://127.0.0.1:3201");
     }
 
     #[test]
@@ -679,7 +697,9 @@ command = "cmd-b"
         let ip = normalise_listen_ip(addr);
         assert_eq!(ip, std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
             ":: must be normalised to ::1 for VAULT_PROXY_URL");
-        assert_eq!(format!("http://{}:{}", ip, addr.port()), "http://::1:3201");
+        // iter-43: IPv6 addresses MUST be bracketed in URLs — http://[::1]:3201
+        // (NOT the invalid http://::1:3201 that the unbracketed format produces).
+        assert_eq!(build_vault_proxy_url(ip, addr.port()), "http://[::1]:3201");
     }
 
     #[test]
@@ -718,7 +738,7 @@ command = "cmd-b"
 
         let listen_addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
         let connect_ip = normalise_listen_ip(listen_addr);
-        let vault_proxy_url = format!("http://{}:{}", connect_ip, listen_addr.port());
+        let vault_proxy_url = build_vault_proxy_url(connect_ip, listen_addr.port());
         assert_eq!(vault_proxy_url, "http://127.0.0.1:3201",
             "VAULT_PROXY_URL should be normalised from 0.0.0.0 to 127.0.0.1");
 

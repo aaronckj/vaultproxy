@@ -162,3 +162,4 @@ auth = "header"
 header_name = "X-Plex-Token"
 vault_item = "vault-proxy - Plex"
 # timeout_secs = 300   # optional: 5-minute budget for slow library scans
+                       # (Plex /library/sections/:id/refresh can take 3–5 min)

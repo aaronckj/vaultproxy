@@ -44,7 +44,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run tests
-        run: cargo test
+        # iter-43: --all-targets ensures tests in [[bench]], [[example]], and
+        # integration test binaries are all exercised.  Without it, cargo test
+        # only compiles and runs lib + [[bin]] tests, silently skipping any
+        # test functions inside bench or example targets.
+        run: cargo test --all-targets
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
