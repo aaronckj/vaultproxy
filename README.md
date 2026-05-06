@@ -678,6 +678,22 @@ Every success response now includes `"ok": true` and every error response includ
 - `GET /vault/audit/run` — response is `{"ok": true, "n_weak": N, "n_reused": N, ...}` (unchanged since v0.2.x, but documented here for completeness).
 - All mutation endpoints (`POST /vault/items`, `POST /vault/items/update`, etc.) now include `"ok": true` on success.
 
+### New in v1.0.0-beta.7: `--persist-dashboard-cert`
+
+Dashboard users who were tired of the "certificate has changed" browser warning on every restart can now opt in to cert persistence:
+
+```bash
+# Docker Compose — add to your service environment
+PERSIST_DASHBOARD_CERT=1
+
+# Bare metal
+vaultproxy --persist-dashboard-cert
+```
+
+On the **first run** the cert is generated normally and written to `{config_dir}/dashboard.crt` and `{config_dir}/dashboard.key` (mode 0600, atomic write). On **subsequent runs** those files are loaded instead of generating a new cert — the browser warning disappears.
+
+To **force regeneration** (cert rotation): delete both files, then restart. vault-proxy will generate a fresh cert and persist it in their place.
+
 ## Why not just use env vars?
 
 Env vars are readable by any process running as the same OS user, show up in `ps auxe`, persist in shell history, and end up copy-pasted across multiple `.env` files. `vaultproxy` keeps credentials in a single encrypted keystore backed by Vaultwarden — one source of truth, never in plaintext outside the proxy process.

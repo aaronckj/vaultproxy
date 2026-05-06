@@ -429,3 +429,114 @@ pub fn generate_mtls_certs() -> anyhow::Result<CertMaterial> {
         client_key_pem,
     })
 }
+
+// -------------------------------------------------------------------------- //
+// Tests                                                                       //
+// -------------------------------------------------------------------------- //
+
+#[cfg(all(test, feature = "dashboard"))]
+mod tests {
+    use super::*;
+
+    fn make_material() -> CertMaterial {
+        generate_mtls_certs().expect("cert generation should not fail in tests")
+    }
+
+    /// `persist_dashboard_cert` writes cert+key; `load_persisted_dashboard_cert`
+    /// reads them back and the PEM content round-trips correctly.
+    #[test]
+    fn persist_and_load_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().to_str().unwrap();
+        let material = make_material();
+
+        persist_dashboard_cert(config_dir, &material);
+
+        let loaded = load_persisted_dashboard_cert(config_dir)
+            .expect("should load back successfully after persist");
+
+        assert_eq!(loaded.server_cert_pem, material.server_cert_pem);
+        assert_eq!(loaded.server_key_pem, material.server_key_pem);
+    }
+
+    /// `load_persisted_dashboard_cert` returns `None` when the files are absent.
+    #[test]
+    fn load_returns_none_when_files_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().to_str().unwrap();
+
+        let result = load_persisted_dashboard_cert(config_dir);
+        assert!(result.is_none(), "should return None when no files exist");
+    }
+
+    /// `load_persisted_dashboard_cert` returns `None` (graceful recovery) when
+    /// the cert file exists but is truncated / corrupt.
+    #[test]
+    fn load_returns_none_on_corrupt_cert() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().to_str().unwrap();
+        let material = make_material();
+
+        // Write valid key, corrupt cert (strip the PEM header).
+        let crt_path = format!("{}/dashboard.crt", config_dir);
+        let key_path = format!("{}/dashboard.key", config_dir);
+        crate::secure::safe_write_config(&crt_path, b"not-a-valid-pem-blob")
+            .expect("write should succeed");
+        crate::secure::safe_write_config(&key_path, material.server_key_pem.as_bytes())
+            .expect("write should succeed");
+
+        let result = load_persisted_dashboard_cert(config_dir);
+        assert!(
+            result.is_none(),
+            "should return None when cert PEM header is absent"
+        );
+    }
+
+    /// `load_persisted_dashboard_cert` returns `None` when only one of the two
+    /// files is present (e.g. key was deleted but cert remains).
+    #[test]
+    fn load_returns_none_when_key_file_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().to_str().unwrap();
+        let material = make_material();
+
+        // Write cert only — no key file.
+        let crt_path = format!("{}/dashboard.crt", config_dir);
+        crate::secure::safe_write_config(&crt_path, material.server_cert_pem.as_bytes())
+            .expect("write should succeed");
+
+        let result = load_persisted_dashboard_cert(config_dir);
+        assert!(
+            result.is_none(),
+            "should return None when key file is absent"
+        );
+    }
+
+    /// `persist_dashboard_cert` writes both files with restrictive permissions
+    /// (0600 on Unix) via `safe_write_config`.
+    #[cfg(unix)]
+    #[test]
+    fn persisted_files_have_0600_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().to_str().unwrap();
+        let material = make_material();
+
+        persist_dashboard_cert(config_dir, &material);
+
+        let crt_mode = std::fs::metadata(format!("{}/dashboard.crt", config_dir))
+            .expect("crt should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        let key_mode = std::fs::metadata(format!("{}/dashboard.key", config_dir))
+            .expect("key should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(crt_mode, 0o600, "dashboard.crt should be mode 0600");
+        assert_eq!(key_mode, 0o600, "dashboard.key should be mode 0600");
+    }
+}
