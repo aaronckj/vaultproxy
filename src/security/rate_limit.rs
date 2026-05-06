@@ -137,6 +137,12 @@ const RATE_LIMITED_PATHS: &[&str] = &[
     "/rotate",
     "/browser/rotate",
     "/sync/init",
+    // iter-54: in-process credential health audit — decrypts every vault password
+    // to compute HMAC fingerprints.  A single run on a 500-item vault can take
+    // several seconds; concurrent runs multiply that cost and decrypt the same
+    // passwords simultaneously.  Limit to 2 req/60 s per IP so a slow or
+    // mis-configured caller cannot DDoS the proxy's decrypt loop.
+    "/vault/audit/run",
 ];
 
 /// Per-route tighter limits for destructive operations (iter-37/38).
@@ -155,6 +161,12 @@ fn per_route_limits() -> HashMap<&'static str, u64> {
     m.insert("/vault/items/delete", 10u64);
     m.insert("/vault/items/update", 10u64);
     m.insert("/vault/folders/delete", 10u64);
+    // iter-54: audit/run decrypts every vault password for HMAC fingerprinting.
+    // Each run is expensive (AES-256-CBC + HMAC-SHA256 per item); 60 concurrent
+    // runs at the default global budget would mean 60 × N password decrypts per
+    // minute.  Cap at 2 per IP per 60-second window — enough for one deliberate
+    // scan plus one retry, but not enough to sustain an accidental loop.
+    m.insert("/vault/audit/run", 2u64);
     m
 }
 
@@ -315,6 +327,26 @@ mod tests {
         assert!(
             !limiter.check("/vault/items/update", "127.0.0.1").await,
             "11th update request must be rejected by tight 10-req limit"
+        );
+    }
+
+    /// iter-54: `/vault/audit/run` must use the very tight 2 req/60 s limit.
+    /// Each audit run decrypts every vault password; 60 concurrent runs (the
+    /// default budget) would be an expensive denial-of-service vector.
+    #[tokio::test]
+    async fn audit_run_uses_very_tight_limit() {
+        let limiter = RateLimiter::with_per_route_overrides(60, 60, per_route_limits());
+        assert!(
+            limiter.check("/vault/audit/run", "127.0.0.1").await,
+            "first audit/run request must be allowed"
+        );
+        assert!(
+            limiter.check("/vault/audit/run", "127.0.0.1").await,
+            "second audit/run request must be allowed"
+        );
+        assert!(
+            !limiter.check("/vault/audit/run", "127.0.0.1").await,
+            "third audit/run request must be rejected by 2-req limit"
         );
     }
 }

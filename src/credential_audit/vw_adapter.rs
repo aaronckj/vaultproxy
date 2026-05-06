@@ -65,14 +65,32 @@ impl VaultAdapter for VwAdapter {
                 .collect(),
             None => {
                 if self.vault_folder.is_some() {
+                    // Issue (iter-54): The iter-53 permissive fallback ("scan ALL items
+                    // when the folder doesn't exist yet") is wrong for credential audit.
+                    // Scanning all items means the engine sees and can mark personal vault
+                    // items (banking credentials, SSH keys) that live outside the
+                    // vault-proxy–owned folder — exactly the scope bypass the folder guard
+                    // is designed to prevent.
+                    //
+                    // Correct behaviour: if `vault_folder` is configured but the folder
+                    // doesn't yet exist in Vaultwarden, return EMPTY — force the operator
+                    // to create the folder before the first scan succeeds.  An empty scan
+                    // result is obvious and actionable; silently scanning everything is not.
                     tracing::warn!(
                         "credaudit: vault_folder '{}' not found in vault — \
-                         scanning ALL items (fresh vault?). Once the folder exists, \
-                         only items inside it will be scanned.",
+                         returning NO items (create the folder in Vaultwarden first). \
+                         Refusing to fall back to scanning ALL items to prevent \
+                         personal credential leakage.",
                         self.vault_folder.as_deref().unwrap_or("")
                     );
+                    vec![]
+                } else {
+                    // vault_folder is None (not configured) — no folder scope at all.
+                    // Return all items so the operator without a folder config still gets
+                    // a useful scan.  This is a misconfiguration; the startup warning
+                    // about vault_folder being unset covers it.
+                    masked
                 }
-                masked
             }
         };
 

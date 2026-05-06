@@ -279,15 +279,44 @@ The file is written to disk every 10 entries or on process shutdown (whichever c
 
 ## Credential audit (password health scan)
 
-vault-proxy includes a built-in credential health scanner that detects weak, reused, and compromised passwords across vault items in your `vault_folder`. Three HTTP endpoints control it:
+vault-proxy includes a built-in credential health scanner that detects weak, reused, and compromised passwords across vault items in your `vault_folder`. Four HTTP endpoints control it:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `POST /audit/credaudit/scan/start` | public | Start a new audit run. Returns `{"run_id": "..."}`. Returns `409` if a scan is already running; `503` if the engine sidecar is unreachable. |
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `GET /vault/audit/run` | internal bearer | In-process password health scan. Decrypts every vault password transiently, computes HMAC fingerprints with an ephemeral key, and returns weak/reused groupings. No plaintext passwords appear in the response. Rate-limited to 2 req/60 s (expensive — decrypts all vault passwords). |
+| `POST /audit/credaudit/scan/start` | public | Start a new audit run against the engine sidecar. Returns `{"run_id": "..."}`. Returns `409` if a scan is already running; `503` if the engine sidecar is unreachable. |
 | `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `200 [...]` on success. Returns `404` with `{"error": "run_id '...' not found — no scan has been started with this ID"}` for an unknown `run_id`. |
 | `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations. Body: `{"run_id": "...", "dry_run": true, "item_ids": [...], "confirm_bulk": false}`. `dry_run` defaults to `true` — you must explicitly pass `"dry_run": false` to write changes. Returns `404` for an unknown `run_id`. Requires `confirm_bulk: true` when applying more than 50 items without explicit `item_ids`. |
 
-Results are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
+Results from the engine-sidecar endpoints are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
+
+### In-process health scan (`GET /vault/audit/run`)
+
+```bash
+curl -H "Authorization: Bearer $(cat /config/internal-token)" \
+     http://127.0.0.1:3201/vault/audit/run
+```
+
+Returns a JSON object:
+```json
+{
+  "total_items": 42,
+  "weak_passwords": [
+    {"name": "My Service", "username": "admin", "item_type": "login", "password_strength": "weak"}
+  ],
+  "reused_passwords": [
+    [
+      {"name": "Site A", "username": "user@example.com", "item_type": "login", "password_strength": "fair"},
+      {"name": "Site B", "username": "user@example.com", "item_type": "login", "password_strength": "fair"}
+    ]
+  ]
+}
+```
+
+- `weak_passwords`: items whose password is shorter than 8 characters.
+- `reused_passwords`: groups of two or more items that share the same password (detected via HMAC fingerprints — no plaintext stored or returned).
+- All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
+- Scoped to `vault_folder` — only items inside the configured folder are scanned.
 
 ### Complete credential audit workflow
 

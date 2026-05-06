@@ -3,6 +3,93 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.6] — iterations 53–54: VwAdapter scope bypass fix, audit/run endpoint, rate limit, localhost HTTPS warn
+
+### Security fixes (iter-53 — CRITICAL)
+
+- **`VwAdapter` vault_folder scope bypass (iter-53, CRITICAL)**: The
+  credential-audit scan adapter (`src/credential_audit/vw_adapter.rs`) was not
+  filtering items by `vault_folder`. `list_items_metadata()` called
+  `vault.list_items()` and returned ALL vault items — including personal banking
+  credentials, SSH keys, and any item outside the proxy-owned folder. The
+  subsequent `apply` step could then call `marker.mark()` on any of those item
+  IDs, moving personal credentials into `_review-delete`. Fixed: the adapter now
+  calls `find_folder_id_by_name_async` on every `list_items_metadata()` call and
+  filters the item list to only those in the resolved `folder_id`.
+
+### Security fixes (iter-54)
+
+- **`VwAdapter` permissive fallback changed to EMPTY (iter-54, HIGH)**: The
+  iter-53 fix used a permissive fallback: when `vault_folder` is configured but
+  the folder doesn't exist in Vaultwarden yet, the adapter returned ALL items so
+  "the very first scan still works". This defeats the security goal — scanning
+  personal credentials is exactly what the scope guard prevents. Fixed: when
+  `vault_folder` is configured but the folder is absent, `list_items_metadata()`
+  now returns an empty list and logs a prominent warning telling the operator to
+  create the folder first. Only when `vault_folder` is entirely unconfigured
+  (`None`) does the old all-items behaviour apply.
+
+- **`GET /vault/audit/run` missing rate limit (iter-54, HIGH)**: The endpoint
+  decrypts every vault password in sequence to compute HMAC fingerprints. It was
+  added to `RATE_LIMITED_PATHS` with a 2 req/60 s per-IP cap (via the
+  `per_route` override map). Without this, the global 60 req/60 s budget allowed
+  60 concurrent audit runs per minute, each decrypting all vault passwords —
+  a potential denial-of-service vector on large vaults.
+
+### Features (iter-53)
+
+- **`GET /vault/audit/run` endpoint (iter-53)**: The `run_audit()` function in
+  `src/audit.rs` is now reachable via HTTP. The endpoint is gated behind the
+  internal bearer token (`Authorization: Bearer <token>`), is read-only (no
+  vault mutations), and returns a JSON report with `total_items`,
+  `weak_passwords`, and `reused_passwords` groups. No plaintext passwords appear
+  in the response — all reuse detection uses HMAC fingerprints with an ephemeral
+  key that is zeroized after each run.
+
+- **`validate_public_url` HTTPS warning for non-localhost http:// (iter-53)**:
+  `VAULT_PROXY_PUBLIC_URL` with a non-loopback `http://` scheme now emits a
+  `tracing::warn!` explaining that production reverse-proxy URLs should use
+  `https://` to protect Bearer tokens and credentials in transit. Loopback
+  addresses (`localhost`, `127.0.0.1`, `[::1]`) are explicitly exempted — HTTP
+  over loopback is normal for local dev and Docker Compose setups where TLS
+  terminates at the outer edge.
+
+### Documentation (iter-53–54)
+
+- **`GET /vault/audit/run` documented in README (iter-54)**: Added to the
+  "Credential audit" section endpoint table with auth tier, rate limit, and
+  response shape. Added a `### In-process health scan` sub-section with a `curl`
+  example and JSON response skeleton documenting `total_items`, `weak_passwords`,
+  and `reused_passwords` fields.
+
+- **`GET /vault/audit/run` rate limit test (iter-54)**: New unit test
+  `audit_run_uses_very_tight_limit` in `security/rate_limit.rs` verifies the 2
+  req/60 s cap is enforced for the `/vault/audit/run` path.
+
+### Findings — no code change required (iter-53–54)
+
+- **`VwAdapter.vault_folder` construction vs. per-call** — the field is set at
+  `VwAdapter::new()` time but `find_folder_id_by_name_async` is called on every
+  `list_items_metadata()` invocation. This means the folder ID is re-resolved on
+  every scan, which is correct and immune to SIGHUP folder-rename scenarios.
+
+- **`run_audit()` holds no RwLock** — `vault.list_items()` acquires and releases
+  the items read-lock before `decrypt_password()` calls begin. Each decrypt
+  acquires only the ephemeral per-item lock. Concurrent audit runs do not block
+  the vault sync path. The 2 req/60 s rate limit bounds the concurrent-decrypt
+  cost without needing an application-level mutex.
+
+- **`AuditResult` exposes item names** — `AuditItem.name` (`String`) is returned
+  in `weak_passwords` and `reused_passwords`. This is intentional: the caller
+  needs to know which items are weak/reused to act on them. The endpoint is
+  gated behind the internal bearer token (same access tier as
+  `/vault/connecterr-secrets`), so name exposure is confined to already-
+  privileged callers. No password values or HMAC digests appear in the response.
+
+- **v0.2.6 tag warranted** — the iter-53 scope bypass (CRITICAL) and iter-54
+  empty-fallback fix (HIGH) affect users running the credential audit workflow
+  on a multi-folder vault. Users on v0.2.5 should upgrade.
+
 ## [0.2.5] — iteration 52: credential audit workflow docs, audit.rs wiring notes
 
 ### Documentation
