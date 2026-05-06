@@ -210,6 +210,23 @@ pub struct AppState {
     /// Wrapped in `Arc` because `tokio::sync::Mutex` is not `Clone` and
     /// `AppState` derives `Clone` for use with `axum::extract::State`.
     pub reload_mutex: Arc<tokio::sync::Mutex<()>>,
+
+    /// Serialises concurrent credential-health audit runs.
+    ///
+    /// iter-62: without this mutex, two simultaneous audit calls — one from the
+    /// background scheduler and one from `GET /vault/audit/run` — would both
+    /// call `run_audit()` concurrently, decrypting every vault password twice
+    /// at the same time.  On a large vault (500+ items) this doubles CPU load
+    /// and memory pressure during the audit window.
+    ///
+    /// Holding this mutex for the duration of `run_audit()` means the second
+    /// caller blocks until the first finishes and then runs its own pass.  For
+    /// the HTTP handler this introduces at most one audit-duration wait; callers
+    /// can observe this as a slow response but never get a torn or duplicate
+    /// result.
+    ///
+    /// Wrapped in `Arc` for the same reason as `reload_mutex`.
+    pub audit_mutex: Arc<tokio::sync::Mutex<()>>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -1561,6 +1578,7 @@ mod integration_tests {
             config_dir: "/config".to_string(),
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 

@@ -1280,6 +1280,8 @@ async fn start_server(
         // the startup value, not a potentially-changed env var.
         proxy_timeout: args.proxy_timeout,
         reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        // iter-62: serialises concurrent audit runs (background task vs HTTP).
+        audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
     });
 
     // Build router with rate limiting on sensitive endpoints.
@@ -2057,15 +2059,38 @@ async fn start_server(
     //
     // When `--audit-interval-secs` (or `AUDIT_INTERVAL_SECS`) is non-zero,
     // spawn a task that runs `run_audit()` every N seconds and logs the
-    // summary at INFO level.  This is the same operation as a manual call to
+    // summary.  This is the same operation as a manual call to
     // `GET /vault/audit/run` but triggered automatically by the scheduler.
     //
     // The audit is read-only and entirely in-process — it does not mutate
     // the vault or call Vaultwarden.  Passwords are HMAC-fingerprinted with
     // an ephemeral key and zeroized immediately; no plaintext is logged.
+    //
+    // iter-62 changes:
+    //   - Minimum interval: warn when < 60 s (every-second runs cause sustained
+    //     CPU load on large vaults; 60 s is still very aggressive but acceptable
+    //     for development environments).
+    //   - audit_mutex: hold the shared audit_mutex for the duration of run_audit()
+    //     so a concurrent HTTP call to GET /vault/audit/run does not trigger a
+    //     second full-vault decryption pass at the same time.
+    //   - Log verbosity: only log at INFO/WARN when issues are found; log at
+    //     DEBUG for clean runs to avoid hundreds of identical INFO lines per day.
     if args.audit_interval_secs > 0 {
+        // iter-62: warn operators who set an aggressively short interval.
+        const AUDIT_MIN_INTERVAL_SECS: u64 = 60;
+        if args.audit_interval_secs < AUDIT_MIN_INTERVAL_SECS {
+            tracing::warn!(
+                interval_secs = args.audit_interval_secs,
+                min_secs = AUDIT_MIN_INTERVAL_SECS,
+                "AUDIT_INTERVAL_SECS is below the recommended minimum of {} s — \
+                 every audit decrypts all vault passwords; sub-60s intervals cause \
+                 sustained CPU load on large vaults. Consider 3600 (hourly).",
+                AUDIT_MIN_INTERVAL_SECS,
+            );
+        }
         let audit_vault = vault_arc.clone();
         let audit_interval = args.audit_interval_secs;
+        let audit_mutex = state.audit_mutex.clone();
         tokio::spawn(async move {
             tracing::info!(
                 "credential audit background task started — interval {} s",
@@ -2079,13 +2104,31 @@ async fn start_server(
             loop {
                 interval.tick().await;
                 tracing::debug!("credential audit background: running in-process audit");
+                // iter-62: hold audit_mutex to prevent a concurrent HTTP audit
+                // from running a second full-vault decryption pass simultaneously.
+                let _guard = audit_mutex.lock().await;
                 let result = crate::audit::run_audit(&audit_vault).await;
-                tracing::info!(
-                    total = result.total_items,
-                    weak = result.weak_passwords.len(),
-                    reuse_groups = result.reused_passwords.len(),
-                    "credential audit background: complete"
-                );
+                let n_weak = result.weak_passwords.len();
+                let n_reuse = result.reused_passwords.len();
+                if n_weak > 0 || n_reuse > 0 {
+                    // Issues found — log at WARN so it surfaces through default
+                    // log filters and alerts operators without manual inspection.
+                    tracing::warn!(
+                        total = result.total_items,
+                        weak = n_weak,
+                        reuse_groups = n_reuse,
+                        "credential audit background: issues found — review GET /vault/audit/run"
+                    );
+                } else {
+                    // Clean run — log at DEBUG to avoid 288 identical INFO lines
+                    // per day when no issues exist (e.g. 300 s interval, 0 weak).
+                    tracing::debug!(
+                        total = result.total_items,
+                        weak = 0,
+                        reuse_groups = 0,
+                        "credential audit background: complete — no issues"
+                    );
+                }
             }
         });
     } else {
@@ -2825,6 +2868,7 @@ mod browser_rotate_guard_tests {
             config_dir: "/config".to_string(),
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 

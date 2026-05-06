@@ -1,9 +1,10 @@
 //! Service auth registry — maps service names to their auth patterns and base URLs.
 //!
 //! Public API: [`ServiceRegistry::from_toml_file`] — reads user-defined services.toml.
-//! Internal legacy: [`ServiceRegistry::from_config`] / [`ServiceRegistry::from_vault`] —
+//! Internal legacy: `ServiceRegistry::from_config` / `ServiceRegistry::from_vault` —
 //! used by the /vault/connecterr-secrets HTTP handlers only. Contains homelab-specific
-//! service type mappings and should not be extended.
+//! service type mappings and should not be extended. These methods are `#[cfg(test)]`
+//! only and are not present in production builds.
 
 use std::collections::HashMap;
 use std::path::Path;

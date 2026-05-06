@@ -221,6 +221,11 @@ pub async fn handle_audit_run(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::proxy::AppState>>,
 ) -> axum::Json<AuditResult> {
     tracing::info!("GET /vault/audit/run — running in-process credential health audit");
+    // iter-62: hold audit_mutex so a concurrent background audit task cannot run
+    // a second full-vault decryption pass at the same time.  If the background
+    // task is mid-run, this call blocks until it finishes and then runs its own
+    // pass (no result is shared between the two — each caller gets a fresh scan).
+    let _guard = state.audit_mutex.lock().await;
     let result = run_audit(&state.vault).await;
     tracing::info!(
         total = result.total_items,
