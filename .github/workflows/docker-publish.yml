@@ -41,11 +41,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain (version from rust-toolchain.toml)
-        # dtolnay/rust-toolchain reads rust-toolchain.toml automatically when
-        # the `toolchain` input is omitted — CI and local development then use
-        # the same channel. The channel is "stable" (see rust-toolchain.toml);
-        # update that file when a specific minimum release becomes required.
+        # dtolnay/rust-toolchain@master requires an explicit `toolchain` input —
+        # it does NOT auto-read rust-toolchain.toml (despite the docs implying
+        # otherwise). We pass `toolchain: stable` explicitly here so CI matches
+        # the channel declared in rust-toolchain.toml. If the channel in that
+        # file changes (e.g. to a specific version), update this line too.
         uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
 
       - name: Check formatting
         # iter-49: enforce cargo fmt before anything else so a misformatted PR
