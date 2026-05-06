@@ -73,8 +73,9 @@ where
 /// Pure helper — extract decrypted field names from an already-decrypted cipher view.
 /// (Real callers will decrypt the field names themselves; this helper takes plaintext.)
 ///
-/// post-v1.0: will be used by dashboard field inspector. Gated `#[cfg(test)]` so
-/// it is not compiled into production binaries.
+/// Gated `#[cfg(test)]` so it is not compiled into production binaries.
+/// Kept here for unit tests in this module; the production equivalent is
+/// `list_field_names` (async, operates on encrypted data).
 #[cfg(test)]
 pub fn field_names_from_cipher(cipher: &EncryptedCipher) -> Vec<String> {
     cipher

@@ -3,7 +3,104 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — iteration 90: SECURITY.md comprehensive rewrite, resolve_vault_folder_id None-not-cached doc fix
+## [Unreleased] — iteration 91: invalidate on persistent auth failure, stale post-v1.0 annotation, TPM docs
+
+### Fixes (iter-91)
+
+- **`handle_request` — stale session persists after persistent auth failure (MEDIUM)** —
+  `src/proxy/unifi_session.rs:297`. When all three attempts (API-key, re-login retry,
+  post-re-login retry) fail, the function returned a 401 `UnifiResponse` but left the
+  freshly-logged-in (yet immediately rejected) session in the cache slot. On the next
+  request, `handle_request` found a session with a matching credential fingerprint,
+  skipped the login step, and issued the request with the known-bad session — producing
+  another guaranteed 401 without ever attempting a fresh login. Over time this meant a
+  persistently broken controller (credentials changed on the UDM side but not yet rotated
+  in the vault) would never recover until vault-proxy was restarted.
+  Fix: after `is_auth_failure(final_try)` returns true, set `*guard = None` while still
+  holding the mutex, then log a warning. The next caller finds the slot empty and attempts
+  a clean login. This is the correct wiring for the `invalidate` intent described in the
+  `UnifiSessionCache::invalidate` doc comment — rather than calling `invalidate()` (which
+  uses `try_lock` and would be a no-op since we already hold the lock), we zero the guard
+  directly. `post-v1.0:` deferred count drops from 5 to 5 (rotation UI annotation
+  unchanged; this fix is production wiring for the persistent-failure path, not the
+  rotation UI path).
+
+- **`field_names_from_cipher` — stale `post-v1.0:` annotation in `#[cfg(test)]` (LOW)** —
+  `src/vault/mod.rs:73`. The function was moved to `#[cfg(test)]` in iter-86 but the
+  doc comment still said `post-v1.0: will be used by dashboard field inspector`. A
+  function gated `#[cfg(test)]` cannot be the production dashboard implementation — if
+  the dashboard inspector ever needs it, the function would first have to be un-gated.
+  The `post-v1.0:` forward-reference is therefore misleading. Replaced with accurate doc
+  pointing to the production equivalent (`list_field_names`). Live `post-v1.0:` annotation
+  count drops from 6 to 5.
+
+- **`--features tpm` build requirement undocumented in CONTRIBUTING.md (LOW)** —
+  `CONTRIBUTING.md`. `cargo check --features tpm` requires `libtss2-dev` (TSS2 C library
+  + pkg-config metadata). Without it the build fails with a clear message but no guidance
+  on how to resolve it. Added an "Optional features" table listing all four opt-in feature
+  flags with their system requirements, and documented the install commands for
+  Debian/Ubuntu and Fedora/RHEL. Also updated the test count comment from stale
+  "228 unit + 2 integration" / "256 unit + 2 integration" to the current v0.2.31 counts
+  (270 unit + 2 integration for the full matrix).
+
+### Audit findings (iter-91) — no code changes required
+
+- **CHANGELOG "6 live annotations" vs "15 deferred items" — both counts correct (confirmed)** —
+  6 = live `post-v1.0:` annotations found by `grep -rn "post-v1.0:" src/`; 15 = broader
+  narrative work items tracked across CHANGELOG sections (features deferred from
+  initial scope). The two counts measure different things. After this iteration: 5 live
+  annotations remain (`keystore.rs:333`, `keystore.rs:563`, `cloud.rs:40`, `cloud.rs:786`,
+  `unifi_session.rs:90`); the `vault/mod.rs` annotation was the 6th and is now removed.
+
+- **`resolve_vault_folder_id` thundering-herd — not an async race (confirmed correct)** —
+  `src/vault/handlers.rs:48–88`. The tokio async `RwLock` write lock is held across the
+  `find_folder_id_by_name_async` await point (lines 75–88). All concurrent tasks that
+  lost the write-lock race queue on the write-lock acquisition — they do not proceed past
+  line 75 until the winner releases. The double-check at line 76 ensures only the winning
+  task ever calls into the vault. No thundering herd; correct.
+
+- **`X-Caller-Id` — NOT forwarded to upstream services (confirmed correct)** —
+  `src/proxy/mod.rs:1135`. `X-Caller-Id` is an axum HTTP request header consumed by the
+  rate-limiter middleware (`src/security/rate_limit.rs`). `build_request` only processes
+  `req.headers` (the JSON body field of `ProxyRequest`), not raw axum request headers.
+  The `BLOCKED_HEADERS` list in `build_request` guards against caller-supplied auth headers
+  in the JSON payload but `X-Caller-Id` is never in that payload — it is an HTTP-layer
+  header. Upstream services never see it. No issue.
+
+- **`sanitize_output` — no end-to-end `VisionModel::analyze` test possible (confirmed)** —
+  `src/browser/vision.rs:245`. The comment at line 245 explicitly acknowledges that
+  `VisionModel::analyze` cannot be called in a unit test (requires a live LiteLLM
+  endpoint). The test replicates the sanitize-then-parse pipeline inline — the same two
+  steps the production code performs on every response. The wiring comment at line 241
+  ("the call to sanitize_output at line 172 is the production wiring") ties the test to
+  the production call site. If the call is removed a future refactor will break these
+  tests. Adequate guard for the homelab context. No issue.
+
+- **SECURITY.md rewrite completeness — longer and correct (confirmed)** —
+  `git show HEAD~2:SECURITY.md` = 88 lines; `git show HEAD:SECURITY.md` = 110 lines.
+  Rewrite was additive (+22 lines). No truncation.
+
+- **CI parallelization — serial by design (advisory, no change)** —
+  `.github/workflows/docker-publish.yml`. Both test steps and both clippy steps run
+  serially in one job. Parallelizing into separate jobs would save wall-clock time on
+  PRs (~4 min of sequential steps → ~2 min parallel). Trade-off: more complex YAML,
+  potential for GitHub Actions cost if both jobs are billed separately, and the current
+  single-job structure is trivially readable. Left as-is; noted here for future
+  consideration if CI latency becomes a friction point.
+
+- **`cargo check --features tpm` — fails without TSS2 C library (documented, no fix needed in code)** —
+  `src/tpm.rs`. The feature failure is expected on any machine without a TPM and `tss2-sys`.
+  The code itself is correct; the missing documentation is the deficiency (addressed above
+  in CONTRIBUTING.md). The CI workflow correctly omits `--features tpm` since GitHub-hosted
+  runners do not have physical TPMs.
+
+### Quality gates (iter-91)
+
+- `cargo test --all-targets --features browser,engine,dashboard` — 272 passed; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — clean (0 diffs)
+
+## [Unreleased/prev] — iteration 90: SECURITY.md comprehensive rewrite, resolve_vault_folder_id None-not-cached doc fix
 
 ### Fixes (iter-90)
 

@@ -13,10 +13,10 @@ rustc`) is often several releases behind; use `rustup` instead.
 ## Running tests
 
 ```bash
-# Default features (all 228 unit + 2 integration tests):
+# Default features (unit + 2 integration tests):
 cargo test --all-targets
 
-# Full feature matrix (256 unit + 2 integration tests — required before opening a PR):
+# Full feature matrix (270 unit + 2 integration tests — required before opening a PR):
 cargo test --all-targets --features browser,engine,dashboard
 ```
 
@@ -42,6 +42,27 @@ The project enforces both formatting and Clippy cleanliness.
 
 Both checks run in CI on every pull request against `main`; a PR that fails
 either check will be blocked from merge.
+
+## Optional features
+
+| Feature flag | Purpose | System requirement |
+|---|---|---|
+| `browser` | Playwright-based browser rotation | Playwright JS (see `playwright/`) |
+| `engine` | Credential audit engine | None |
+| `dashboard` | Web dashboard routes | None |
+| `tpm` | TPM-backed keystore unsealing | `libtss2-dev` (TSS2 C library) |
+
+The `tpm` feature requires the TSS2 C library headers and `pkg-config` metadata.
+On Debian/Ubuntu: `apt install libtss2-dev`. On Fedora/RHEL: `dnf install tpm2-tss-devel`.
+Without these, `cargo check --features tpm` fails with:
+
+```
+The system library `tss2-sys` required by crate `tss-esapi-sys` was not found.
+```
+
+The TPM feature is excluded from the published Docker image and from CI (which
+runs on GitHub-hosted Ubuntu runners without a physical TPM). It is only needed
+if you intend to use hardware TPM-backed key unsealing on a local machine.
 
 ## Adding a new auth type
 

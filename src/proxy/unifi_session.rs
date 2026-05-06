@@ -295,6 +295,19 @@ pub async fn handle_request(
         )
         .await?;
         if is_auth_failure(final_try.status, &final_try.headers, &final_try.json) {
+            // Persistent auth failure — UDM rejected both the re-login session
+            // AND the immediately subsequent request.  Clear the cache slot so
+            // the next caller re-attempts a clean login rather than re-using a
+            // session that we now know the controller will reject (iter-91).
+            //
+            // We still hold the mutex guard here, so we can zero the slot
+            // directly rather than going through the try_lock path in invalidate().
+            *guard = None;
+            tracing::warn!(
+                service,
+                "persistent UniFi auth failure after re-login — session invalidated; \
+                 next request will attempt a fresh login"
+            );
             // Sanitize: never leak cookies or the key into the body.
             return Ok(UnifiResponse {
                 status: 401,
