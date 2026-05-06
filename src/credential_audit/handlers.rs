@@ -68,18 +68,49 @@ pub async fn scan_start(
 pub async fn review_pending(
     State(orch): State<SharedOrch>,
     Path(run_id): Path<String>,
-) -> Result<Json<Vec<ItemResult>>, StatusCode> {
-    orch.list_pending(&run_id)
-        .map(Json)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+) -> Result<Json<Vec<ItemResult>>, (StatusCode, Json<serde_json::Value>)> {
+    orch.list_pending(&run_id).map(Json).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("run_id '{}' not found — no scan has been started with this ID", run_id)
+                })),
+            )
+        } else {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": msg})),
+            )
+        }
+    })
 }
 
 pub async fn apply(
     State(orch): State<SharedOrch>,
     Json(body): Json<ApplyBody>,
-) -> Result<Json<ApplyOutcome>, StatusCode> {
+) -> Result<Json<ApplyOutcome>, (StatusCode, Json<serde_json::Value>)> {
     orch.apply(&body.run_id, body.item_ids, body.dry_run, body.confirm_bulk)
         .await
         .map(Json)
-        .map_err(|_| StatusCode::BAD_REQUEST)
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "run_id '{}' not found — start a scan with POST /audit/credaudit/scan/start first",
+                            body.run_id
+                        )
+                    })),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": msg})),
+                )
+            }
+        })
 }

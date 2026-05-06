@@ -62,6 +62,7 @@ impl ToolPermissions {
 
     /// Save permissions to a JSON file with restricted permissions (0600).
     /// Uses safe_write_config to reject symlinks.
+    #[allow(dead_code)] // called by dashboard permissions endpoint (#[cfg(feature = "dashboard")])
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
         crate::secure::safe_write_config(path, json.as_bytes())
@@ -97,6 +98,7 @@ impl ToolPermissions {
     }
 
     /// Get the default category permission for a tool name (ignoring overrides).
+    #[allow(dead_code)] // called by dashboard permissions UI (#[cfg(feature = "dashboard")])
     pub fn get_default_permission(&self, tool_name: &str) -> Permission {
         let lower = tool_name.to_lowercase();
         let mut matched: Option<(&str, &Permission)> = None;
@@ -111,6 +113,7 @@ impl ToolPermissions {
     }
 
     /// Determine the category for a tool name.
+    #[allow(dead_code)] // called by dashboard permissions UI (#[cfg(feature = "dashboard")])
     pub fn get_category(&self, tool_name: &str) -> String {
         let lower = tool_name.to_lowercase();
         let mut matched: Option<&str> = None;

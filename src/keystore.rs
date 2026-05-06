@@ -301,6 +301,7 @@ pub fn public_key_to_pem(key: &RsaPublicKey) -> Result<String> {
 }
 
 /// Deserialize an RSA public key from PEM (PKCS#1).
+#[allow(dead_code)] // used by reencrypt_credentials (v1.0: credential rotation UI)
 pub fn public_key_from_pem(pem: &str) -> Result<RsaPublicKey> {
     RsaPublicKey::from_pkcs1_pem(pem).context("failed to decode public key from PEM")
 }
@@ -329,6 +330,7 @@ pub fn seal_private_key_to_tpm(private_key_der: &[u8], sealed_path: &str) -> Res
 }
 
 /// Unseal the private key DER from a TPM-sealed blob.
+#[allow(dead_code)] // v1.0: will be called when TPM-backed unlock path is wired
 pub fn unseal_private_key_from_tpm(sealed_path: &str) -> Result<Vec<u8>> {
     crate::tpm::unseal_from_tpm(sealed_path)
 }
@@ -475,6 +477,7 @@ fn unlock_with_password(config_dir: &str, setup_password: Option<&str>) -> Resul
 /// Re-encrypt credentials with the existing public key.
 ///
 /// Useful when rotating credential values without changing the keypair.
+#[allow(dead_code)] // v1.0: will be called from dashboard credential rotation UI
 pub fn reencrypt_credentials(config_dir: &str, creds: &Credentials) -> Result<()> {
     let pem = std::fs::read_to_string(format!("{}/{}", config_dir, PUBLIC_KEY_FILE))
         .context("failed to read public_key.pem")?;
@@ -497,6 +500,7 @@ pub fn reencrypt_credentials(config_dir: &str, creds: &Credentials) -> Result<()
 /// with AES-256-GCM, seals the AES key to TPM, and writes the encrypted
 /// private key to disk. Independent of the setup password — password changes
 /// don't invalidate the TPM seal.
+#[allow(dead_code)] // called by start_dashboard_only() which is #[cfg(feature = "dashboard")]
 pub fn seal_after_unlock(config_dir: &str, setup_password: &str) -> Result<()> {
     use aes_gcm::aead::Aead;
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -556,6 +560,7 @@ pub fn has_tpm_key(config_dir: &str) -> bool {
 }
 
 /// Delete all keystore files from `config_dir`.
+#[allow(dead_code)] // v1.0: will be called from dashboard "factory reset" flow
 pub fn reset_keystore(config_dir: &str) -> Result<()> {
     for filename in &[
         CREDENTIALS_FILE,

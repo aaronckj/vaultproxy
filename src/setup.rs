@@ -13,12 +13,14 @@ use crate::keystore::{self, Credentials, VaultwardenCreds};
 use crate::vault::VaultManager;
 
 /// Shared state for the web-based setup wizard.
+#[allow(dead_code)] // used by dashboard setup route (#[cfg(feature = "dashboard")])
 pub struct SetupState {
     pub config_dir: String,
     pub completed: Arc<RwLock<bool>>,
 }
 
 impl SetupState {
+    #[allow(dead_code)] // used by dashboard setup route (#[cfg(feature = "dashboard")])
     pub fn new(config_dir: &str) -> Self {
         Self {
             config_dir: config_dir.to_string(),
@@ -286,6 +288,7 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
 }
 
 /// Run the web-based setup. Called from dashboard API handler.
+#[allow(dead_code)] // called by dashboard setup endpoint (#[cfg(feature = "dashboard")])
 pub async fn run_web_setup(
     config_dir: &str,
     url: &str,

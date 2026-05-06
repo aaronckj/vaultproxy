@@ -1,3 +1,8 @@
+// iter-50: scaffold module — PlaywrightProcess and Pass-2 vision workflow are
+// not fully wired to production call sites yet.  Remove this once all browser/*
+// items on the v1.0 checklist are complete.
+#![allow(dead_code)]
+
 pub mod playwright;
 pub mod profiles;
 pub mod vision;

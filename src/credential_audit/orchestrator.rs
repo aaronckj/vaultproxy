@@ -242,7 +242,26 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         Ok(())
     }
 
+    /// Check whether a run_id exists in audit_runs.
+    /// Returns Ok(true) if found, Ok(false) if not found, Err on DB failure.
+    pub fn run_exists(&self, run_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().expect("DB mutex poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM audit_runs WHERE run_id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn list_pending(&self, run_id: &str) -> Result<Vec<ItemResult>> {
+        // Distinguish "run not found" from "run found but zero pending items".
+        // Without this check, a caller that passes a wrong or stale run_id gets
+        // 200 [] — indistinguishable from a run that genuinely has no pending
+        // items.  Returning Err here lets the handler map to 404.
+        if !self.run_exists(run_id)? {
+            anyhow::bail!("run_id '{}' not found", run_id);
+        }
         let conn = self.conn.lock().expect("DB mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT item_id, category, status, reason, evidence_json, dedup_cluster_id, marked_for_delete, pass

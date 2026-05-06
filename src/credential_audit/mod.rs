@@ -1,3 +1,9 @@
+// iter-50: scaffold module — credential audit engine is not deployed in most
+// setups.  Several internal helpers (Pass-2 worker, telemetry, list_runs, etc.)
+// are unreachable until the engine sidecar is running.  Remove this once all
+// credential_audit items on the v1.0 checklist are complete.
+#![allow(dead_code)]
+
 pub mod db;
 pub mod engine_client;
 pub mod handlers;

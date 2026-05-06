@@ -227,8 +227,12 @@ pub struct CertMaterial {
     /// Self-signed CA certificate (PEM).
     pub ca_cert_pem: String,
     /// Server certificate signed by the CA (PEM).
+    // Used by dashboard TLS setup, which is #[cfg(feature = "dashboard")].
+    #[allow(dead_code)]
     pub server_cert_pem: String,
     /// Server private key (PEM).
+    // Used by dashboard TLS setup, which is #[cfg(feature = "dashboard")].
+    #[allow(dead_code)]
     pub server_key_pem: String,
     /// Client certificate signed by the CA (PEM).
     pub client_cert_pem: String,

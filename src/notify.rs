@@ -69,6 +69,7 @@ impl Notifier {
     }
 
     /// Returns the current channel type as a string for the dashboard.
+    #[allow(dead_code)] // called by dashboard notify-status endpoint (#[cfg(feature = "dashboard")])
     pub fn channel_name(&self) -> &str {
         match &self.channel {
             NotifyChannel::Ntfy { .. } => "ntfy",
@@ -78,6 +79,7 @@ impl Notifier {
     }
 
     /// Returns channel-specific details for the dashboard.
+    #[allow(dead_code)] // called by dashboard notify-status endpoint (#[cfg(feature = "dashboard")])
     pub fn channel_detail(&self) -> String {
         match &self.channel {
             NotifyChannel::Ntfy { url } => url.clone(),
@@ -138,9 +140,39 @@ impl Notifier {
                 Ok(())
             }
             NotifyChannel::Email { to } => {
-                // Queue the notification as a JSON file for the Connecterr Node.js
-                // side to pick up and send via Gmail MCP. The sidecar cannot send
-                // emails directly (no OAuth tokens).
+                // Queue the notification for the Connecterr Node.js side to
+                // deliver via Gmail MCP.  The Rust sidecar has no OAuth tokens
+                // so it cannot send email directly; it writes to a shared file
+                // that the TypeScript layer polls.
+                //
+                // ## File format: /config/notification-queue.json
+                //
+                // The file is a JSON array of notification objects.  Each entry:
+                //
+                //   {
+                //     "to":        string   — recipient email address,
+                //     "subject":   string   — notification title,
+                //     "body":      string   — notification body text,
+                //     "priority":  u8       — 1 (lowest) … 5 (highest),
+                //     "timestamp": string   — RFC 3339 UTC, e.g. "2026-05-05T12:00:00Z"
+                //   }
+                //
+                // The array is **append-only** (new entries pushed to the end)
+                // and capped at 50 entries — older entries are dropped when the
+                // cap is exceeded.  Each write is atomic via `safe_write_config`
+                // (tempfile + fsync + rename), so a mid-write crash cannot leave
+                // a truncated file.
+                //
+                // The TypeScript consumer must:
+                //   1. Read the file atomically.
+                //   2. Process each entry (send via Gmail MCP).
+                //   3. Remove or truncate processed entries to prevent re-delivery.
+                //   4. Write the updated array back atomically.
+                //
+                // There is no lock file — the consumer must handle races by
+                // writing back before vault-proxy appends a new entry.  If a
+                // race is a concern, use an exclusive file lock (fcntl/flock)
+                // around read-process-write.
                 let notification = serde_json::json!({
                     "to": to,
                     "subject": title,

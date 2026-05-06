@@ -54,6 +54,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter with the given default max requests per window.
+    #[allow(dead_code)] // v1.0: will be used by configurable per-route rate limiting
     pub fn new(max_requests: u64, window_secs: u64) -> Self {
         Self {
             counters: Arc::new(Mutex::new(HashMap::new())),

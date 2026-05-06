@@ -30,9 +30,17 @@
 # channel/components declared there, making the build environment identical to
 # local development and CI (dtolnay/rust-toolchain@master reads the same file).
 #
-# If you ever need to pin to a specific release, set the channel in
-# rust-toolchain.toml (e.g. `channel = "1.87"`) — one place to update rather
-# than having to sync the Dockerfile separately.
+# iter-50: Tradeoff note — `rust:slim-bookworm` is a moving tag and two local
+# `docker build` runs weeks apart may pull different Rust toolchain versions.
+# This is intentional: rust-toolchain.toml declares `channel = "stable"`, so
+# both local dev and Docker always track the same moving target.  The build is
+# therefore as reproducible as rust-toolchain.toml allows.
+#
+# To pin to a specific Rust release (e.g. for a production freeze):
+#   1. In rust-toolchain.toml, set `channel = "1.87"` (or whatever release).
+#   2. The Dockerfile needs no change — rustup reads the file and pins itself.
+#   3. CI (dtolnay/rust-toolchain@master) reads the same file automatically.
+# One file to update, three environments stay in sync.
 FROM rust:slim-bookworm AS builder
 
 # Install build dependencies.

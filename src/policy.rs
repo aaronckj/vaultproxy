@@ -71,6 +71,7 @@ pub fn save_policies(path: &str, policies: &[Policy]) -> Result<()> {
     crate::secure::safe_write_config(path, data.as_bytes())
 }
 
+#[allow(dead_code)] // v1.0: will be called from dashboard policy management UI
 pub fn delete_policy(path: &str, id: &str) -> Result<()> {
     let mut policies = load_policies(path);
     policies.retain(|p| p.id != id);

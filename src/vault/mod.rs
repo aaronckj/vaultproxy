@@ -72,6 +72,7 @@ where
 
 /// Pure helper — extract decrypted field names from an already-decrypted cipher view.
 /// (Real callers will decrypt the field names themselves; this helper takes plaintext.)
+#[allow(dead_code)] // v1.0: will be used by dashboard field inspector
 pub fn field_names_from_cipher(cipher: &EncryptedCipher) -> Vec<String> {
     cipher
         .fields
@@ -635,6 +636,7 @@ impl VaultManager {
     /// Items without a password (notes, cards, logins with a null password
     /// field such as placeholder MetaMask entries) are excluded from grouping;
     /// callers can find those via `list_items` with a password filter.
+    #[allow(dead_code)] // unscoped variant — kept for internal/test use; scoped variant used in production
     pub async fn list_duplicates(&self) -> Vec<DuplicateGroup> {
         // Unscoped variant — kept for internal/test use only.
         self.list_duplicates_in_folder(None).await

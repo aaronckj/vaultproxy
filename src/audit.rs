@@ -1,3 +1,5 @@
+// iter-50: scaffold module — not yet fully wired to production call sites.
+#![allow(dead_code)]
 //! Security audit — analyzes credential health without exposing passwords.
 
 use crate::vault::VaultManager;

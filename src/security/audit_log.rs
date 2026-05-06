@@ -129,6 +129,7 @@ impl AuditLog {
     }
 
     /// Return recent entries (newest first).
+    #[allow(dead_code)] // called by dashboard audit log endpoint (#[cfg(feature = "dashboard")])
     pub fn entries(&self) -> Vec<AuditEntry> {
         self.lock_state().entries.iter().cloned().collect()
     }

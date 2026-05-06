@@ -315,6 +315,7 @@ impl ServiceRegistry {
     /// Reads `modules.media.services`, `modules.ha.instances`,
     /// `modules.opnsense.instances`, `modules.npm.instances`, and
     /// `modules.duplicati.instances`.
+    #[allow(dead_code)] // called only by from_vault and by tests; from_vault is legacy internal path
     #[doc(hidden)]
     pub fn from_config(config: &serde_json::Value) -> Self {
         let mut registry = Self::new();
@@ -521,6 +522,7 @@ impl ServiceRegistry {
     ///
     /// Keys `ssh`, `docker`, `vaultwarden`, and `apiKey` are silently ignored —
     /// they don't need proxy-side registrations.
+    #[allow(dead_code)] // legacy internal path — v1.0: will be removed in favor of services.toml
     #[doc(hidden)]
     pub fn from_vault(aggregated: &serde_json::Value, vault_prefix: &str) -> Self {
         let mut registry = Self::new();
@@ -1389,6 +1391,7 @@ fn login_path_has_traversal(path: &str) -> bool {
 ///
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
 /// types.
+#[allow(dead_code)] // called only by from_config (legacy internal path)
 fn build_media_entry(
     name: String,
     svc_type: &str,
