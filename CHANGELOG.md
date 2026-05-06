@@ -3,6 +3,47 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.5] — iteration 111: Connecterr TS list_folders/list_duplicates format fix + integration tests
+
+### Bugs (iter-111) — Connecterr TS client uses pre-iter-110 bare-array shape
+
+- **`listVaultFolders()` treats response as bare array (iter-111)** — `Connecterr/src/sidecar-client.ts:587`. HIGH.
+  After iter-110 changed `GET /vault/folders` from a bare `Vec<FolderInfo>` array to
+  `{"ok": true, "folders": [...]}`, `listVaultFolders()` still called
+  `res.json() as unknown[]` — wrapping the entire envelope object as if it were
+  the array. All callers (`listFolders()` in `vaultwarden/index.ts`,
+  `listFolders()` in `vaultwarden/api.ts`) silently received `[object Object]`
+  instead of the folder list. Fixed: response is now parsed as `{ok, folders}`
+  and `body.folders ?? []` is returned, preserving the `unknown[]` return type.
+
+- **`listVaultDuplicates()` treats response as bare array (iter-111)** — `Connecterr/src/sidecar-client.ts:713`. HIGH.
+  After iter-110 changed `GET /vault/duplicates` from a bare `Vec<DuplicateGroup>`
+  array to `{"ok": true, "groups": [...]}`, `listVaultDuplicates()` still called
+  `res.json() as unknown[]`. All callers silently received the envelope object
+  as the single element of the "array". Fixed: response is now parsed as
+  `{ok, groups}` and `body.groups ?? []` is returned.
+
+### Tests (iter-111) — integration tests for iter-110 response shape changes
+
+- **`list_folders_returns_ok_true_and_folders_array` (iter-111)** — `src/proxy/mod.rs`.
+  `GET /vault/folders` had no test asserting the post-iter-110 `{"ok":true,"folders":[...]}` shape.
+  New test wires the handler against a stub vault and verifies `body["ok"] == true` and
+  `body["folders"]` is an array.
+
+- **`list_duplicates_returns_ok_true_and_groups_array` (iter-111)** — `src/proxy/mod.rs`.
+  `GET /vault/duplicates` had no test asserting the post-iter-110 `{"ok":true,"groups":[...]}` shape.
+  New test wires the handler against a stub vault and verifies `body["ok"] == true` and
+  `body["groups"]` is an array.
+
+### Quality gates (iter-111)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **292 passed** (290 unit/integration + 2 secret_discipline); 0 failed
+- `cargo clippy --features browser,dashboard --all-targets -- -D warnings` — 0 errors, 0 warnings
+- `tsc` in Connecterr — 0 errors
+
+---
+
 ## [1.0.0-beta.4] — iteration 110: ok:true complete, list_items breaking-change docs
 
 ### BREAKING CHANGE (iter-109/110)

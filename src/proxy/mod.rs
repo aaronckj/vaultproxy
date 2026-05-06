@@ -2400,6 +2400,110 @@ mod integration_tests {
     }
 
     // ---------------------------------------------------------------------- //
+    // (h3) GET /vault/folders — iter-111: response shape {"ok":true,"folders"} //
+    // ---------------------------------------------------------------------- //
+
+    /// iter-111: `GET /vault/folders` must return `{"ok": true, "folders": [...]}`,
+    /// NOT a bare JSON array.
+    ///
+    /// iter-110 changed the response shape from a bare `Vec<FolderInfo>` to an
+    /// object with `"ok": true`. Without this test, a regression to the old bare-
+    /// array shape would go undetected — callers checking `body["ok"] == true`
+    /// would silently receive `null`.
+    ///
+    /// The vault stub contains no folders, so `folders` must be `[]` — but the
+    /// `ok: true` key and `folders` array key must be present regardless.
+    #[tokio::test]
+    async fn list_folders_returns_ok_true_and_folders_array() {
+        use crate::vault::handlers;
+        use axum::routing::get;
+
+        let state = make_state(ServiceRegistry::new());
+        let app = Router::new()
+            .route("/vault/folders", get(handlers::list_folders))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://{}/vault/folders", addr))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/folders must return 200 OK"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["ok"], true,
+            "GET /vault/folders response must contain ok=true (iter-110 breaking change); \
+             got: {body}"
+        );
+        assert!(
+            body["folders"].is_array(),
+            "GET /vault/folders response must contain 'folders' array key; got: {body}"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
+    // (h4) GET /vault/duplicates — iter-111: response {"ok":true,"groups"}    //
+    // ---------------------------------------------------------------------- //
+
+    /// iter-111: `GET /vault/duplicates` must return `{"ok": true, "groups": [...]}`,
+    /// NOT a bare JSON array.
+    ///
+    /// iter-110 changed the response shape from a bare `Vec<DuplicateGroup>` to an
+    /// object with `"ok": true`. Without this test, a regression to the old bare-
+    /// array shape would go undetected — callers checking `body["ok"] == true`
+    /// would silently receive `null`.
+    ///
+    /// The vault stub has no items, so `groups` must be `[]` — but the `ok: true`
+    /// key and `groups` array key must be present regardless.
+    #[tokio::test]
+    async fn list_duplicates_returns_ok_true_and_groups_array() {
+        use crate::vault::handlers;
+        use axum::routing::get;
+
+        let state = make_state(ServiceRegistry::new());
+        let app = Router::new()
+            .route("/vault/duplicates", get(handlers::list_duplicates))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://{}/vault/duplicates", addr))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/duplicates must return 200 OK"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["ok"], true,
+            "GET /vault/duplicates response must contain ok=true (iter-110 breaking change); \
+             got: {body}"
+        );
+        assert!(
+            body["groups"].is_array(),
+            "GET /vault/duplicates response must contain 'groups' array key; got: {body}"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
     // (i) POST /vault/reload-services — HTTP integration tests (iter-35)       //
     // ---------------------------------------------------------------------- //
 
