@@ -4792,11 +4792,17 @@ mod check_permission_shape_tests {
             "permission": "allow",
             "allowed": true,
         });
-        assert!(body["tool"].is_string(), "success body must have 'tool' field");
+        assert!(
+            body["tool"].is_string(),
+            "success body must have 'tool' field"
+        );
         assert!(
             body["permission"].is_string(),
             "success body must have 'permission' field"
         );
-        assert!(body["allowed"].is_boolean(), "success body must have 'allowed' field");
+        assert!(
+            body["allowed"].is_boolean(),
+            "success body must have 'allowed' field"
+        );
     }
 }

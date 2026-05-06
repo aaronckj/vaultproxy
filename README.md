@@ -415,6 +415,26 @@ curl -X POST http://127.0.0.1:3201/vault/resync
 ```
 This re-fetches all vault items from Vaultwarden. For session-based services, the cached session token is invalidated on the next 401 and refreshed automatically.
 
+### Services return 404 / `vault_item_count: 0` after a Vaultwarden folder rename
+
+If you renamed the Vaultwarden folder that `VAULT_FOLDER` points to, vault-proxy
+loses track of all items in that folder until the configuration is corrected.
+
+Diagnose with `GET /vault/health`:
+```bash
+curl http://127.0.0.1:3201/vault/health | jq '{vault_folder_found, vault_item_count}'
+```
+
+- `vault_folder_found: false` — the folder named in `VAULT_FOLDER` was not found.
+  Rename the folder in Vaultwarden back to its original name **or** update `VAULT_FOLDER`
+  and restart, then run `POST /vault/resync`.
+- `vault_folder_found: true, vault_item_count: 0` — folder exists but is genuinely
+  empty. This is legitimate; no action needed.
+
+Without `vault_folder_found`, a `vault_item_count: 0` alert would be ambiguous
+between a folder rename and a legitimately empty vault. Use this field in monitoring
+queries to avoid false data-loss alerts on folder renames.
+
 ### Added a service to services.toml but it's not found
 
 Send SIGHUP to reload services.toml without restarting:

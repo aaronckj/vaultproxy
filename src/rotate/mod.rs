@@ -160,11 +160,14 @@ pub async fn handle_rotate(
             .into_response();
     }
 
-    (StatusCode::OK, Json(json!({
-        "ok": true,
-        "service": result.service,
-        "status": result.status,
-        "message": result.message,
-    })))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "service": result.service,
+            "status": result.status,
+            "message": result.message,
+        })),
+    )
         .into_response()
 }

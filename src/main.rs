@@ -2605,10 +2605,13 @@ async fn browser_rotate(
     // consistency with every other handler in the codebase.
     let browser = match &state.browser {
         Some(b) => Arc::clone(b),
-        None => return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
-        ).into_response(),
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+            )
+                .into_response()
+        }
     };
 
     let item_name = req
@@ -2626,7 +2629,8 @@ async fn browser_rotate(
         return (
             axum::http::StatusCode::BAD_REQUEST,
             AxumJson(serde_json::json!({"ok": false, "error": "item_name required"})),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Issue (iter-8): Guard against an empty litellm_url. When --litellm-url is
@@ -2701,7 +2705,8 @@ async fn browser_rotate(
                           place agent.py at ./playwright/agent.py, or set PLAYWRIGHT_AGENT_PATH \
                           to a custom location."
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Validate login_url against the same SSRF policy used by `inject_creds`
@@ -2771,20 +2776,32 @@ async fn browser_rotate(
 
     (
         axum::http::StatusCode::OK,
-        AxumJson(serde_json::json!({"ok": true, "status": "started", "item_name": item_name_response})),
-    ).into_response()
+        AxumJson(
+            serde_json::json!({"ok": true, "status": "started", "item_name": item_name_response}),
+        ),
+    )
+        .into_response()
 }
 
 #[cfg(feature = "browser")]
-async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
+async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> axum::response::Response {
+    // Issue (iter-105): "not configured" path silently returned HTTP 200 (AxumJson<Value>
+    // return type). Changed to `axum::response::Response` so the not-configured branch
+    // emits HTTP 503 with `"ok": false`, consistent with browser_screenshot and browser_abort.
     let browser = match &state.browser {
         Some(b) => b,
-        None => return AxumJson(serde_json::json!({"status": "not_configured"})),
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+            )
+                .into_response()
+        }
     };
     let job = browser.current_job.read().await;
     match &*job {
-        Some(ws) => AxumJson(serde_json::to_value(ws).unwrap_or_default()),
-        None => AxumJson(serde_json::json!({"status": "idle"})),
+        Some(ws) => AxumJson(serde_json::to_value(ws).unwrap_or_default()).into_response(),
+        None => AxumJson(serde_json::json!({"status": "idle"})).into_response(),
     }
 }
 
@@ -2795,10 +2812,13 @@ async fn browser_screenshot(
     // Issue (iter-104): "not configured" path returned HTTP 200; changed to 503.
     let browser = match &state.browser {
         Some(b) => b,
-        None => return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
-        ).into_response(),
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+            )
+                .into_response()
+        }
     };
     let screenshot = browser.last_screenshot.read().await;
     match &*screenshot {
@@ -2812,10 +2832,13 @@ async fn browser_abort(AxumState(state): AxumState<Arc<AppState>>) -> axum::resp
     // Issue (iter-104): "not configured" path returned HTTP 200; changed to 503.
     let browser = match &state.browser {
         Some(b) => b,
-        None => return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
-        ).into_response(),
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+            )
+                .into_response()
+        }
     };
     *browser.current_job.write().await = None;
     AxumJson(serde_json::json!({"ok": true, "status": "aborted"})).into_response()
@@ -3274,8 +3297,8 @@ mod browser_rotate_guard_tests {
     use crate::security::permissions::ToolPermissions;
     use crate::vault::VaultManager;
     use axum::extract::State as AxumState;
-    use axum::Json as AxumJson;
     use axum::response::IntoResponse;
+    use axum::Json as AxumJson;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
@@ -3363,11 +3386,7 @@ mod browser_rotate_guard_tests {
     /// must return an error JSON directing the operator to set `VISION_MODEL`.
     #[tokio::test]
     async fn browser_rotate_empty_model_name_returns_error() {
-        let agent = Arc::new(BrowserAgent::new(
-            "http://mlbox.local:4000",
-            "",
-            "",
-        ));
+        let agent = Arc::new(BrowserAgent::new("http://mlbox.local:4000", "", ""));
         let state = make_state_with_browser(Some(agent));
 
         let req = serde_json::json!({ "item_name": "my-vault-item" });

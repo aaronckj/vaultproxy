@@ -19,11 +19,15 @@ use crate::proxy::AppState;
 use std::sync::Arc;
 
 /// Helper: get the AppState or return 503 if vault not initialized yet.
+///
+/// Issue (iter-105): The error body lacked `"ok": false`. All 15 handlers that
+/// call `require_app` and early-return on `Err(e)` will return HTTP 200 (because
+/// the return type is `Json<Value>`) with an error body that was missing the
+/// standard `"ok": false` field. Fixed here so all callers gain the field at once.
 fn require_app(state: &DashboardState) -> Result<&Arc<AppState>, Json<Value>> {
-    state
-        .app
-        .as_ref()
-        .ok_or_else(|| Json(json!({"error": "vault not initialized — complete setup first"})))
+    state.app.as_ref().ok_or_else(|| {
+        Json(json!({"ok": false, "error": "vault not initialized — complete setup first"}))
+    })
 }
 
 // -------------------------------------------------------------------------- //
@@ -222,7 +226,8 @@ pub async fn save_policy(
     }
     match crate::policy::save_policies("/config/policies.json", &policies) {
         Ok(()) => Json(serde_json::json!({"ok": true})),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        // Issue (iter-105): missing "ok": false on save failure.
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -238,7 +243,8 @@ pub async fn delete_policy_handler(
     }
     match crate::policy::delete_policy("/config/policies.json", &id) {
         Ok(()) => Json(serde_json::json!({"ok": true})),
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        // Issue (iter-105): missing "ok": false on delete failure.
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -307,7 +313,8 @@ pub async fn respond_approval(
         item.screenshot_b64 = None;
         Json(serde_json::json!({"ok": true}))
     } else {
-        Json(serde_json::json!({"error": "approval not found"}))
+        // Issue (iter-105): missing "ok": false on the "not found" path.
+        Json(serde_json::json!({"ok": false, "error": "approval not found"}))
     }
 }
 
@@ -419,6 +426,9 @@ pub async fn browser_status(State(state): State<DashboardState>) -> Json<Value> 
 }
 
 /// `GET /api/browser/screenshot` — last screenshot from browser agent.
+///
+/// Issue (iter-105): `None` (browser not configured) returned `{"error": "not configured"}`
+/// without `"ok": false`. Fixed to match the `main.rs` handler convention.
 #[cfg(feature = "browser")]
 pub async fn browser_screenshot(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
@@ -430,11 +440,14 @@ pub async fn browser_screenshot(State(state): State<DashboardState>) -> Json<Val
             let ss = browser.last_screenshot.read().await;
             Json(json!({"image_b64": ss.as_deref()}))
         }
-        None => Json(json!({"error": "not configured"})),
+        None => Json(json!({"ok": false, "error": "browser agent not configured"})),
     }
 }
 
 /// `POST /api/browser/rotate` — start a password rotation via browser agent.
+///
+/// Issue (iter-105): Network-error path returned `{"error": "..."}` without
+/// `"ok": false`. Fixed for body-shape consistency.
 #[cfg(feature = "browser")]
 pub async fn browser_rotate(
     State(state): State<DashboardState>,
@@ -452,11 +465,14 @@ pub async fn browser_rotate(
         .await
     {
         Ok(res) => Json(res.json().await.unwrap_or_default()),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
 /// `POST /api/browser/abort` — abort the current browser agent job.
+///
+/// Issue (iter-105): The network-error path returned `{"error": "..."}` without
+/// `"ok": false`. Fixed for consistency with all other error bodies.
 #[cfg(feature = "browser")]
 pub async fn browser_abort(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
@@ -470,7 +486,7 @@ pub async fn browser_abort(State(state): State<DashboardState>) -> Json<Value> {
         .await
     {
         Ok(res) => Json(res.json().await.unwrap_or_default()),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1206,11 +1222,13 @@ pub async fn save_profiles_handler(
     let profiles: std::collections::HashMap<String, crate::browser::profiles::SiteProfile> =
         match serde_json::from_value(profiles) {
             Ok(p) => p,
-            Err(e) => return Json(json!({"error": e.to_string()})),
+            // Issue (iter-105): missing "ok": false on parse failure.
+            Err(e) => return Json(json!({"ok": false, "error": e.to_string()})),
         };
     match crate::browser::profiles::save_profiles("/config/site-profiles.json", &profiles) {
         Ok(()) => Json(json!({"ok": true})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        // Issue (iter-105): missing "ok": false on save failure.
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1632,7 +1650,8 @@ pub async fn setup_cloud_via_dashboard(
             let body: Value = res.json().await.unwrap_or_default();
             Json(body)
         }
-        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        // Issue (iter-105): missing "ok": false on network failure forwarding to sidecar.
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
 }
 

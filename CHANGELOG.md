@@ -3,6 +3,84 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.3] — iterations 104–105: browser handler ok:false, dashboard body audit, vault_folder_found runbook
+
+### Security (iter-105) — dashboard/api.rs `ok:false` body audit
+
+- **`require_app` error body missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:22`.
+  The `require_app` helper returned `{"error": "vault not initialized..."}` without `"ok": false`.
+  All 15 handlers that early-return on `Err(e)` from this helper propagated the missing field.
+  Fixed in one place: callers gain the fix automatically.
+
+- **`browser_screenshot` "not configured" missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:423`.
+  `None` (browser not configured) returned `{"error": "not configured"}` without `"ok": false`.
+  Fixed to `{"ok": false, "error": "browser agent not configured"}`.
+
+- **`browser_rotate` network-error path missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:445`.
+  The HTTP request failure path returned `{"error": "..."}` without `"ok": false`. Fixed.
+
+- **`browser_abort` network-error path missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:461`.
+  Same pattern as `browser_rotate`. Fixed.
+
+- **`respond_approval` "not found" missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:292`.
+  The "approval not found" path returned `{"error": "approval not found"}` without `"ok": false`.
+  Fixed.
+
+- **`save_policy` save-error missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:210`.
+  `Err` path from `save_policies` returned `{"error": "..."}` without `"ok": false`. Fixed.
+
+- **`delete_policy_handler` delete-error missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:229`.
+  Same pattern as `save_policy`. Fixed.
+
+- **`save_profiles_handler` parse and save errors missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:1199`.
+  Two error paths (JSON parse failure, file save failure) returned `{"error": "..."}` without
+  `"ok": false`. Fixed.
+
+- **`setup_cloud_via_dashboard` network-error missing `"ok": false` (iter-105)** — `src/dashboard/api.rs:1615`.
+  The sidecar forward failure returned `{"error": "..."}` without `"ok": false`. Fixed.
+
+### Security (iter-105) — main.rs `browser_status` silent HTTP 200
+
+- **`browser_status` "not configured" returns HTTP 200 (iter-105)** — `src/main.rs:2779`. HIGH.
+  Return type was `AxumJson<serde_json::Value>` — the "browser agent not configured" path
+  returned HTTP 200 instead of 503. Iter-104 fixed `browser_rotate`, `browser_screenshot`,
+  and `browser_abort` but missed `browser_status`. Changed return type to
+  `axum::response::Response`; not-configured path now returns HTTP 503 with
+  `{"ok": false, "error": "browser agent not configured"}`.
+
+### Security (iter-104) — browser_rotate silent-200 paths
+
+- **`browser_rotate` 6 silent-200 error paths (iter-104)** — `src/browser/rotate.rs` and
+  `src/main.rs`. CRITICAL. Six error branches in `browser_rotate` returned HTTP 200 with
+  error bodies due to `Json<Value>` return type. Changed to `impl IntoResponse`; all
+  error paths now return appropriate non-200 status codes (503 not-configured, 400 bad
+  request, 500 internal error) with `"ok": false`.
+
+- **`rotate.rs` 501 Not Implemented stub (iter-104)** — `src/browser/rotate.rs`.
+  Placeholder implementation returned `{"status": "not_implemented"}` at HTTP 200.
+  Changed to HTTP 501 with `{"ok": false, "error": "not implemented"}`.
+
+### Tests (iter-104)
+
+- **8 new tests for `browser_rotate` error paths** — `src/main.rs:browser_rotate_guard_tests`.
+  `not_configured_returns_503`, `empty_litellm_url_returns_error`, `invalid_site_returns_400`,
+  `no_credential_returns_error`, and 4 additional guard tests. Gate: `--features browser`.
+
+### Documentation (iter-105)
+
+- **README Operator Runbook: `vault_folder_found` diagnosis** — `README.md`.
+  Added a new runbook entry: "Services return 404 / `vault_item_count: 0` after a Vaultwarden
+  folder rename". Explains how to use `GET /vault/health` → `vault_folder_found: bool` to
+  distinguish a folder rename (actionable) from a legitimately empty vault (benign).
+  Iter-103 added the field; iter-105 documents it in the runbook.
+
+### Quality gates (iter-105)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **285 passed**; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — 0 diffs
+
 ## [1.0.0-beta.2] — iterations 101–103: 503/409/207 body correctness, vault_folder_found, ok:false audit
 
 ### Security (iter-103)
