@@ -210,6 +210,14 @@ struct Args {
     /// password once, so on large vaults (500+ items) choose a generous interval
     /// (e.g. 3600 s / 1 hour) to avoid sustained CPU use.
     ///
+    /// FIRST-TICK BEHAVIOUR: the first background audit fires after one full
+    /// interval, NOT immediately at startup.  This avoids a double-decrypt
+    /// on startup (the vault is freshly loaded) and gives the vault time to
+    /// finish initial sync before the audit decrypts every item.  If you need
+    /// an immediate baseline, call `GET /vault/audit/run` manually once after
+    /// startup.  Compare: `--vault-refresh-interval-secs` also skips the first
+    /// tick for the same reason.
+    ///
     /// Set to 0 (the default) to disable the background audit entirely and
     /// rely on on-demand calls to `GET /vault/audit/run`.
     #[arg(long, env = "AUDIT_INTERVAL_SECS", default_value = "0")]
@@ -2095,47 +2103,91 @@ async fn start_server(
         // In a multi-instance deployment (prod/staging both writing to the same
         // log stream) the vault_folder distinguishes which instance's audit fired.
         let audit_vault_folder = args.vault_folder.clone();
+        // iter-64: wrap the audit task in the same panic-restart loop used by
+        // the policy scheduler (iter-23).  Without the outer loop, a panic inside
+        // `run_audit()` — however unlikely — silently kills the background task:
+        // the JoinHandle is dropped immediately and the panic is swallowed by the
+        // tokio runtime.  The outer loop catches `JoinError::is_panic()` and
+        // re-spawns after a 5-second delay so the periodic audit is never silently
+        // lost.  Note: `tokio::sync::Mutex` has no poison semantics — a panic
+        // while holding `audit_mutex` simply drops the guard and leaves the mutex
+        // acquirable by the next caller, so no PoisonError cleanup is needed here.
         tokio::spawn(async move {
-            tracing::info!(
-                vault_folder = %audit_vault_folder,
-                "credential audit background task started — interval {} s",
-                audit_interval
-            );
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(audit_interval));
-            // Skip the first immediate tick so we don't run an audit right at
-            // startup (the vault may still be loading items).
-            interval.tick().await;
             loop {
-                interval.tick().await;
-                tracing::debug!("credential audit background: running in-process audit");
-                // iter-62: hold audit_mutex to prevent a concurrent HTTP audit
-                // from running a second full-vault decryption pass simultaneously.
-                let _guard = audit_mutex.lock().await;
-                let result = crate::audit::run_audit(&audit_vault).await;
-                let n_weak = result.weak_passwords.len();
-                let n_reuse = result.reused_passwords.len();
-                if n_weak > 0 || n_reuse > 0 {
-                    // Issues found — log at WARN so it surfaces through default
-                    // log filters and alerts operators without manual inspection.
-                    tracing::warn!(
-                        vault_folder = %audit_vault_folder,
-                        total = result.total_items,
-                        weak = n_weak,
-                        reuse_groups = n_reuse,
-                        "credential audit background: issues found — review GET /vault/audit/run"
+                let inner_vault = audit_vault.clone();
+                let inner_mutex = audit_mutex.clone();
+                let inner_folder = audit_vault_folder.clone();
+                let inner = tokio::spawn(async move {
+                    tracing::info!(
+                        vault_folder = %inner_folder,
+                        "credential audit background task started — interval {} s",
+                        audit_interval
                     );
-                } else {
-                    // Clean run — log at DEBUG to avoid 288 identical INFO lines
-                    // per day when no issues exist (e.g. 300 s interval, 0 weak).
-                    tracing::debug!(
-                        vault_folder = %audit_vault_folder,
-                        total = result.total_items,
-                        weak = 0,
-                        reuse_groups = 0,
-                        "credential audit background: complete — no issues"
-                    );
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(audit_interval));
+                    // Skip the first immediate tick so we don't run an audit right at
+                    // startup (the vault may still be loading items).
+                    //
+                    // iter-64 note: this means the first background audit fires after
+                    // one full interval, not immediately at startup.  Operators who
+                    // need an immediate baseline can call `GET /vault/audit/run` manually.
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        tracing::debug!("credential audit background: running in-process audit");
+                        // iter-62: hold audit_mutex to prevent a concurrent HTTP audit
+                        // from running a second full-vault decryption pass simultaneously.
+                        let _guard = inner_mutex.lock().await;
+                        let result = crate::audit::run_audit(&inner_vault).await;
+                        let n_weak = result.weak_passwords.len();
+                        let n_reuse = result.reused_passwords.len();
+                        if n_weak > 0 || n_reuse > 0 {
+                            // Issues found — log at WARN so it surfaces through default
+                            // log filters and alerts operators without manual inspection.
+                            tracing::warn!(
+                                vault_folder = %inner_folder,
+                                total = result.total_items,
+                                weak = n_weak,
+                                reuse_groups = n_reuse,
+                                "credential audit background: issues found — review GET /vault/audit/run"
+                            );
+                        } else {
+                            // Clean run — log at DEBUG to avoid 288 identical INFO lines
+                            // per day when no issues exist (e.g. 300 s interval, 0 weak).
+                            tracing::debug!(
+                                vault_folder = %inner_folder,
+                                total = result.total_items,
+                                weak = 0,
+                                reuse_groups = 0,
+                                "credential audit background: complete — no issues"
+                            );
+                        }
+                    }
+                });
+
+                match inner.await {
+                    Ok(_) => {
+                        // The inner loop never returns normally; if it does,
+                        // restart it after a brief delay.
+                        tracing::warn!(
+                            "credential audit background task exited unexpectedly — restarting in 5s"
+                        );
+                    }
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(
+                            "credential audit background task panicked — restarting in 5s. \
+                             This should not happen; please file a bug report. {:?}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "credential audit background task ended ({:?}) — restarting in 5s",
+                            e
+                        );
+                    }
                 }
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
     } else {

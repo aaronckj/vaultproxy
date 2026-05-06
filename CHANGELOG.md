@@ -3,9 +3,95 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.12] — iteration 63 audit pass
+## [0.2.12] — iteration 64 audit pass
 
-### Bug fixes (iter-63)
+### Bug fixes (iter-64)
+
+- **Audit background task missing panic-restart loop (iter-64, MEDIUM)**: The
+  background audit task spawned by `--audit-interval-secs` had no outer restart
+  loop — unlike the policy scheduler (which gained one in iter-23). A panic
+  inside `run_audit()` (however unlikely) would silently kill the task with no
+  log entry and no recovery. Added the same inner/outer `tokio::spawn` pattern
+  used by the policy scheduler: the outer loop catches `JoinError::is_panic()`,
+  logs at ERROR, and re-spawns after 5 s. Note: `tokio::sync::Mutex` has no
+  poison semantics — a panic while holding `audit_mutex` simply drops the guard
+  and leaves the mutex acquirable by the next caller; no `PoisonError` cleanup
+  is needed.
+  `src/main.rs` background audit task.
+
+- **`audit_run_requires_bearer_token` test missing Content-Type assertion
+  (iter-64, LOW)**: The return type of `handle_audit_run()` was changed from
+  `Json<AuditResult>` to `axum::response::Response` in iter-63. The test
+  verified the JSON body shape but did not assert `Content-Type: application/json`
+  on the success response. Added explicit `content-type` header assertion.
+  `axum::Json(result).into_response()` does set the header correctly — this
+  change adds test coverage to prevent a future regression if the response
+  construction is modified.
+  `src/proxy/mod.rs` `audit_run_requires_bearer_token_and_returns_200_with_json_shape`.
+
+- **`--audit-interval-secs` first-tick skip undocumented (iter-64, LOW)**: The
+  background audit task skips the first `tokio::time::interval` tick so the
+  first audit fires after one full interval rather than immediately at startup.
+  This behaviour was not documented in the `--help` text. Added a
+  `FIRST-TICK BEHAVIOUR` paragraph to the `--audit-interval-secs` help string
+  explaining the skip and advising operators who need an immediate baseline to
+  call `GET /vault/audit/run` manually.
+  `src/main.rs` `Args::audit_interval_secs` field doc.
+
+- **`password_strength()` no-dictionary limitation undocumented in API response
+  (iter-64, LOW)**: The rule-based heuristic has no dictionary check — common
+  passwords like `"password123"` or `"Summer2024!"` score "fair" if they meet
+  the length + character-class thresholds and do NOT appear in
+  `AuditResult::weak_passwords`. The limitation was described in the
+  `password_strength()` source doc but was not visible in the API response.
+  Added a `scoring_note` field to `AuditResult` that describes the scoring
+  algorithm and explicitly calls out the no-dictionary-check limitation.
+  `src/audit.rs` `AuditResult::scoring_note`, `password_strength()` doc comment.
+
+### Verification (iter-64)
+
+- `cargo test --all-targets`: 247 passed (245 unit + 2 integration), 0 failed.
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
+### Findings — no code change required (iter-64)
+
+- **`handle_audit_run()` Content-Type on success path (iter-64, VERIFY OK)**:
+  `axum::Json(result).into_response()` sets `Content-Type: application/json`
+  automatically — this is a well-tested axum invariant. The iter-63 return-type
+  change from `Json<AuditResult>` to `axum::response::Response` does not break
+  this: the final `axum::Json(result).into_response()` still delegates to axum's
+  `Json` responder. Verified by the new `content-type` assertion in
+  `audit_run_requires_bearer_token_and_returns_200_with_json_shape`.
+
+- **`audit_mutex` poison semantics (iter-64, VERIFY OK)**: `tokio::sync::Mutex`
+  does NOT implement Rust's `std::sync::PoisonError` mechanism. A panic inside
+  `.lock().await` simply drops the guard and leaves the mutex acquirable by the
+  next caller — no `PoisonError`, no `lock().unwrap()` needed. This is correct
+  behaviour and is now documented in the restart-loop comment in `src/main.rs`.
+
+- **v0.2.12 CI run (iter-64, IN PROGRESS)**: The v0.2.12 tag triggered CI run
+  `25416237308`. Formatting check, Clippy, and tests all passed; only the Docker
+  push step was still in progress at the time of this audit. The GitHub release
+  for v0.2.12 was created by this iter-64 commit.
+
+- **`AppState` field count (iter-64, VERIFY OK)**: 24 fields — matches the
+  expected count from the audit prompt. No fields appear unused (all 24 are
+  consumed by at least one handler or background task). Fields verified:
+  `vault`, `registry`, `http`, `http_permissive`, `ca_cert_clients`,
+  `unifi_sessions`, `session_tokens`, `client_certs`, `cloud_sync`,
+  `approval_queue`, `browser`, `permissions`, `audit_log`, `notifier`,
+  `handshake_completed`, `vault_folder`, `last_resync_unix`, `internal_token`,
+  `cached_folder_id`, `env_write_root`, `config_dir`, `proxy_timeout`,
+  `reload_mutex`, `audit_mutex`.
+
+- **`reload_services` vs `handle_audit_run` 503 consistency (iter-64,
+  VERIFY OK)**: Both use `Retry-After: 10` (the static value `"10"`) and both
+  return `retry_after_s: 10` in the JSON body. Both construct the 503 response
+  as `(StatusCode::SERVICE_UNAVAILABLE, HeaderMap, Json(json!({...}))).into_response()`.
+  No divergence.
+
+### Bug fixes from iter-63 (included in this tag)
 
 - **`handle_audit_run()` no timeout on `audit_mutex` (iter-63, HIGH)**: `GET
   /vault/audit/run` previously blocked indefinitely when the background audit
@@ -23,12 +109,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as a structured field to the startup info, per-run warn, and per-run debug log
   lines.
   `src/main.rs` background audit task.
-
-### Verification (iter-63)
-
-- `cargo test --all-targets`: 247 passed (245 unit + 2 integration), 0 failed.
-- `cargo clippy -- -D warnings`: 0 warnings.
-- `cargo fmt --check`: clean.
 
 ### Findings — no code change required (iter-63)
 
@@ -56,7 +136,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   finding.
 
 - **`--audit-interval-secs` warning message (iter-63, VERIFY OK)**: Message at
-  `src/main.rs:2082–2089` is actionable: structured fields `interval_secs` and
+  `src/main.rs` is actionable: structured fields `interval_secs` and
   `min_secs` accompany the text "AUDIT_INTERVAL_SECS is below the recommended
   minimum of 60 s — … Consider 3600 (hourly)." Operators see both the bad value
   and the recommended floor in structured logs.

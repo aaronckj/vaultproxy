@@ -34,6 +34,18 @@ pub struct AuditResult {
     ///
     /// iter-57: added for response transparency.
     pub weak_threshold_len: usize,
+    /// Human-readable description of the scoring algorithm and its limitations.
+    ///
+    /// Included in every response so callers understand what "weak" means
+    /// without consulting the source.  Key limitation: this is a rule-based
+    /// heuristic with no dictionary check — common passwords such as
+    /// `"password123"` or `"Summer2024!"` may score "fair" if they meet
+    /// the length + character-class criteria, and will NOT appear in
+    /// `weak_passwords`.  See `password_strength()` for the full algorithm.
+    ///
+    /// iter-64: added to surface the no-dictionary-check limitation directly
+    /// in the API response rather than requiring callers to read the source.
+    pub scoring_note: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +74,24 @@ pub struct AuditItem {
 ///     shorter than 8 characters) and identifies structural strength (length ≥
 ///     16 with mixed character classes).  "Fair" is intentionally conservative:
 ///     any password that is not clearly strong is flagged for review.
+///
+/// # Known limitation — no dictionary check (iter-64)
+///
+/// This algorithm has **no dictionary check**.  Common passwords such as
+/// `"password123"`, `"letmein1!"`, or `"Summer2024!"` contain 8+ characters
+/// and meet the length + character-class criteria — they will be classified
+/// `"fair"` (or even `"strong"` if they hit 16 chars with 3+ classes) rather
+/// than `"weak"`.  They will NOT appear in `AuditResult::weak_passwords`.
+///
+/// This is a deliberate tradeoff (see algorithm rationale above).  Operators
+/// who want dictionary-based detection should supplement the built-in audit
+/// with an external tool (zxcvbn, `cracklib`, HIBP k-anonymity) or run the
+/// credential-audit sidecar (`src/credential_audit/`) against a live wordlist.
+///
+/// The `GET /vault/audit/run` response includes `weak_threshold_len` so
+/// callers can display the scoring rules alongside results.  A future version
+/// may add a `scoring_notes` field that surfaces this limitation directly in
+/// the API response.
 ///
 /// Rules:
 ///  - len < 8                                  → "weak"   (reported in `weak_passwords`)
@@ -199,6 +229,10 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         weak_passwords,
         reused_passwords,
         weak_threshold_len: WEAK_THRESHOLD,
+        // iter-64: surface the no-dictionary-check limitation in the API response.
+        scoring_note: "rule-based heuristic: length + character classes only; \
+                       no dictionary check — common passwords like 'password123' \
+                       may score 'fair' if they meet the length threshold",
     }
 }
 

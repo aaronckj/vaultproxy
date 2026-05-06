@@ -2623,6 +2623,18 @@ vault_item  = "vault-proxy - Beta"
             200,
             "GET /vault/audit/run must return 200 OK with a valid bearer token"
         );
+        // iter-64: verify Content-Type: application/json on the success path.
+        // The return type was changed from Json<AuditResult> to axum::response::Response
+        // in iter-63; confirm the manual `.into_response()` path still sets the header.
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("application/json"),
+            "GET /vault/audit/run 200 response must have Content-Type: application/json; got: '{content_type}'"
+        );
         let body: serde_json::Value = resp.json().await.expect("audit/run must return JSON");
         assert!(
             body.get("total_items").is_some(),
