@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "0.2.3"
+version = "0.2.5"
 edition = "2021"
 # MSRV is not declared here because transitive dependencies (cookie_store,
 # time, icu_* crates) currently require recent stable releases and their

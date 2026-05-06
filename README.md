@@ -289,6 +289,44 @@ vault-proxy includes a built-in credential health scanner that detects weak, reu
 
 Results are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
 
+### Complete credential audit workflow
+
+**Step 1 — Start a scan:**
+```bash
+RUN_ID=$(curl -sX POST http://127.0.0.1:3201/audit/credaudit/scan/start | jq -r .run_id)
+```
+
+**Step 2 — Poll until items appear:**
+```bash
+curl http://127.0.0.1:3201/audit/credaudit/review_pending/$RUN_ID
+```
+Returns a JSON array of flagged items. Each entry includes `item_id`, `status` (e.g. `"dead"`, `"weak"`, `"duplicate"`), `reason`, and `pass` number. An empty array (`[]`) means the scan is still running or found nothing to flag — poll again in a few seconds if the scan was just started. A `404` means the `run_id` is unknown.
+
+**Step 3 — Dry-run apply (preview only):**
+```bash
+curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id": "'$RUN_ID'", "dry_run": true}'
+```
+Returns `{"applied": 0, "would_apply": N, "failed": 0}`. No vault changes are made.
+
+**Step 4 — Apply to specific items (or all flagged items):**
+```bash
+# Apply to specific items only:
+curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id": "'$RUN_ID'", "dry_run": false, "item_ids": ["<id1>", "<id2>"]}'
+
+# Apply to all flagged items (>50 items requires confirm_bulk: true):
+curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id": "'$RUN_ID'", "dry_run": false, "confirm_bulk": true}'
+```
+`apply` moves each flagged vault item into a Vaultwarden folder named `_review-delete` and appends an audit marker block to its notes field. The folder is created automatically if it does not exist. The `confirm_bulk: true` flag is required when applying to more than 50 items without specifying `item_ids`, as a safeguard against accidental bulk operations.
+
+**Undo an apply:**
+`apply` does not delete items — it only moves them. To undo, open Vaultwarden and move the items from `_review-delete` back to their original folder (or `No Folder`). The audit marker block in the notes field is inert and can be deleted manually if desired. There is no automated undo endpoint.
+
 ## Operator runbook
 
 ### vault-proxy won't start

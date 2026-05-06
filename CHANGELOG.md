@@ -3,6 +3,50 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.5] — iteration 52: credential audit workflow docs, audit.rs wiring notes
+
+### Documentation
+
+- **README credential audit section — complete workflow (iter-52)**: The
+  `## Credential audit` section previously listed only the three endpoints
+  with terse table rows. Added a `### Complete credential audit workflow`
+  sub-section with: (1) step-by-step `curl` examples for scan start →
+  poll → dry-run → apply, (2) explicit documentation of what `apply` does
+  (moves items to `_review-delete`, appends marker to notes — never deletes),
+  (3) the `confirm_bulk` threshold (>50 items without `item_ids`) explained
+  inline, and (4) an **undo path**: move items back from `_review-delete` in
+  Vaultwarden — there is no automated undo endpoint.
+
+- **`src/audit.rs` — wiring requirements documented (iter-52)**: The
+  existing comment block already explains the separation from
+  `src/credential_audit/`; clarified that `run_audit` needs to be called from
+  either (a) the audit-log dashboard endpoint or (b) a new scheduled endpoint
+  to be wired in v1.0. No code changes required — the `#![allow(dead_code)]`
+  suppression is intentional and correct until the v1.0 wiring is done.
+
+### Findings documented (no code change required)
+
+- **`marker.mark()` folder creation** — `ensure_folder_by_name()` in
+  `VaultManager` already creates `_review-delete` on-demand before the first
+  move. No failure path on missing folder.
+
+- **`_review-delete` folder name** — hardcoded as `REVIEW_DELETE_FOLDER`
+  constant in `src/credential_audit/marker.rs`. Could be made configurable
+  via `--vault-folder-review` in a future release; acceptable for v0.x.
+
+- **`BrowserAgent::new()` empty model** — `new()` accepts `""` without
+  error; the runtime guard at `browser_rotate` (main.rs) fires before any
+  workflow spawns and returns a clear 400. No initialization-time validation
+  needed.
+
+- **`sync/cloud.rs`** — `SyncManager` is fully implemented (auth, full sync,
+  cipher re-encrypt, collection→folder mapping, semaphore dedup). No unit
+  tests for `CloudClient` because it requires live Bitwarden credentials; the
+  integration path is exercised by `SyncManager::full_sync`. Acceptable gap
+  for v0.x — noted for v1.0 with mock HTTP testing.
+
+- **Trailing whitespace** — 0 violations (`grep -rn ' $' src/ | grep '\.rs$'`).
+
 ## [0.2.4] — iterations 49–51: playwright guard, credential_audit 404, fmt, audit clarity
 
 ### Bugs fixed
