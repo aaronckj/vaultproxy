@@ -5,6 +5,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.3] — iterations 124–126: UniFi session invalidation complete, multi-service invalidation, v1.0.3 release
+
+### Bugs (iter-126)
+
+- **`items.html` only invalidates `serviceNames[0]` — second+ service sessions remain cached after rotation (iter-126)** — `dashboard/items.html:57`. MEDIUM.
+  When a vault item is shared by multiple services (e.g. `"vault-proxy - UniFi"` used by both
+  `unifi_home` and `unifi_backup`), `rotateItem()` only forwarded `serviceNames[0]` as the scalar
+  `unifi_service_name` field.  The second service's cached session cookie remained live until the
+  controller's own TTL expired, allowing subsequent proxy calls to authenticate with the rotated
+  (now-invalid) credential.
+  Fixed (two parts):
+  1. `items.html:rotateItem()` now sends `unifi_service_names: item.serviceNames` (the full array)
+     instead of `unifi_service_name: item.serviceNames[0]` (scalar, first element only).
+  2. `browser_rotate` in `src/main.rs` upgraded from `unifi_service_name: Option<String>` (single)
+     to `unifi_service_names: Vec<String>` (all matching services).  Accepts both
+     `"unifi_service_names": [...]` (array, preferred) and `"unifi_service_name": "..."` (scalar
+     legacy) for backward compatibility with old callers.  The invalidation block is now a loop
+     that clears every matching service session.
+
+- **`v1.0.3` GitHub release missing (iter-126)** — process gap.
+  The git tag `v1.0.3` was created at the iter-125 commit but `gh release create` was never run.
+  `gh release list` showed Latest = `v1.0.2`.  Fixed: release created in this iteration.
+
+### Verified (iter-126) — iter-125 wiring audit
+
+Ten specific areas were audited. Two bugs found and fixed (above); remainder pass.
+
+1. **`items.html` only invalidates `serviceNames[0]`** — FIXED (see Bugs above). Now sends full
+   `unifi_service_names` array; server loops over all entries.
+2. **`GET /api/items` exposes service names in dashboard** — INFO, NOT A BUG. Endpoint already
+   requires dashboard session auth. Service names (e.g. `"sonarr_main"`) are routing keys,
+   not secrets; exposure is intentional for the rotation UI context.
+3. **`v1.0.3` GitHub release** — FIXED (see Bugs above).
+4. **`AuthPattern::vault_item()` — all 6 variants covered** — PASS. All 6 variants (Bearer,
+   Header, QueryParam, Basic, Session, UnifiDual) return the correct `vault_item` field.
+   `Basic` uses `vault_item` as the credential source with separate `key_field`/`secret_field`;
+   `vault_item()` correctly returns `self.vault_item`, not a key/secret field.
+5. **`browser_rotate` with `unifi_service_name` for non-existent service** — PASS. TRUE NO-OP.
+   `invalidate()` uses `self.inner.get(service)` — if the key is absent, `get()` returns `None`
+   and the `if let` block is skipped entirely. No spurious entry is inserted into the DashMap.
+6. **Multiple service invalidation — `browser_rotate` only handles one service** — FIXED (see
+   Bugs above). Upgraded to `Vec<String>` with loop over all service names.
+7. **`GET /api/items` registry lock held during JSON serialization** — PASS. Lock is ALREADY
+   released before serialization. `drop(registry)` at `src/dashboard/api.rs:137` is called
+   before the `serde_json::to_value(&items)` call at line 140. No blocking issue.
+8. **`ServiceEntry::vault_item()` returns `&str` — lifetime safety** — PASS. The registry lock
+   IS held while building the reverse map (lines 125–136); all string values are cloned via
+   `.to_string()` at line 134, so no dangling references exist after `drop(registry)` at line 137.
+9. **`vault_item_accessor_tests` — covers `UnifiDual`** — PASS. Test at `registry.rs:2682` explicitly
+   sets `vault_item = "unifi-home-item"` and `login_path = "/api/auth/login"`, asserting the accessor
+   returns `"unifi-home-item"` (the credential name), not the login path.
+10. **`CHANGELOG.md` iter-125 entry** — PASS. `[1.0.3]` section present with full iter-125 coverage
+    including `items.html serviceNames` fix and `AuthPattern::vault_item()` addition. Updated here
+    with iter-126 additions.
+
+### Quality gates (iter-126)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **324 passed** (+ 2 integration) = **326 total**; 0 failed
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
+
 ## [1.0.3] — iterations 124–125: UniFi session invalidation complete, serviceNames in items API
 
 ### Bugs (iter-125)

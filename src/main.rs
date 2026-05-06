@@ -2710,17 +2710,32 @@ async fn browser_rotate(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    // iter-124: Optional UniFi service name. When the rotated item is a UniFi
-    // service, callers pass the registry service name (e.g. "unifi_home") so
-    // that the cached session cookie is invalidated on a successful rotation.
-    // Without this, the old session cookie continues to authenticate subsequent
-    // proxy calls against the controller until UDM's own session TTL expires,
-    // which defeats the rotation's intent.  This is `None` for non-UniFi items.
-    let unifi_service_name: Option<String> = req
-        .get("unifi_service_name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+    // iter-124/126: UniFi service name(s) to invalidate on successful rotation.
+    // When the rotated vault item is shared by multiple services (e.g. two UniFi
+    // controllers pointing at the same "vault-proxy - UniFi" item), all matching
+    // service sessions must be invalidated — not just the first one.
+    //
+    // Accepts two shapes from the request body (for forward/backward compat):
+    //   - `"unifi_service_names": ["svc_a", "svc_b"]`  — array (preferred, iter-126)
+    //   - `"unifi_service_name": "svc_a"`               — scalar (iter-124 legacy)
+    //
+    // For non-UniFi items the list is empty and the invalidation loop is a no-op.
+    let unifi_service_names: Vec<String> = {
+        // Prefer the array form; fall back to the scalar form for old callers.
+        if let Some(arr) = req.get("unifi_service_names").and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            req.get("unifi_service_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default()
+        }
+    };
 
     if item_name.is_empty() {
         return (
@@ -2828,7 +2843,7 @@ async fn browser_rotate(
     let model_name = browser.model_name.clone();
     let browser_ref = Arc::clone(&browser);
     let item_name_response = item_name.clone();
-    // iter-124: Clone the session cache so the spawn can invalidate it on
+    // iter-124/126: Clone the session cache so the spawn can invalidate it on
     // successful rotation.  The Arc clone is cheap — no data is copied.
     let unifi_sessions = Arc::clone(&state.unifi_sessions);
 
@@ -2855,13 +2870,16 @@ async fn browser_rotate(
             *browser_ref.last_screenshot.write().await = Some(screenshot.clone());
         }
 
-        // iter-124: Invalidate the UniFi session cache on successful rotation
+        // iter-124/126: Invalidate the UniFi session cache on successful rotation
         // so the next proxy call picks up the new credential instead of
         // continuing to authenticate with the old (now-rotated) session cookie.
-        // This call is a no-op when `unifi_service_name` is None (non-UniFi
-        // items) or when the service has no cached session (first rotation).
+        // All matching service sessions are invalidated (not just the first one)
+        // to handle vault items shared by multiple services (e.g. two UniFi
+        // controllers pointing at the same credential item).
+        // This loop is a no-op when `unifi_service_names` is empty (non-UniFi
+        // items) or when a service has no cached session (first rotation).
         if success {
-            if let Some(ref svc) = unifi_service_name {
+            for svc in &unifi_service_names {
                 tracing::info!(
                     service = %svc,
                     item = %item_name,

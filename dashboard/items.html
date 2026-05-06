@@ -46,15 +46,19 @@
 
     <script src="/static/app.js"></script>
     <script>
-    // iter-125: rotateItem now accepts the full item object so it can pass
-    // unifi_service_name for UniFi items.  The server-side browser_rotate
+    // iter-125/126: rotateItem accepts the full item object so it can pass
+    // unifi_service_names for UniFi items.  The server-side browser_rotate
     // handler uses this to invalidate the cached session cookie on a
-    // successful rotation (iter-124).  For non-UniFi items serviceNames is
-    // empty and the field is omitted — a no-op on the server.
+    // successful rotation (iter-124).  ALL matching service sessions are
+    // invalidated so that vault items shared by multiple services (e.g.
+    // "vault-proxy - UniFi" used by both unifi_home and unifi_backup) have
+    // every stale session cleared — not just the first one.
+    // For non-UniFi items serviceNames is empty and the field is omitted —
+    // a no-op on the server.
     async function rotateItem(item) {
         var body = {item_name: item.name};
         if (item.serviceNames && item.serviceNames.length > 0) {
-            body.unifi_service_name = item.serviceNames[0];
+            body.unifi_service_names = item.serviceNames;
         }
         await fetch('/api/browser/rotate', {
             method: 'POST',
