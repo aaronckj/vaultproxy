@@ -6,6 +6,12 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+// Issue (iter-87): Wire sanitize_output so that every LLM response is
+// sanitised for prompt-injection patterns before it is parsed into a
+// VisionAction.  `sanitize_output` was tagged `post-v1.0:` in iter-85
+// because it had no production caller; this wiring removes that tag.
+use crate::security::sanitize::sanitize_output;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum VisionAction {
@@ -146,11 +152,29 @@ Rules:\n\
             .next()
             .map(|c| c.message.content)
             .ok_or_else(|| anyhow!("LiteLLM response had no choices"))?;
-        let raw = raw.trim();
+
+        // Issue (iter-87): Sanitize the LLM response before any parsing.
+        // Vision responses come from a local model (MLbox) but the screenshot
+        // content they describe may include adversarial text from web pages
+        // (prompt injection via embedded "IGNORE PREVIOUS INSTRUCTIONS" or
+        // <tool_call> tags in page content).  sanitize_output strips known
+        // injection phrases and LLM control tokens before the JSON is parsed
+        // and before any field value can influence downstream tool decisions.
+        //
+        // Note: sanitize_output is aggressive — it may also replace fragments
+        // of valid JSON if the LLM echoes the user prompt verbatim.  In
+        // practice the model returns exactly one JSON object; the only field
+        // values that could contain injection text are `reason` (logged only)
+        // and `selector` (used for Playwright interactions).  Both are safe to
+        // sanitise because [FILTERED] causes a selector look-up miss which the
+        // workflow engine handles by retrying or aborting the step — a safe
+        // degradation that preserves the vault's integrity.
+        let raw = sanitize_output(raw.trim());
+        let raw_str = raw.as_str();
 
         // Strip <think>...</think> reasoning blocks emitted by thinking
         // models (e.g. Qwen3-VL when reasoning is enabled).
-        let raw = strip_think_blocks(raw);
+        let raw = strip_think_blocks(raw_str);
         let raw = raw.trim();
 
         // Strip markdown code fences if present (```json ... ``` or ``` ... ```)

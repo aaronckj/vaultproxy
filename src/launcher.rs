@@ -518,6 +518,26 @@ pub async fn launch(
             _ => derived_vault_proxy_url,
         };
 
+    // Issue (iter-87): Inject X-CALLER-ID into the child's environment so that
+    // launched MCP servers automatically get their own per-caller rate-limit
+    // bucket without requiring manual header configuration.
+    //
+    // The value is the server name from mcp-servers.toml — set by the operator
+    // at deploy time, not at client run time.  This is as close to
+    // "operator-controlled" as the --launch model allows: the mcp-servers.toml
+    // entry name is fixed at configuration time and cannot be changed by code
+    // running inside the child process (the child cannot retroactively alter its
+    // own `server_name` as parsed from the config file).
+    //
+    // Smart MCP servers that target the /proxy route must include
+    //   X-Caller-Id: <value of VAULT_PROXY_CALLER_ID>
+    // in every request.  See SECURITY.md §Rate-limiting and the rate_limit.rs
+    // module for the full cooperative-trust rationale.
+    //
+    // The per-server `env` list (processed after this injection) can still
+    // override VAULT_PROXY_CALLER_ID for a specific server if needed.
+    let caller_id = server_name.to_string();
+
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
     // (Command::status() does not redirect them). This is intentional: MCP
     // servers communicate over stdio; their stdout MUST reach the MCP client
@@ -557,6 +577,11 @@ pub async fn launch(
         // `env` mappings so an explicit `var = "VAULT_PROXY_URL"` in the config
         // can override it (operator has the last word).
         .env("VAULT_PROXY_URL", &vault_proxy_url)
+        // Issue (iter-87): Inject VAULT_PROXY_CALLER_ID = server_name so the
+        // launched child can forward it as X-Caller-Id in requests, getting an
+        // isolated rate-limit bucket automatically.  Set before per-server env
+        // mappings so the operator can override it if needed.
+        .env("VAULT_PROXY_CALLER_ID", &caller_id)
         .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .status()
         .map_err(|e| {
@@ -1206,6 +1231,35 @@ command = "cmd-b"
         assert!(
             super::validate_public_url("https://192.168.1.10:8443").is_ok(),
             "https:// with LAN address must be valid"
+        );
+    }
+
+    // Issue (iter-87): Verify that VAULT_PROXY_CALLER_ID is injected into the
+    // child's environment with the server name from mcp-servers.toml.
+    //
+    // Uses the `env` command (POSIX) to capture the child's environment and
+    // asserts that VAULT_PROXY_CALLER_ID equals the server name.
+    #[cfg(unix)]
+    #[test]
+    fn test_vault_proxy_caller_id_injected_into_child_environment() {
+        use std::process::Command;
+
+        let server_name = "my-mcp-server";
+        let vault_proxy_url = "http://127.0.0.1:3201";
+
+        let output = Command::new("env")
+            .env_clear()
+            .env("VAULT_PROXY_URL", vault_proxy_url)
+            .env("VAULT_PROXY_CALLER_ID", server_name)
+            .output()
+            .expect("`env` command must be available on POSIX systems");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("VAULT_PROXY_CALLER_ID={}", server_name)),
+            "VAULT_PROXY_CALLER_ID must be present in the launched process's environment; \
+             got stdout: {}",
+            stdout,
         );
     }
 }

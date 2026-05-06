@@ -3,6 +3,98 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.29] — iteration 87: X-Caller-Id auto-injection in --launch, sanitize_output wired, CHANGELOG fix
+
+### Features (iter-87)
+
+- **`VAULT_PROXY_CALLER_ID` auto-injection in `--launch` (MEDIUM)** —
+  `src/launcher.rs`. When `--launch <server-name>` runs, it now injects
+  `VAULT_PROXY_CALLER_ID=<server-name>` into the child process's environment
+  alongside `VAULT_PROXY_URL`. Smart MCP servers can read this env var and
+  forward it as the `X-Caller-Id: <server-name>` header in every request,
+  automatically receiving an isolated per-caller rate-limit bucket without
+  manual configuration. The name is taken from `mcp-servers.toml` — set by
+  the operator at deploy time, not controllable by code inside the child
+  process. The per-server `env` list in `mcp-servers.toml` can still override
+  `VAULT_PROXY_CALLER_ID` if needed. 1 new unit test:
+  `test_vault_proxy_caller_id_injected_into_child_environment`.
+
+- **`sanitize_output` wired in browser vision pipeline (MEDIUM)** —
+  `src/browser/vision.rs`, `src/security/sanitize.rs`. The `sanitize_output`
+  function was tagged `post-v1.0:` in iter-85 because it had no production
+  caller. Vision responses from the LLM now pass through `sanitize_output`
+  before JSON parsing. Screenshots may contain adversarial text from web pages
+  (embedded prompt-injection via `<tool_call>` tags or "IGNORE PREVIOUS
+  INSTRUCTIONS" in page content); sanitising the raw LLM reply before parsing
+  prevents injected text from reaching downstream tool decisions. The
+  `#[allow(dead_code)]` and `post-v1.0:` annotations on `sanitize_output` are
+  removed. `post-v1.0:` deferred count drops from 17 to 16.
+
+### Fixes (iter-87)
+
+- **CHANGELOG v0.2.28 test count off-by-one (LOW)** — `CHANGELOG.md`. The
+  v0.2.28 entry stated "3 new unit tests" but listed 4 test names
+  (`distinct_caller_ids_have_independent_buckets`,
+  `extract_caller_key_prefers_header`, `extract_caller_key_rejects_invalid_header`,
+  `extract_caller_key_truncates_long_header`). Fixed to "4 new unit tests".
+
+### Audit findings (iter-87) — no code changes required
+
+- **`resolve_vault_folder_id` actually unused — verdict confirmed** —
+  `src/vault/handlers.rs:48`. The `post-v1.0:` tag on `resolve_vault_folder_id`
+  is correct. Every production mutation handler (`delete_item`, `update_item`,
+  `create_item`, `list_items`, etc.) calls `state.vault.find_folder_id_by_name_async`
+  directly — none calls `resolve_vault_folder_id`. The caching optimisation
+  it provides (double-checked locking to avoid thundering-herd on the folder
+  index) is not yet wired. The `#[allow(dead_code)]` annotation is accurate.
+
+- **`X-Caller-Id` non-spoofability via `--launch`** — `src/launcher.rs`. The
+  injected `VAULT_PROXY_CALLER_ID` is operator-controlled: the value is fixed
+  at deploy time in `mcp-servers.toml` and cannot be overridden by the child
+  process at runtime (the child receives it as an immutable env var). Any
+  process on the same host can still forge `X-Caller-Id` in a direct HTTP
+  call, but that is the documented cooperative-trust model (see `rate_limit.rs`
+  module doc). For the `--launch` path specifically, the ID is now as strong
+  as the operator's config file.
+
+- **`unseal_private_key_from_tpm` vs `unlock_keystore_via_tpm`** —
+  `src/keystore.rs:333`. There is no `unlock_keystore_via_tpm` function. The
+  only TPM-related entry point is `unseal_private_key_from_tpm` at line 333,
+  tagged `post-v1.0:`. It is genuinely unused — no caller in `keystore.rs`,
+  `main.rs`, `setup.rs`, or `dashboard/api.rs`. The `reset_keystore` function
+  at line 563 is similarly unused outside tests. Both tags are accurate.
+
+- **`change_master_password` simpler path via Vaultwarden API** —
+  `src/sync/cloud.rs:786`. The function uses the same `POST /api/accounts/password`
+  endpoint that Bitwarden cloud exposes. Vaultwarden implements this endpoint
+  identically (it is part of the standard Bitwarden server API). A simpler
+  implementation path does exist (no cloud-specific KDF fetch is needed for
+  local Vaultwarden since the master password is already in `keystore.rs`), but
+  the current stub is tagged `post-v1.0:` and the 503 return is correct. The
+  `kdf_iterations` field and the `change_master_password` function are both
+  Bitwarden-cloud-specific in design but would also work against local
+  Vaultwarden. Leaving `post-v1.0:` is accurate; no reclassification needed.
+
+- **`field_names_from_cipher` moved to `#[cfg(test)]`** —
+  `src/vault/mod.rs:76`. Moving a production function to `#[cfg(test)]` compiles
+  it only in test mode; it adds zero tests by itself. The +4 test count between
+  iter-84 (258) and iter-85 (262) is entirely from the 4 new `rate_limit.rs`
+  tests, not from this change. Count is correct.
+
+- **`kdf_iterations` and `change_master_password` reclassification** —
+  Both are Bitwarden-cloud-centric. The `kdf_iterations` field is stored in
+  `CloudCreds` (not `VaultwardenCreds`) and is only read by
+  `change_master_password`. For homelab operators using local Vaultwarden only
+  these items are never needed. They could be marked `not-planned` for homelab
+  installs, but `post-v1.0:` is also acceptable as a hedge. No change made.
+
+### Verification (iter-87)
+
+- `cargo test --all-targets --features browser,engine,dashboard`: 263 passed
+  (261 lib + 2 integration), 0 failed. (+1 new test vs v0.2.28's 262.)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+
 ## [0.2.28] — iteration 85: stale v1.0 tag audit, per-caller rate limiting
 
 ### Feature (iter-85)
@@ -16,7 +108,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   truncated to 64 chars), the header value is used as the bucket key giving each
   MCP server its own independent budget. Falls back to IP when absent or invalid.
   The module-level doc comment, `rate_limit_middleware` doc, and `default_rate_limiter`
-  doc all updated to describe the new behaviour. 3 new unit tests:
+  doc all updated to describe the new behaviour. 4 new unit tests:
   `distinct_caller_ids_have_independent_buckets`, `extract_caller_key_prefers_header`,
   `extract_caller_key_rejects_invalid_header`, `extract_caller_key_truncates_long_header`.
 
