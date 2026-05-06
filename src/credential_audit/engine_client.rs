@@ -145,9 +145,11 @@ pub struct EngineRunResponse {
     // run_id and telemetry_summary are present in the engine JSON response
     // and may be consumed by future dashboard telemetry integrations.
     #[allow(dead_code)]
+    // iter-82: scaffold — will be surfaced in dashboard audit-runs telemetry tab
     pub run_id: String,
     pub items: Vec<EngineItemResult>,
     #[allow(dead_code)]
+    // iter-82: scaffold — will be surfaced in dashboard audit-runs telemetry tab
     pub telemetry_summary: serde_json::Value,
 }
 

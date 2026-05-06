@@ -1,13 +1,13 @@
 # Rust toolchain channel declaration.
 #
 # This file is read by rustup (local development) and dtolnay/rust-toolchain
-# in GitHub Actions. Using "stable" here means developers always use the
-# current stable release; the CI workflow independently pins to a specific
-# version for reproducibility (see .github/workflows/docker-publish.yml).
+# in GitHub Actions (via `toolchain: stable` in docker-publish.yml). Using
+# "stable" means developers and CI always use the current stable release —
+# both environments track the same moving target.
 #
-# When adopting a Rust feature that requires a minimum release (e.g. a new
-# stdlib stabilisation), update the CI workflow's toolchain pin at the same
-# time to a version that includes that feature.
+# When adopting a Rust feature that requires a specific minimum release (e.g.
+# a new stdlib stabilisation), update the MSRV in Cargo.toml (`rust-version`)
+# at the same time so `cargo check` enforces the floor.
 
 [toolchain]
 channel = "stable"

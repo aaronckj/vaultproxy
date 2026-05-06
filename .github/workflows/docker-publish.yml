@@ -62,6 +62,16 @@ jobs:
         # warning would pass CI, contradicting the stated policy.
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Run Clippy (full feature matrix)
+        # iter-83: the browser and engine modules are feature-gated, so the
+        # default-features clippy step above never compiles them and cannot catch
+        # dead-code or other warnings introduced in those modules.  Running a
+        # second clippy pass with all three opt-in features ensures that
+        # iter-82's targeted #[allow(dead_code)] annotations remain correct as
+        # the scaffold is wired up, and that no new warnings creep in under
+        # any feature combination.
+        run: cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings
+
       - name: Run tests
         # iter-43: --all-targets ensures tests in [[bench]], [[example]], and
         # integration test binaries are all exercised.  Without it, cargo test

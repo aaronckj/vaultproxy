@@ -46,10 +46,13 @@
 FROM rust:slim-bookworm AS builder
 
 # Install build dependencies.
-# - libssl-dev / pkg-config: required by reqwest's TLS stack (rustls) linking.
-# - libsqlite3-dev: required by rusqlite unless `bundled` feature is active.
-#   We use `bundled` in Cargo.toml so no system SQLite is needed, but having
-#   the dev headers prevents confusing build errors on modified configs.
+# - pkg-config / libssl-dev: kept as a defensive measure for any future dep
+#   that links against OpenSSL. Currently NOT required: reqwest uses the
+#   `rustls-tls` feature flag (pure-Rust TLS, no OpenSSL linkage), and
+#   rusqlite uses `bundled` (embeds SQLite from C source, no system sqlite).
+#   Removing them is safe but provides no binary-size benefit; keeping them
+#   avoids surprising build failures if a transitive dep is ever added that
+#   expects native OpenSSL.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \

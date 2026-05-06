@@ -3,6 +3,70 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.26] — iteration 83: CI clippy feature matrix, CONTRIBUTING MSRV + test commands, dead_code comment hygiene
+
+### Bug fixes (iter-83)
+
+- **CI Clippy gap: feature-gated modules never linted (HIGH)** —
+  `.github/workflows/docker-publish.yml` ran `cargo clippy --all-targets -- -D warnings`
+  with default features only. Because the `browser` and `engine` modules are entirely
+  absent from the default build, a dead-code warning or other lint introduced inside
+  those modules would silently pass CI. A new step
+  `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`
+  added immediately after the existing step closes this gap.
+  `.github/workflows/docker-publish.yml`.
+
+- **CONTRIBUTING.md test command stale and incomplete (MEDIUM)** —
+  The "Running tests" section said `cargo test` (no `--all-targets`) and claimed CI
+  runs `cargo test --workspace` (wrong — CI runs `cargo test --all-targets`). Neither
+  mentioned the full-feature-matrix test added in iter-82. Updated to document both
+  required invocations with exact flags.
+  `CONTRIBUTING.md`.
+
+- **CONTRIBUTING.md missing MSRV (MEDIUM)** — No mention of the minimum supported
+  Rust version. Contributors installing Rust from their distro package manager (e.g.
+  `apt install rustc`) would encounter an opaque `rustc 1.88 or newer required` error
+  without knowing to run `rustup update stable`. Added a new "Minimum Rust version"
+  section before "Running tests".
+  `CONTRIBUTING.md`.
+
+- **`rust-toolchain.toml` comment says CI pins a specific version — it does not (LOW)** —
+  The file comment claimed "the CI workflow independently pins to a specific version for
+  reproducibility" and advised updating "the CI workflow's toolchain pin" when the channel
+  changes. In reality CI uses `toolchain: stable` (same moving target as the file), so
+  there is no pin to update. Corrected to accurately describe the shared-stable behaviour.
+  `rust-toolchain.toml`.
+
+- **`Dockerfile` comment claims `libssl-dev` is required by reqwest (LOW)** — The comment
+  said `libssl-dev / pkg-config: required by reqwest's TLS stack (rustls) linking`. This is
+  incorrect: `reqwest` is configured with `rustls-tls` and `default-features = false`,
+  meaning it uses the pure-Rust rustls stack with no OpenSSL linkage. Neither `libssl-dev`
+  nor `pkg-config` is actually required; they are retained defensively. Corrected the comment
+  to reflect this accurately.
+  `Dockerfile`.
+
+- **`Pass2Engine` dead_code annotations inconsistent with codebase v1.0 convention (LOW)** —
+  All other `#[allow(dead_code)]` annotations in the codebase use the `v1.0:` prefix to mark
+  the target milestone. The iter-82 annotations in `pass2.rs` only used the `iter-82:` tag.
+  Added `v1.0:` suffix to all six method-level and two constant-level annotations for
+  consistency with `policy.rs`, `keystore.rs`, `security/rate_limit.rs`, etc.
+  `src/credential_audit/pass2.rs`.
+
+- **Bare `#[allow(dead_code)]` without explanatory comment in `types.rs` and `engine_client.rs` (LOW)** —
+  `src/credential_audit/types.rs:33` (`Pass2Result` struct) and
+  `src/credential_audit/engine_client.rs:147,150` (`EngineRunResponse` fields) had bare
+  `#[allow(dead_code)]` annotations with no inline explanation. Added comments consistent
+  with the iter-82 scaffold pattern used elsewhere in the engine modules.
+  `src/credential_audit/types.rs`, `src/credential_audit/engine_client.rs`.
+
+### Verification (iter-83)
+
+- `cargo test --all-targets`: 228 passed (lib) + 2 passed (integration) = 230 total, 0 failed.
+- `cargo test --all-targets --features browser,engine,dashboard`: 256 passed (lib) + 2 passed (integration) = 258 total, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors (default features).
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+
 ## [0.2.25] — iteration 82: CI feature matrix, dead-code hygiene for browser/engine, MSRV 1.88
 
 ### Bug fixes (iter-82)

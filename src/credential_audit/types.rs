@@ -30,7 +30,7 @@ pub enum Pass2Verdict {
 
 // Pass2Result is serialized in pass2.rs worker output; construction will be
 // added when the Pass-2 worker result-collection path is fully wired.
-#[allow(dead_code)]
+#[allow(dead_code)] // iter-82: scaffold — constructed by pass2_run_worker when Pass-2 HTTP route is wired
 #[derive(Debug, Clone, Serialize)]
 pub struct Pass2Result {
     pub item_id: String,
