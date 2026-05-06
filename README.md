@@ -92,7 +92,7 @@ Returns JSON confirming the before/after service counts:
 }
 ```
 
-Returns `409 Conflict` if the reload would drop to zero services (rollback safety, same as SIGHUP). Requires the internal bearer token (`Authorization: Bearer <token>` from `$CONFIG_DIR/internal-token`).
+Returns `409 Conflict` if the reload would drop to zero services (rollback safety, same as SIGHUP). Returns `503 Service Unavailable` with `Retry-After: 5` if another reload is already in progress (mutex acquisition timed out after 5 s); clients should back off and retry. Requires the internal bearer token (`Authorization: Bearer <token>` from `$CONFIG_DIR/internal-token`).
 
 ```toml
 # Each [[service]] block registers one downstream service.
@@ -284,7 +284,7 @@ vault-proxy includes a built-in credential health scanner that detects weak, reu
 
 | Endpoint | Auth | Description |
 |----------|------|-------------|
-| `GET /vault/audit/run` | internal bearer | In-process password health scan. Decrypts every vault password transiently, computes HMAC fingerprints with an ephemeral key, and returns weak/reused groupings. No plaintext passwords appear in the response. Rate-limited to 2 req/60 s (expensive — decrypts all vault passwords). |
+| `GET /vault/audit/run` | internal bearer | In-process password health scan. Decrypts every vault password transiently, computes HMAC fingerprints with an ephemeral key, and returns weak/reused groupings. No plaintext passwords appear in the response. Rate-limited to 2 req/60 s (expensive — decrypts all vault passwords). Returns `503 Service Unavailable` with `Retry-After: 5` if the background audit task is already running (mutex acquisition timed out after 5 s). |
 | `POST /audit/credaudit/scan/start` | public | Start a new audit run against the engine sidecar. Returns `{"run_id": "..."}`. Returns `409` if a scan is already running; `503` if the engine sidecar is unreachable. |
 | `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `200 [...]` on success. Returns `404` with `{"error": "run_id '...' not found — no scan has been started with this ID"}` for an unknown `run_id`. |
 | `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations. Body: `{"run_id": "...", "dry_run": true, "item_ids": [...], "confirm_bulk": false}`. `dry_run` defaults to `true` — you must explicitly pass `"dry_run": false` to write changes. Returns `404` for an unknown `run_id`. Requires `confirm_bulk: true` when applying more than 50 items without explicit `item_ids`. |
@@ -316,8 +316,10 @@ Returns a JSON object:
 }
 ```
 
-- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Passwords scored `"fair"` (8–15 chars or lacking character-class diversity) are not surfaced here.
-- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned).
+- `total_items`: count of vault items that were scanned. The in-process audit (`src/audit.rs`) scans every item in `vault_folder` with no cap — `total_items` is the true vault count for that folder. (The engine-sidecar audit path in `src/credential_audit/vw_adapter.rs` enforces `SCAN_ITEM_CAP = 1_000`; that cap does not apply here.)
+- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Only items scored `"weak"` appear here; `"fair"` and `"strong"` items are excluded.
+- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`.
+- `password_strength` values: `"weak"` (fewer than `weak_threshold_len` characters), `"fair"` (meets minimum length but not strong), `"strong"` (16+ characters with 3+ character classes: lowercase, uppercase, digit, symbol). Only `"weak"` items appear in `weak_passwords`; `"fair"` and `"strong"` items are silently excluded from that list but may appear in `reused_passwords`.
 - `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
 - `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65).
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.

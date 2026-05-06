@@ -2660,22 +2660,34 @@ vault_item  = "vault-proxy - Beta"
         );
         // scoring_note must be a non-empty string.
         assert!(
-            body["scoring_note"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            body["scoring_note"]
+                .as_str()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false),
             "audit/run 'scoring_note' must be a non-empty string; got: {body}"
         );
-        // iter-66: scoring_note must embed the actual WEAK_THRESHOLD value so we
-        // catch any future drift between the constant and the human-readable note.
-        // The format!() in run_audit() interpolates WEAK_THRESHOLD (currently 8)
-        // directly into the string; if WEAK_THRESHOLD changes and the format string
-        // is not updated, this assertion will catch the mismatch.
-        let threshold_str = crate::audit::WEAK_THRESHOLD.to_string();
+        // iter-67: scoring_note must embed the full threshold phrase so we catch
+        // drift between the constant and the human-readable note.
+        //
+        // PREVIOUS (iter-66): checked `s.contains(threshold_str)` where
+        // `threshold_str = WEAK_THRESHOLD.to_string()` = "8".  This is too
+        // broad — "8" is a substring of "2024", "128-bit", "18 characters",
+        // etc.  Any note string containing the digit 8 for any reason would
+        // pass, masking a real drift between the constant and the human note.
+        //
+        // FIX: check for the full phrase `"fewer than N characters"` as
+        // produced by the `format!()` call in `run_audit()`.  If WEAK_THRESHOLD
+        // changes from 8 to 12, the note must also say "fewer than 12" — this
+        // assertion will catch the mismatch without false-positives on
+        // unrelated digit occurrences.
+        let expected_phrase = format!("fewer than {}", crate::audit::WEAK_THRESHOLD);
         assert!(
             body["scoring_note"]
                 .as_str()
-                .map(|s| s.contains(threshold_str.as_str()))
+                .map(|s| s.contains(expected_phrase.as_str()))
                 .unwrap_or(false),
-            "audit/run 'scoring_note' must contain the WEAK_THRESHOLD value ('{}'); got: {body}",
-            threshold_str
+            "audit/run 'scoring_note' must contain '{}'; got: {body}",
+            expected_phrase
         );
     }
 
