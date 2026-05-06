@@ -73,9 +73,27 @@ pub struct AuditItem {
 /// caller.
 ///
 /// Character classes: lowercase ASCII, uppercase ASCII, ASCII digits, ASCII
-/// punctuation (symbols).  Non-ASCII bytes count toward length only.
+/// punctuation (symbols).  Non-ASCII characters count toward length only
+/// (a non-ASCII character contributes 1 to the char count regardless of its
+/// UTF-8 byte width).
+///
+/// # Unicode length (iter-58)
+///
+/// Length thresholds use **character count** (Unicode scalar values), not byte
+/// count.  `str::len()` / `[u8]::len()` returns UTF-8 byte count, so a 4-char
+/// Cyrillic password like "АБВГ" (8 bytes) would wrongly pass the `>= 8`
+/// threshold and escape the "weak" classification.  We convert the byte slice
+/// to `str` when it is valid UTF-8 and count `chars()`; if the bytes are not
+/// valid UTF-8 (Bitwarden v1 legacy encoding) we fall back to byte count so
+/// the function remains infallible.
 fn password_strength(pw: &[u8]) -> &'static str {
-    let len = pw.len();
+    // iter-58: use char count (codepoints), not byte count, so Unicode passwords
+    // are measured by the number of characters visible to the user rather than
+    // their UTF-8 encoding width.  A 4-char Cyrillic password has 8 bytes but
+    // only 4 characters — it must be classified "weak" (< 8 chars), not "fair".
+    let len = std::str::from_utf8(pw)
+        .map(|s| s.chars().count())
+        .unwrap_or(pw.len()); // non-UTF-8 legacy encoding: fall back to bytes
     if len < WEAK_THRESHOLD {
         return "weak";
     }
@@ -103,12 +121,16 @@ fn hmac_hex(key: &[u8], data: &[u8]) -> String {
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Minimum password byte-length that avoids the "weak" classification.
+/// Minimum password **character** count that avoids the "weak" classification.
 ///
-/// A password with `len < WEAK_THRESHOLD` is reported in
-/// `AuditResult::weak_passwords` with `password_strength == "weak"`.
-/// Passwords ≥ this length may be "fair" or "strong" depending on character
-/// class diversity (see `password_strength()`).
+/// A password whose Unicode scalar-value count is `< WEAK_THRESHOLD` is
+/// reported in `AuditResult::weak_passwords` with `password_strength == "weak"`.
+/// Passwords with ≥ this many characters may be "fair" or "strong" depending
+/// on character class diversity (see `password_strength()`).
+///
+/// iter-58: threshold is now measured in characters (codepoints), not bytes.
+/// A 4-char Cyrillic password has 8 UTF-8 bytes but only 4 characters — it
+/// must be classified "weak".
 ///
 /// This constant is intentionally public so callers can surface the threshold
 /// alongside scan results without having to read the source.  It is also

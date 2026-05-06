@@ -3,6 +3,49 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.9] — iteration 58: Unicode password length, review-delete folder isolation, CHANGELOG
+
+### Bug fixes (iter-58)
+
+- **`password_strength()` used byte count for Unicode passwords (iter-58, MEDIUM)**:
+  `password_strength()` in `src/audit.rs` computed length via `pw.len()` (UTF-8
+  byte count) rather than character count.  A 4-character Cyrillic password like
+  "АБВГ" encodes to 8 UTF-8 bytes — exactly the `WEAK_THRESHOLD` — so it was
+  wrongly classified "fair" instead of "weak".  Fixed: the function now converts
+  the byte slice to `str` (when valid UTF-8) and calls `.chars().count()` to get
+  the Unicode scalar-value count.  Non-UTF-8 byte slices (Bitwarden v1 legacy
+  encoding) fall back to byte count so the function remains infallible.
+  Updated `WEAK_THRESHOLD` and algorithm doc-comments to say "character count"
+  instead of "byte-length".
+
+### Security / isolation (iter-58)
+
+- **`_review-delete` folder not isolated per vault_folder (iter-58, LOW)**:
+  `src/credential_audit/marker.rs` hardcoded `REVIEW_DELETE_FOLDER = "_review-delete"`.
+  Vaultwarden has no nested folders; all folders are root-level.  An operator
+  running two vault-proxy deployments (`vault_folder = "staging"` and
+  `vault_folder = "prod"`) on the same Vaultwarden would have both deployments
+  dumping flagged items into the same `"_review-delete"` folder, making it
+  impossible to attribute which deployment flagged each item without reading the
+  marker note.  Fixed: `Marker` now carries `vault_folder: Option<String>` and
+  constructs `"<vault_folder>-review-delete"` (e.g. `"staging-review-delete"`).
+  When `vault_folder` is `None` (no scope configured), the legacy `"_review-delete"`
+  name is used so existing single-deployment setups require no migration.
+  `Marker::new()` signature updated from `new(vault)` to `new(vault, vault_folder)`;
+  all three call sites updated (`main.rs`, `orchestrator.rs` test helper,
+  `proxy/mod.rs` integration test).  Two new unit tests replace the old
+  `folder_name_constant` test:
+  `folder_name_with_vault_folder_prefix` and `folder_name_none_uses_legacy_name`.
+
+### Verification (iter-58)
+
+- `cargo build --release`: clean (0 errors, 0 warnings in vaultproxy crate).
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+- `cargo test`: 240 passed (238 lib/integration + 2 secret_discipline), 0 failed.
+- `cargo test --all-targets`: 240 passed, 0 failed.
+- `cargo test --release`: 240 passed, 0 failed.
+
 ## [0.2.8] — iteration 57: AuditResult threshold field, scan pagination docs, rate-limit comment fix
 
 ### Added (iter-57)

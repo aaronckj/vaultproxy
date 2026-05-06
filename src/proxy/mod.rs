@@ -2494,7 +2494,7 @@ vault_item  = "vault-proxy - Beta"
                 Some("vault-proxy".to_string()),
             )),
             engine: EngineClient::new(dead_engine_url),
-            marker: Marker::new(vault_mgr),
+            marker: Marker::new(vault_mgr, Some("vault-proxy".to_string())),
             conn,
             pass2,
         });

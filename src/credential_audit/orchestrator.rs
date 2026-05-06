@@ -744,7 +744,7 @@ mod tests {
         Orchestrator {
             vault: Arc::new(StubVault),
             engine,
-            marker: Marker::new(vault_arc),
+            marker: Marker::new(vault_arc, Some("test".to_string())),
             conn: Arc::new(std::sync::Mutex::new(conn)),
             pass2,
         }

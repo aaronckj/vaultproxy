@@ -1429,7 +1429,10 @@ async fn start_server(
             Some(args.vault_folder.clone()),
         )),
         engine: cred_audit_engine,
-        marker: credential_audit::marker::Marker::new(vault_arc.clone()),
+        marker: credential_audit::marker::Marker::new(
+            vault_arc.clone(),
+            Some(args.vault_folder.clone()),
+        ),
         conn: std::sync::Arc::new(std::sync::Mutex::new(cred_audit_conn)),
         pass2: cred_audit_pass2,
     });
