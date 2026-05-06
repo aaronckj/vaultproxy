@@ -11,3 +11,8 @@
 
 [toolchain]
 channel = "stable"
+# clippy is required by CI (cargo clippy --deny warnings would fail without it).
+# rustfmt is required for any formatting checks.  A fresh `rustup` install from
+# this file will include both so new contributors don't hit "clippy not found"
+# after cloning.
+components = ["clippy", "rustfmt"]

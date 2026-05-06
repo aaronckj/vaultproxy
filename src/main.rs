@@ -2009,6 +2009,18 @@ async fn browser_rotate(
         }));
     }
 
+    // Issue (iter-48): Guard against an empty vision model name. When
+    // --litellm-url is configured but --vision-model is empty (the default),
+    // VisionModel::analyze() sends a request with `"model": ""` — LiteLLM
+    // either rejects it with a cryptic 422/400 or routes to an unexpected
+    // model. Return a clear 400 before spawning the workflow so the operator
+    // gets an actionable message rather than a log-buried API error.
+    if browser.model_name.is_empty() {
+        return AxumJson(serde_json::json!({
+            "error": "browser rotation requires a vision model name — set VISION_MODEL (e.g. VISION_MODEL=gpt-4o)"
+        }));
+    }
+
     // Validate login_url against the same SSRF policy used by `inject_creds`
     // (blocks 169.254.0.0/16, fe80::/10, and all cloud-metadata hostnames).
     // The previous inline check only blocked two literal hostnames — bypassed

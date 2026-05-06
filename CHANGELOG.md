@@ -3,6 +3,66 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.3] — iterations 46–48: O(n²) fix, vision-model guard, toolchain components
+
+### Bugs fixed
+
+- **Empty `--vision-model` with `--litellm-url` set sent `model: ""` to LiteLLM
+  (iter-48, MEDIUM)**: When `LITELLM_URL` was configured but `VISION_MODEL` was
+  left at its default empty string, `POST /browser/rotate` spawned a workflow
+  that called LiteLLM with `"model": ""`. LiteLLM either returns a cryptic 422
+  or routes to an unexpected model, and the error only appeared in the background
+  task log — the HTTP caller received no useful message. Fixed: `browser_rotate`
+  now checks `browser.model_name.is_empty()` immediately after the
+  `litellm_url` check and returns a clear 400 with an actionable message before
+  spawning anything.
+
+### Performance
+
+- **O(n²) `aggregate()` eliminated (iter-47)**: The `aggregate()` function in
+  `connecterr_secrets.rs` previously called `list_field_names()` followed by
+  `decrypt_field()` per field name — two vault-map locks and two linear scans
+  over the field list per vault item, giving O(n²) in field count. Replaced with
+  `list_field_pairs()`, a new `VaultManager` method that acquires the items map
+  lock once and decrypts both field name and value in a single pass (O(n)). The
+  nested JSON structure built by `build_secrets_json` is unchanged — only the
+  data-collection path is rewritten. Field ordering is preserved (fields are
+  returned in the same order they appear in the vault cipher's field list).
+
+### Developer tooling
+
+- **`rust-toolchain.toml` missing `components` (iter-48, LOW)**: The file only
+  declared `channel = "stable"`. A fresh `rustup install` from the file gave the
+  developer `rustc` and `cargo` but not `clippy` or `rustfmt`. CI uses
+  `dtolnay/rust-toolchain@master` which reads the file; without `clippy` in
+  `components`, any future CI step that runs `cargo clippy` would need a separate
+  component install. Fixed: added `components = ["clippy", "rustfmt"]`.
+
+### Documentation
+
+- **`rust-toolchain.toml` `dtolnay/rust-toolchain@master` behaviour (iter-48)**:
+  Confirmed that `dtolnay/rust-toolchain@master` reads `rust-toolchain.toml`
+  automatically when the `toolchain:` input is omitted — the channel and
+  component list are both honoured. No CI workflow changes are required.
+
+### Verification
+
+- **SecureBuffer zeroization in `list_field_pairs()` (iter-47/48)**: Audited
+  end-to-end. `list_field_pairs()` returns `Vec<(String, SecureBuffer)>`. In
+  `aggregate()` each `SecureBuffer` is consumed by `buf.as_str()?.to_string()`
+  and then immediately drops as the `(fname, buf)` binding goes out of scope at
+  the end of the `for` loop body. The `SecureBuffer::drop` impl calls
+  `unlock_and_zero()` which zeroizes via the `Zeroize` trait and then
+  `munlock`s. Plaintext field values never persist beyond the loop iteration
+  that converts them to `String`s for JSON serialization.
+
+- **`list_field_pairs()` concurrent access (iter-48)**: `list_field_pairs()`
+  acquires `items.read().await` (an async `RwLock` read). A concurrent
+  `vault.sync()` that holds `items.write().await` will block the
+  `read().await` call until the write lock is released — correct behavior,
+  no deadlock possible. The `.await` ensures Tokio can yield the task rather
+  than spinning.
+
 ## [0.2.2] — iterations 43–45: IPv6 URL fix, session_login race, reverse-proxy URL, validation polish
 
 ### Bugs fixed
