@@ -4985,15 +4985,24 @@ mod sync_status_shape_tests {
             "items_synced": 0,
             "errors": [],
         });
-        assert_eq!(body["ok"], true, "sync_status configured path must contain ok: true");
-        assert!(body["state"].is_string(), "sync_status must contain 'state' field");
+        assert_eq!(
+            body["ok"], true,
+            "sync_status configured path must contain ok: true"
+        );
+        assert!(
+            body["state"].is_string(),
+            "sync_status must contain 'state' field"
+        );
     }
 
     /// `GET /sync/status` not-configured path must include `"ok": true`.
     #[test]
     fn sync_status_not_configured_has_ok_true() {
         let body = json!({ "ok": true, "state": "not_configured" });
-        assert_eq!(body["ok"], true, "sync_status not_configured path must contain ok: true");
+        assert_eq!(
+            body["ok"], true,
+            "sync_status not_configured path must contain ok: true"
+        );
         assert_eq!(
             body["state"].as_str().unwrap_or(""),
             "not_configured",
@@ -5012,7 +5021,10 @@ mod sync_status_shape_tests {
         });
         assert_eq!(body["ok"], false, "setup_cloud stub must contain ok: false");
         assert!(
-            body["error"].as_str().unwrap_or("").contains("not yet implemented"),
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not yet implemented"),
             "setup_cloud stub must contain an explanatory error message"
         );
     }
