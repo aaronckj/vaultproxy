@@ -2529,18 +2529,12 @@ vault_item  = "vault-proxy - Beta"
     /// Build a minimal internal router with GET /vault/audit/run behind the
     /// bearer-token middleware and a rate limiter wired at the app level.
     /// Shared by the three sub-tests below.
-    fn make_audit_run_app(
-        state: Arc<AppState>,
-        rate_limit: u64,
-    ) -> (Router, String) {
+    fn make_audit_run_app(state: Arc<AppState>, rate_limit: u64) -> (Router, String) {
         use crate::security::rate_limit::RateLimiter;
         let token = state.internal_token.as_str().to_string();
 
         let internal_router = Router::new()
-            .route(
-                "/vault/audit/run",
-                get(crate::audit::handle_audit_run),
-            )
+            .route("/vault/audit/run", get(crate::audit::handle_audit_run))
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 crate::require_internal_token,
