@@ -3,6 +3,58 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.18] — iteration 73: notification priority scaling, audit shutdown await
+
+### Bug fixes (iter-73)
+
+- **Rustfmt failure: multi-line `tracing::debug!` in audit shutdown path
+  (iter-73, HIGH)**: The v0.2.18 CI run (25418852581) failed at the
+  `cargo fmt --check` step because the single-argument `tracing::debug!("…")`
+  macro call at line 2249 was written across three lines.  `rustfmt` collapses
+  single-argument macros to one line.  Fixed by inlining the call.
+  `src/main.rs:2249`.
+
+- **Audit task JoinHandle not awaited on SIGTERM (iter-73, MEDIUM)**: The
+  outer `tokio::spawn` wrapping the audit restart-loop was fully detached — its
+  JoinHandle was dropped immediately.  After `audit_shutdown_token.cancel()` in
+  the signal handler, `graceful_shutdown(10s)` started draining HTTP requests
+  without waiting for the audit task to finish.  An in-flight `run_audit()` could
+  keep decrypted `SecureBuffer` pages live in mlocked memory until the OS sent
+  SIGKILL.  Fixed: the JoinHandle is now stored in
+  `audit_task_handle: Option<JoinHandle<()>>` and the signal handler awaits it
+  with an 8-second `tokio::time::timeout` before starting the graceful-shutdown
+  drain.  `src/main.rs:2103, 2360–2371`.
+
+- **Notification priority hardcoded to 4 ("high") regardless of severity
+  (iter-73, LOW)**: `inner_notifier.send(&title, &body, 4)` sent an ntfy
+  priority-4 (Android wake-lock) notification for every audit finding — including
+  a single weak password.  Fixed: priority now scales with `total_issues`
+  (weak + reuse groups): ≥ 10 → priority 4 (high), 5–9 → priority 3 (default),
+  1–4 → priority 2 (low).  Clean runs still do not notify.
+  `src/main.rs:2230–2249`.
+
+### Improvements (iter-72, documented here)
+
+- **`CancellationToken` graceful shutdown for audit background task (iter-72)**:
+  `tokio_util::sync::CancellationToken` created unconditionally at startup; the
+  signal handler calls `audit_shutdown_token.cancel()` so the audit's
+  `tokio::select!` exits early and drops `SecureBuffer`s before process exit.
+
+- **ntfy push notification on weak/reuse findings (iter-72)**: Background audit
+  task now calls `Notifier::send()` when `n_weak > 0 || n_reuse > 0`.  Clean
+  runs do not notify.  Rate-limited by the existing 5-per-5-min limiter.
+
+- **Zero-item audit result test (iter-72)**: Added `audit_zero_items_returns_clean`
+  to verify `run_audit()` on an empty vault returns
+  `weak=0, reuse=0, total=0` without panic.
+
+- **`--audit-interval-secs` CLI help text (iter-72)**: Expanded doc comment to
+  document first-tick skip, notification behaviour, and minimum interval warning.
+
+- **`tokio-util` dependency (iter-72)**: Added `tokio-util = { version = "0.7",
+  features = ["rt"] }` to `[dependencies]` to provide
+  `tokio_util::sync::CancellationToken`.  Minimum necessary feature set only.
+
 ## [0.2.17] — iteration 71 reuse reason pluralization, DISPLAY_LIMIT pub, AuditItem docs
 
 ### Bug fixes (iter-71)

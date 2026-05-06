@@ -2099,7 +2099,8 @@ async fn start_server(
     // cancel() call in the signal handler is a no-op.
     let audit_shutdown_token = tokio_util::sync::CancellationToken::new();
 
-    if args.audit_interval_secs > 0 {
+    // iter-73: capture the JoinHandle so the signal handler can await completion.
+    let audit_task_handle: Option<tokio::task::JoinHandle<()>> = if args.audit_interval_secs > 0 {
         // iter-62: warn operators who set an aggressively short interval.
         const AUDIT_MIN_INTERVAL_SECS: u64 = 60;
         if args.audit_interval_secs < AUDIT_MIN_INTERVAL_SECS {
@@ -2154,7 +2155,11 @@ async fn start_server(
         // lost.  Note: `tokio::sync::Mutex` has no poison semantics — a panic
         // while holding `audit_mutex` simply drops the guard and leaves the mutex
         // acquirable by the next caller, so no PoisonError cleanup is needed here.
-        tokio::spawn(async move {
+        // iter-73: store the JoinHandle so the signal handler can await audit
+        // completion before the process exits, ensuring SecureBuffers are
+        // zeroized within the 10-second drain window rather than relying on the
+        // OS to reclaim mlocked pages at SIGKILL time.
+        let audit_task_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
             loop {
                 let inner_vault = audit_vault.clone();
                 let inner_mutex = audit_mutex.clone();
@@ -2211,10 +2216,26 @@ async fn start_server(
                                 "credential audit background: issues found — review GET /vault/audit/run"
                             );
                             // iter-72: send push notification via configured channel
-                            // (ntfy.sh or email queue).  Priority 4 (high) so the alert
-                            // surfaces above INFO-level noise in ntfy.sh UIs.
-                            // Rate-limited internally by Notifier (5 per 5 min) — a
-                            // very short audit interval cannot flood the notification channel.
+                            // (ntfy.sh or email queue).  Rate-limited internally by
+                            // Notifier (5 per 5 min) — a very short audit interval
+                            // cannot flood the notification channel.
+                            //
+                            // iter-73: scale priority with severity so routine
+                            // single-item findings don't wake the operator's phone
+                            // with a critical alert.  ntfy priority meanings:
+                            //   2 = low  — fewer than 5 total issues (weak + reuse groups)
+                            //   3 = default — 5–9 total issues
+                            //   4 = high — 10 or more total issues (warrants immediate attention)
+                            // This avoids sending an Android wake-lock notification for
+                            // "1 weak password", while still escalating real incidents.
+                            let total_issues = n_weak + n_reuse;
+                            let priority: u8 = if total_issues >= 10 {
+                                4 // high
+                            } else if total_issues >= 5 {
+                                3 // default
+                            } else {
+                                2 // low
+                            };
                             let title = format!(
                                 "Vault audit: {} weak, {} reuse group(s) — {}",
                                 n_weak, n_reuse, inner_folder
@@ -2225,7 +2246,7 @@ async fn start_server(
                                  Review with: GET /vault/audit/run",
                                 inner_folder, n_weak, n_reuse, result.total_items
                             );
-                            inner_notifier.send(&title, &body, 4).await.ok();
+                            inner_notifier.send(&title, &body, priority).await.ok();
                         } else {
                             // Clean run — log at DEBUG to avoid 288 identical INFO lines
                             // per day when no issues exist (e.g. 300 s interval, 0 weak).
@@ -2246,9 +2267,7 @@ async fn start_server(
                         // shutdown token was cancelled.  Exit the outer loop without
                         // restarting so the task terminates cleanly.
                         if audit_shutdown_child.is_cancelled() {
-                            tracing::debug!(
-                                "credential audit background task: shutdown complete"
-                            );
+                            tracing::debug!("credential audit background task: shutdown complete");
                             return;
                         }
                         // Otherwise the inner loop exited unexpectedly — restart.
@@ -2281,13 +2300,15 @@ async fn start_server(
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
+        Some(audit_task_handle)
     } else {
         tracing::info!(
             "credential audit background: disabled \
              (set AUDIT_INTERVAL_SECS=3600 to enable hourly audits, \
              or call GET /vault/audit/run on demand)"
         );
-    }
+        None
+    };
 
     let server_handle = axum_server::Handle::new();
     let shutdown_handle = server_handle.clone();
@@ -2299,6 +2320,14 @@ async fn start_server(
     // audit would keep decrypted SecureBuffers live in mlocked memory until the
     // OS SIGKILL fires (10 s after SIGTERM on Docker).  Cancelling the token lets
     // the audit's `tokio::select!` exit early and drop all buffers promptly.
+    //
+    // iter-73: await the audit task JoinHandle (with a 8-second budget) after
+    // cancellation to ensure any in-flight `run_audit()` has fully returned and
+    // all SecureBuffers are zeroized before the process exits.  Without the await,
+    // the detached task may still hold mlocked decrypted pages when the 10-second
+    // drain window expires and the OS sends SIGKILL.  8 seconds is chosen to fit
+    // well within the 10-second graceful-shutdown window while leaving 2 seconds
+    // for HTTP request draining.
     tokio::spawn(async move {
         let sigterm_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = {
             #[cfg(unix)]
@@ -2329,6 +2358,18 @@ async fn start_server(
         // iter-72: signal the audit background task to stop so it zeroizes any
         // in-flight decrypted buffers before the process exits.
         audit_shutdown_token.cancel();
+        // iter-73: await the audit task so all SecureBuffers are dropped before
+        // the graceful-shutdown drain window starts.  Cap at 8 s so a stuck task
+        // (e.g. Vaultwarden unresponsive) cannot push past the 10-second SIGKILL.
+        if let Some(handle) = audit_task_handle {
+            match tokio::time::timeout(std::time::Duration::from_secs(8), handle).await {
+                Ok(_) => tracing::debug!("audit task joined cleanly on shutdown"),
+                Err(_) => tracing::warn!(
+                    "audit task did not finish within 8 s — proceeding with shutdown \
+                     (OS will reclaim mlocked pages at SIGKILL)"
+                ),
+            }
+        }
         // Allow up to 10 s for in-flight requests to complete before hard-kill.
         shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
     });
