@@ -179,13 +179,19 @@ pub async fn rate_limit_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    // Normalize trailing slash so `POST /vault/audit/run/` is treated
-    // identically to `POST /vault/audit/run`. Without this, a caller
+    // Normalize trailing slashes so `POST /vault/audit/run/` (or `//`) is
+    // treated identically to `POST /vault/audit/run`. Without this, a caller
     // adding a trailing slash bypasses every per-route override (e.g. the
     // 2 req/60 s cap on /vault/audit/run) and falls through to the default
-    // 60 req/60 s bucket. Strip *one* trailing slash; leave the bare `/`
-    // root path untouched so the health-check route still matches.
+    // 60 req/60 s bucket.
+    //
+    // `trim_end_matches('/')` strips ALL trailing slashes, so both
+    // `/vault/audit/run/` and `/vault/audit/run//` normalize to
+    // `/vault/audit/run`. The bare `/` root path is left untouched by the
+    // `raw.len() > 1` guard so the health-check route still matches.
+    //
     // iter-56: fix trailing-slash rate-limiter bypass.
+    // iter-57: clarify comment — strips ALL trailing slashes, not just one.
     let raw = req.uri().path();
     let path = if raw.len() > 1 && raw.ends_with('/') {
         raw.trim_end_matches('/').to_string()

@@ -23,6 +23,16 @@ pub struct AuditResult {
     pub total_items: usize,
     pub weak_passwords: Vec<AuditItem>,
     pub reused_passwords: Vec<Vec<AuditItem>>,
+    /// Minimum password length (exclusive) for classification as "weak".
+    ///
+    /// Passwords with `len < weak_threshold_len` are reported in
+    /// `weak_passwords`.  Included in the response so callers can interpret
+    /// the results without reading the source — e.g. an operator seeing
+    /// "27 weak passwords" can confirm whether "weak" means < 8 chars or
+    /// some other cutoff without consulting the code.
+    ///
+    /// iter-57: added for response transparency.
+    pub weak_threshold_len: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,7 +76,7 @@ pub struct AuditItem {
 /// punctuation (symbols).  Non-ASCII bytes count toward length only.
 fn password_strength(pw: &[u8]) -> &'static str {
     let len = pw.len();
-    if len < 8 {
+    if len < WEAK_THRESHOLD {
         return "weak";
     }
     if len >= 16 {
@@ -92,6 +102,18 @@ fn hmac_hex(key: &[u8], data: &[u8]) -> String {
     let result = mac.finalize().into_bytes();
     result.iter().map(|b| format!("{:02x}", b)).collect()
 }
+
+/// Minimum password byte-length that avoids the "weak" classification.
+///
+/// A password with `len < WEAK_THRESHOLD` is reported in
+/// `AuditResult::weak_passwords` with `password_strength == "weak"`.
+/// Passwords ≥ this length may be "fair" or "strong" depending on character
+/// class diversity (see `password_strength()`).
+///
+/// This constant is intentionally public so callers can surface the threshold
+/// alongside scan results without having to read the source.  It is also
+/// embedded in `AuditResult::weak_threshold_len`.
+pub const WEAK_THRESHOLD: usize = 8;
 
 /// Run a full credential health audit against the vault.
 ///
@@ -153,6 +175,7 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         total_items,
         weak_passwords,
         reused_passwords,
+        weak_threshold_len: WEAK_THRESHOLD,
     }
 }
 

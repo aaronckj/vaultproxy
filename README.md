@@ -309,14 +309,18 @@ Returns a JSON object:
       {"name": "Site A", "username": "user@example.com", "item_type": "login", "password_strength": "fair"},
       {"name": "Site B", "username": "user@example.com", "item_type": "login", "password_strength": "fair"}
     ]
-  ]
+  ],
+  "weak_threshold_len": 8
 }
 ```
 
-- `weak_passwords`: array of `AuditItem` objects whose password is shorter than 8 characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Passwords scored `"fair"` (8–15 chars or lacking character-class diversity) are not surfaced here.
+- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Passwords scored `"fair"` (8–15 chars or lacking character-class diversity) are not surfaced here.
 - `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned).
+- `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
-- Scoped to `vault_folder` — only items inside the configured folder are scanned (max 1 000 items per scan; see `SCAN_ITEM_CAP` in `vw_adapter.rs`).
+- Scoped to `vault_folder` — only items inside the configured folder are scanned.
+
+> **Scan item cap and pagination:** `SCAN_ITEM_CAP = 1_000` — the scan is hard-capped at 1,000 items. If your `vault_folder` contains more than 1,000 items, only the first 1,000 (in vault list order) are scanned; items 1,001 onward are silently excluded. There is no pagination or offset support. A `WARN` log is emitted when the cap is hit. To audit all items beyond the cap, split credentials across multiple vault folders and point separate `--vault-folder` instances at each, or raise `SCAN_ITEM_CAP` in `src/credential_audit/vw_adapter.rs` and recompile.
 
 ### Complete credential audit workflow
 

@@ -3,6 +3,39 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.8] — iteration 57: AuditResult threshold field, scan pagination docs, rate-limit comment fix
+
+### Added (iter-57)
+
+- **`AuditResult::weak_threshold_len` field**: The JSON response from
+  `GET /vault/audit/run` now includes `"weak_threshold_len": 8`. An operator
+  seeing "27 weak passwords" previously had no way to know whether the
+  threshold was `< 2` (very strict) or `< 8` without reading the source.
+  The field is populated from a new `pub const WEAK_THRESHOLD: usize = 8`
+  constant in `src/audit.rs`; `password_strength()` now references this
+  constant instead of the bare literal. README response example updated.
+
+### Documentation fixes (iter-57)
+
+- **Scan pagination gap documented** (`README.md`, `GET /vault/audit/run`
+  section): Added an explicit callout that `SCAN_ITEM_CAP = 1_000` is a hard
+  cap with no pagination or offset support. An operator with 2,000 items will
+  always scan the same first 1,000 in vault-list order; items 1,001 onward are
+  silently excluded. Documents the workaround (split vault folders or raise
+  the constant and recompile).
+
+- **Trailing-slash comment corrected** (`src/security/rate_limit.rs` line
+  ~186): The comment said "Strip *one* trailing slash" but
+  `trim_end_matches('/')` strips ALL consecutive trailing slashes (so
+  `/vault/audit/run//` normalizes correctly). Comment updated to reflect the
+  actual all-slash behavior and note the double-slash case explicitly.
+
+### Verification (iter-57)
+
+- `cargo build --release`: clean (0 errors, 0 warnings in vaultproxy crate).
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo test`: 239 passed, 0 failed.
+
 ## [0.2.7] — iteration 56: trailing-slash rate-limit bypass, cfg(test) registry cleanup, scan item cap, audit algorithm docs
 
 ### Security fixes (iter-56)
