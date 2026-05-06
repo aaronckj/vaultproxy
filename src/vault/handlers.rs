@@ -97,34 +97,46 @@ pub async fn resolve_vault_folder_id(state: &Arc<AppState>) -> Option<String> {
 /// double-checked-locking path in `resolve_vault_folder_id`) and then checks
 /// item membership against that ID directly, making the common case O(1).
 ///
-/// Semantics are identical to `item_name_is_in_folder`:
-///   - Returns `true` when the folder does not exist (fresh vault).
-///   - Returns `false` when the folder is known but the item is absent or
-///     belongs to a different folder.
-pub async fn item_in_vault_folder(state: &Arc<AppState>, item_name: &str) -> bool {
+/// # Return value
+///
+/// - `Some(true)`  — folder resolved and item is inside it.
+/// - `Some(false)` — folder resolved and item is **not** inside it.
+/// - `None`        — vault_folder not found (configured but absent in vault).
+///
+/// Issue (iter-100): The previous `bool` return used `true` as the permissive
+/// fallback when `vault_folder` was not found. This meant that `inject_creds`,
+/// `generate_totp`, and `decrypt_notes` — all of which decrypt and return or
+/// transmit credentials — proceeded without any folder scope verification.
+/// Callers that decrypt credentials must treat `None` as a blocking error
+/// (return 503 Service Unavailable) rather than proceeding.
+pub async fn item_in_vault_folder(state: &Arc<AppState>, item_name: &str) -> Option<bool> {
     let folder_id = match resolve_vault_folder_id(state).await {
         Some(id) => id,
         None => {
-            // Folder not found — fresh vault or rename. Warn and allow
-            // permissively (consistent with item_name_is_in_folder semantics).
+            // Folder not found — fresh vault or rename. Return None so callers
+            // can decide the appropriate error response rather than proceeding
+            // permissively. Callers that decrypt credentials must block; callers
+            // with a weaker security posture may warn-and-allow.
             tracing::warn!(
                 item_name,
                 vault_folder = %state.vault_folder,
-                "item_in_vault_folder: vault_folder '{}' not found — \
-                 allowing item '{}' permissively (fresh vault or folder renamed? \
+                "item_in_vault_folder: vault_folder '{}' not found for item '{}' \
+                 (fresh vault or folder renamed? \
                  verify --vault-folder, then call POST /vault/resync)",
                 state.vault_folder,
                 item_name,
             );
-            return true;
+            return None;
         }
     };
     // Use the ID-based variant to skip the folder-name scan that
     // item_name_is_in_folder would perform (we already have the resolved ID).
-    state
-        .vault
-        .item_name_is_in_folder_id(item_name, &folder_id)
-        .await
+    Some(
+        state
+            .vault
+            .item_name_is_in_folder_id(item_name, &folder_id)
+            .await,
+    )
 }
 
 // -------------------------------------------------------------------------- //
@@ -462,7 +474,6 @@ pub struct MoveItemRequest {
 
 /// `GET /vault/health` — liveness + summary.
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let items = state.vault.list_items().await;
     let services = state
         .registry
         .read()
@@ -489,6 +500,27 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Added: vault_folder (lets callers confirm scope) and service_count.
     // vault_item_count reflects the in-memory cache (populated at startup and
     // on POST /vault/resync), NOT a live query to Vaultwarden.
+    //
+    // Issue (iter-100): vault_item_count must be scoped to vault_folder items
+    // only. Previously it counted ALL vault items via `state.vault.list_items()`
+    // — an unscoped call that includes personal banking, SSH-key, and other
+    // folders when vault_folder is configured but not found (e.g. after a
+    // rename). An operator looking at the count to verify their deployment
+    // would see personal items inflating the number. We now mirror the
+    // list_items handler: resolve vault_folder → filter. When vault_folder is
+    // not found, report 0 items (consistent with list_items empty-on-not-found).
+    let vault_folder_id = resolve_vault_folder_id(&state).await;
+    let vault_item_count = {
+        let all_items = state.vault.list_items().await;
+        match vault_folder_id {
+            Some(ref fid) => all_items
+                .iter()
+                .filter(|item| item.folder_id.as_deref() == Some(fid.as_str()))
+                .count(),
+            None => 0,
+        }
+    };
+
     let service_count = services.len();
 
     // iter-34: Include TPM status so operators can confirm at a glance whether
@@ -521,7 +553,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         // iter-33: include binary version so monitoring systems and operators
         // can confirm which release is running without shelling into the container.
         "version": env!("CARGO_PKG_VERSION"),
-        "vault_item_count": items.len(),
+        "vault_item_count": vault_item_count,
         "vault_folder": state.vault_folder,
         "service_count": service_count,
         "services": services,
@@ -713,21 +745,27 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
 pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<DuplicateGroup>> {
     // Resolve vault_folder → folder_id for filtering (cached after first call).
     let vault_folder_id = resolve_vault_folder_id(&state).await;
-    if vault_folder_id.is_none() {
-        // vault_folder not found — fresh vault or folder renamed (iter-94).
-        // list_duplicates_in_folder(None) scans ALL items, exposing entries
-        // outside vault_folder. Warn so operators notice after a rename.
-        tracing::warn!(
-            "list_duplicates: vault_folder '{}' not found — scanning all items \
-             (fresh vault or folder renamed? verify --vault-folder, \
-             then call POST /vault/resync)",
-            state.vault_folder
-        );
-    }
-    let groups = state
-        .vault
-        .list_duplicates_in_folder(vault_folder_id.as_deref())
-        .await;
+
+    // Issue (iter-100): Return EMPTY (not ALL) when vault_folder is configured
+    // but absent. Passing `None` to `list_duplicates_in_folder` previously
+    // scanned ALL vault items — exposing duplicate-credential groups from
+    // personal banking, SSH-key, and other folders outside vault_folder.
+    // Consistent with the iter-99 precedent established for `list_items`.
+    let folder_id = match vault_folder_id {
+        Some(ref id) => id.as_str(),
+        None => {
+            tracing::warn!(
+                "list_duplicates: vault_folder '{}' not found — returning empty list \
+                 to prevent cross-folder metadata leakage \
+                 (fresh vault or folder renamed? verify --vault-folder matches the \
+                 Vaultwarden folder name, then call POST /vault/resync)",
+                state.vault_folder
+            );
+            return Json(Vec::new());
+        }
+    };
+
+    let groups = state.vault.list_duplicates_in_folder(Some(folder_id)).await;
     Json(groups)
 }
 
@@ -886,13 +924,19 @@ pub async fn list_untracked_items(State(state): State<Arc<AppState>>) -> Json<se
             out
         }
         None => {
+            // Issue (iter-100): Return EMPTY (not ALL) when vault_folder is
+            // configured but absent. Returning all_untracked would expose
+            // names/IDs of items from every other vault folder — cross-folder
+            // metadata leakage consistent with the iter-99 precedent for
+            // `list_items` and the iter-100 fix to `list_duplicates`.
             tracing::warn!(
-                "list_untracked_items: vault_folder '{}' not found in vault — returning all \
-                 untracked items (fresh vault or folder renamed? verify --vault-folder, \
-                 then call POST /vault/resync)",
+                "list_untracked_items: vault_folder '{}' not found in vault — returning empty \
+                 list to prevent cross-folder metadata leakage \
+                 (fresh vault or folder renamed? verify --vault-folder matches the Vaultwarden \
+                 folder name, then call POST /vault/resync)",
                 state.vault_folder
             );
-            all_untracked
+            Vec::new()
         }
     };
 
@@ -2478,29 +2522,67 @@ pub async fn inject_creds(
     //
     // Both vault_item (credential source) and ha_token_item (HA token source)
     // must be inside vault_folder.
-    if !item_in_vault_folder(&state, &req.vault_item).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": format!(
-                    "vault_item '{}' is not in the vault-proxy folder ('{}') — \
-                     inject_creds is scoped to vault-proxy items only",
-                    req.vault_item, state.vault_folder
-                )
-            })),
-        );
+    //
+    // Issue (iter-100): item_in_vault_folder now returns Option<bool>.
+    // None means vault_folder not found — block with 503 (same posture as
+    // write_env) rather than proceeding permissively with decrypted credentials.
+    match item_in_vault_folder(&state, &req.vault_item).await {
+        Some(true) => {} // in scope — proceed
+        Some(false) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "vault_item '{}' is not in the vault-proxy folder ('{}') — \
+                         inject_creds is scoped to vault-proxy items only",
+                        req.vault_item, state.vault_folder
+                    )
+                })),
+            );
+        }
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": format!(
+                        "vault_folder '{}' not found — cannot verify item scope before \
+                         decrypting credentials. Verify --vault-folder matches the \
+                         Vaultwarden folder name, then call POST /vault/resync.",
+                        state.vault_folder
+                    )
+                })),
+            );
+        }
     }
-    if !item_in_vault_folder(&state, &req.ha_token_item).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "error": format!(
-                    "ha_token_item '{}' is not in the vault-proxy folder ('{}') — \
-                     inject_creds is scoped to vault-proxy items only",
-                    req.ha_token_item, state.vault_folder
-                )
-            })),
-        );
+    match item_in_vault_folder(&state, &req.ha_token_item).await {
+        Some(true) => {} // in scope — proceed
+        Some(false) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "ha_token_item '{}' is not in the vault-proxy folder ('{}') — \
+                         inject_creds is scoped to vault-proxy items only",
+                        req.ha_token_item, state.vault_folder
+                    )
+                })),
+            );
+        }
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": format!(
+                        "vault_folder '{}' not found — cannot verify ha_token_item scope before \
+                         decrypting credentials. Verify --vault-folder matches the \
+                         Vaultwarden folder name, then call POST /vault/resync.",
+                        state.vault_folder
+                    )
+                })),
+            );
+        }
     }
 
     // 1. Decrypt credentials from vault
@@ -2708,14 +2790,30 @@ pub async fn generate_totp(
     // Folder scope guard: reject item names that don't belong to vault_folder.
     // Issue (iter-96): use cache-aware item_in_vault_folder instead of the
     // direct item_name_is_in_folder to avoid an O(n) folder scan on every call.
-    if !item_in_vault_folder(&state, item_name).await {
-        return Json(json!({
-            "error": format!(
-                "item '{}' is not in the vault-proxy folder ('{}') — \
-                 generate_totp is scoped to vault-proxy items only",
-                item_name, state.vault_folder
-            )
-        }));
+    // Issue (iter-100): item_in_vault_folder returns Option<bool>; None means
+    // vault_folder not found — block rather than decrypt TOTP secrets without
+    // scope verification.
+    match item_in_vault_folder(&state, item_name).await {
+        Some(true) => {} // in scope — proceed
+        Some(false) => {
+            return Json(json!({
+                "error": format!(
+                    "item '{}' is not in the vault-proxy folder ('{}') — \
+                     generate_totp is scoped to vault-proxy items only",
+                    item_name, state.vault_folder
+                )
+            }));
+        }
+        None => {
+            return Json(json!({
+                "error": format!(
+                    "vault_folder '{}' not found — cannot verify item scope before \
+                     decrypting TOTP secret. Verify --vault-folder matches the \
+                     Vaultwarden folder name, then call POST /vault/resync.",
+                    state.vault_folder
+                )
+            }));
+        }
     }
 
     match state.vault.decrypt_totp(item_name) {
@@ -2783,14 +2881,30 @@ pub async fn decrypt_notes(
     // API tokens, SSH keys, and recovery codes stored in personal entries.
     // Issue (iter-96): use cache-aware item_in_vault_folder instead of the
     // direct item_name_is_in_folder to avoid an O(n) folder scan on every call.
-    if !item_in_vault_folder(&state, item_name).await {
-        return Json(json!({
-            "error": format!(
-                "item '{}' is not in the vault-proxy folder ('{}') — \
-                 decrypt_notes is scoped to vault-proxy items only",
-                item_name, state.vault_folder
-            )
-        }));
+    // Issue (iter-100): item_in_vault_folder returns Option<bool>; None means
+    // vault_folder not found — block rather than return full notes content
+    // without scope verification.
+    match item_in_vault_folder(&state, item_name).await {
+        Some(true) => {} // in scope — proceed
+        Some(false) => {
+            return Json(json!({
+                "error": format!(
+                    "item '{}' is not in the vault-proxy folder ('{}') — \
+                     decrypt_notes is scoped to vault-proxy items only",
+                    item_name, state.vault_folder
+                )
+            }));
+        }
+        None => {
+            return Json(json!({
+                "error": format!(
+                    "vault_folder '{}' not found — cannot verify item scope before \
+                     returning notes content. Verify --vault-folder matches the \
+                     Vaultwarden folder name, then call POST /vault/resync.",
+                    state.vault_folder
+                )
+            }));
+        }
     }
 
     match state.vault.decrypt_notes(item_name) {
@@ -4052,14 +4166,14 @@ mod folder_scope_guard_tests {
 }
 
 // -------------------------------------------------------------------------- //
-// item_in_vault_folder tests (iter-97)                                        //
+// item_in_vault_folder tests (iter-97, iter-100)                              //
 // -------------------------------------------------------------------------- //
 //
-// Verify the cache-aware wrapper added in iter-96:
+// Verify the cache-aware wrapper:
 //   (a) uses the cached/resolved folder ID (resolve_vault_folder_id path)
-//   (b) emits warn! and returns true when folder not found (permissive fallback)
-//   (c) returns true when item is in the correct folder
-//   (d) returns false when item is in a different folder
+//   (b) returns None when folder not found (iter-100: no longer permissive true)
+//   (c) returns Some(true) when item is in the correct folder
+//   (d) returns Some(false) when item is in a different folder
 #[cfg(test)]
 mod item_in_vault_folder_tests {
     use super::*;
@@ -4108,9 +4222,9 @@ mod item_in_vault_folder_tests {
         Arc::new(AppState::new_stub(vault, vault_folder.to_string()))
     }
 
-    /// Item in the correct folder → returns true.
+    /// Item in the correct folder → returns Some(true).
     #[tokio::test]
-    async fn returns_true_when_item_is_in_vault_folder() {
+    async fn returns_some_true_when_item_is_in_vault_folder() {
         let state = make_state_with_folder(
             "connecterr",
             "folder-uuid-abc",
@@ -4119,12 +4233,16 @@ mod item_in_vault_folder_tests {
         )
         .await;
         let result = item_in_vault_folder(&state, "my-item").await;
-        assert!(result, "item in correct folder must return true");
+        assert_eq!(
+            result,
+            Some(true),
+            "item in correct folder must return Some(true)"
+        );
     }
 
-    /// Item in a different folder → returns false.
+    /// Item in a different folder → returns Some(false).
     #[tokio::test]
-    async fn returns_false_when_item_is_in_wrong_folder() {
+    async fn returns_some_false_when_item_is_in_wrong_folder() {
         let state = make_state_with_folder(
             "connecterr",
             "folder-uuid-abc",
@@ -4133,23 +4251,25 @@ mod item_in_vault_folder_tests {
         )
         .await;
         let result = item_in_vault_folder(&state, "my-item").await;
-        assert!(
-            !result,
-            "item in wrong folder must return false (scope guard active)"
+        assert_eq!(
+            result,
+            Some(false),
+            "item in wrong folder must return Some(false) (scope guard active)"
         );
     }
 
-    /// Folder not found in vault → permissive fallback returns true.
+    /// Folder not found in vault → returns None (iter-100: no longer permissive).
+    /// Callers must treat None as a blocking error, not a pass-through.
     #[tokio::test]
-    async fn returns_true_permissively_when_folder_not_found() {
+    async fn returns_none_when_folder_not_found() {
         // Build state with a folder name that doesn't exist in the vault.
         let vault = crate::vault::VaultManager::new_stub();
         // Do NOT seed any folder — simulates fresh vault or rename.
         let state = Arc::new(AppState::new_stub(vault, "missing-folder".to_string()));
         let result = item_in_vault_folder(&state, "any-item").await;
-        assert!(
-            result,
-            "fresh vault / folder not found must return true (permissive fallback)"
+        assert_eq!(
+            result, None,
+            "folder not found must return None — callers must block, not proceed permissively"
         );
     }
 
@@ -4167,7 +4287,7 @@ mod item_in_vault_folder_tests {
         .await;
         let r1 = item_in_vault_folder(&state, "my-item").await;
         let r2 = item_in_vault_folder(&state, "my-item").await;
-        assert!(r1, "first call must return true");
+        assert_eq!(r1, Some(true), "first call must return Some(true)");
         assert_eq!(r1, r2, "cached path must return same result as first call");
     }
 }

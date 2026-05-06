@@ -3,53 +3,81 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0-beta.1] — iteration 99: list_items empty-on-not-found, write_env path omitted, item_name_is_in_folder test-only
+## [1.0.0-beta.1] — **MILESTONE: First Beta Release** — iterations 99–100: scope hardening complete
 
-### Security
+> **v1.0.0-beta.1 rationale:** The stable core is production-hardened across 100 audit iterations,
+> 278 tests, 0 clippy warnings, 0 dead-code warnings, and complete vault-folder scope guards on
+> all read, write, and credential-decrypting paths. The 4 remaining `post-v1.0:` items
+> (TPM auto-unlock, Bitwarden cloud password change, dashboard cloud settings, session-rotation UI)
+> all live in optional feature-gated code paths. The default feature set is production-ready.
+> This tag begins the release-candidate process. Scope guard coverage is now uniform across every
+> handler type (listing, credential-decryption, write, self-protection).
 
-- **`list_items` empty-on-vault-folder-not-found (iter-99)** — `src/vault/handlers.rs:657`.
+### Security (iter-100)
+
+- **`list_duplicates` empty-on-vault-folder-not-found (iter-100)** — `src/vault/handlers.rs`.
+  When `vault_folder` is configured but not found, `list_duplicates` previously passed `None`
+  to `list_duplicates_in_folder` which scanned ALL vault items — exposing duplicate-credential
+  groups from personal folders. Now returns an **empty list** with a `warn!` log. Consistent
+  with the iter-99 precedent for `list_items`.
+
+- **`list_untracked_items` empty-on-vault-folder-not-found (iter-100)** — `src/vault/handlers.rs`.
+  When `vault_folder` is not found, `list_untracked_items` previously returned all untracked
+  items regardless of folder — exposing names/IDs of items from every folder. Now returns
+  `{"count": 0, "items": []}` with a `warn!` log.
+
+- **`item_in_vault_folder` now returns `Option<bool>` — blocking on folder-not-found
+  (iter-100)** — `src/vault/handlers.rs`. Previously returned `true` permissively when
+  `vault_folder` was not found, allowing `inject_creds`, `generate_totp`, and `decrypt_notes`
+  to proceed to credential decryption without any scope verification. Now returns `None`;
+  all three handlers treat `None` as a blocking error and return 503 Service Unavailable.
+  SECURITY.md updated.
+
+- **`GET /vault/health` `vault_item_count` now scoped to `vault_folder` (iter-100)** —
+  `src/vault/handlers.rs`. Previously called `state.vault.list_items()` — an unscoped count
+  of all vault items — meaning a renamed `vault_folder` would inflate the count with personal
+  items from other folders. Now filters by resolved folder ID; returns `0` when
+  `vault_folder` is not found (consistent with `list_items`).
+
+### Security (iter-99)
+
+- **`list_items` empty-on-vault-folder-not-found (iter-99)** — `src/vault/handlers.rs`.
   When `vault_folder` is configured but not found in the vault (e.g. renamed in Vaultwarden
   without updating `--vault-folder`), `list_items` previously returned ALL vault items as a
   "fresh vault permissive fallback". This leaked cross-folder metadata — names, usernames, URIs
   from personal banking, SSH-key, and other personal folders — even though passwords are masked.
-  Now returns an **empty list** with a `warn!` log entry. The permissive fallback was appropriate
-  before any folder existed (fresh vault); it is wrong after a rename. SECURITY.md updated.
+  Now returns an **empty list** with a `warn!` log entry. SECURITY.md updated.
 
-- **`write_env` success response no longer echoes `target_path`** — `src/vault/handlers.rs:2041`.
+- **`write_env` success response no longer echoes `target_path`** — `src/vault/handlers.rs`.
   The 200 OK success body previously included `"target_path": "/config/envs/sonarr.env"` — an
   absolute filesystem path that leaks the host's directory layout to any log consumer or MCP
-  caller that captures the response. The caller supplied the path and already knows it; echoing
-  it back provides no information benefit. Removed: `"target_path"` field. Remaining fields:
+  caller that captures the response. Removed: `"target_path"` field. Remaining fields:
   `"ok": true`, `"updated": [...]`, `"inserted": [...]`.
 
-### Refactoring
+### Refactoring (iter-99)
 
 - **`item_name_is_in_folder` moved to `#[cfg(test)]` impl block** — `src/vault/mod.rs`.
   After iter-96 switched all three production call sites to `item_in_vault_folder` (the
   cache-aware wrapper), `item_name_is_in_folder` had zero production callers and carried
-  `#[allow(dead_code)]`. Moved from the production `impl VaultManager` block into the
-  `#[cfg(test)] impl VaultManager` block — excluded from production binaries. Unit tests
-  that exercise the folder-scope logic directly continue to compile and pass.
+  `#[allow(dead_code)]`. Moved into the `#[cfg(test)] impl VaultManager` block — excluded
+  from production binaries.
 
 ### Tests
 
 - **`list_items_returns_empty_when_vault_folder_not_found`** — new test in
-  `folder_scope_guard_tests` that asserts the empty-list behavior when `vault_folder_id` is
-  `None`. Verifies the iter-99 behavior change explicitly.
+  `folder_scope_guard_tests` verifying the iter-99 empty-list behavior.
+- **`item_in_vault_folder` tests updated (iter-100)** — `returns_true_permissively_when_folder_not_found`
+  renamed to `returns_none_when_folder_not_found`; assertions updated from `true` to `None` to
+  match the new `Option<bool>` return type. `returns_true_when_item_is_in_vault_folder` /
+  `returns_false_when_item_is_in_wrong_folder` updated to assert `Some(true)` / `Some(false)`.
 
-### Quality gates (iter-99)
+### Quality gates (iter-100 — 100th audit milestone)
 
-- `cargo build` — 0 errors, 0 warnings
-- `cargo test --all-targets` — 244 passed; 0 failed (244 = 243 unit + 1 new test)
-- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings
-
-### v1.0.0-beta.1 rationale
-
-The stable core is production-hardened: 99 audit iterations, 244 tests, 0 clippy warnings,
-0 dead-code warnings, complete vault-folder scope guards on all read and write paths. The 4
-remaining `post-v1.0:` items (TPM auto-unlock, Bitwarden cloud password change, dashboard cloud
-settings, session-rotation UI) all live in optional feature-gated code paths. The default
-feature set is production-ready. Tagging `v1.0.0-beta.1` begins the release-candidate process.
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **278 passed**; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — 0 diffs
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
 
 ## [0.3.4] — iteration 98: audit hardening, cfg(test) verification, post-v1.0 inventory
 
