@@ -303,6 +303,18 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         let item_type = masked.item_type.clone();
 
         // Only login items have passwords; skip others silently.
+        //
+        // iter-77: if ALL items fail here (e.g. vault_folder contains only
+        // secure-note or card items with no password field), the function
+        // returns total_items > 0 with weak_passwords = [], reused_passwords = [],
+        // fair_passwords_count = 0 — which looks identical to a "100% strong
+        // passwords" result.  This is a known limitation of the in-process
+        // heuristic: it cannot distinguish "all passwords are strong" from
+        // "no items had a decryptable password field".  Operators should use
+        // total_items alongside the response to sanity-check: if total_items
+        // matches the number of login items in vault_folder and all counts are
+        // zero, the vault is genuinely clean.  If total_items is larger than
+        // the expected login-item count, some items are being skipped here.
         let pw_buf = match vault.decrypt_password(&masked.name) {
             Ok(buf) => buf,
             Err(_) => continue,

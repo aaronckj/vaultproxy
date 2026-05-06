@@ -226,6 +226,15 @@ struct Args {
     /// the background task sends a push notification when weak or reused
     /// passwords are found (priority 4 — high).  Clean runs do not notify.
     ///
+    /// ON-DEMAND AUDIT ENDPOINT: at any time you can trigger a one-shot audit
+    /// by calling `GET /vault/audit/run` with the internal bearer token:
+    ///
+    ///   curl -H "Authorization: Bearer $(cat /config/internal-token)" \
+    ///        http://127.0.0.1:3201/vault/audit/run
+    ///
+    /// The endpoint returns the same JSON as the background task logs.
+    /// Rate-limited to 2 req/60 s.
+    ///
     /// Set to 0 (the default) to disable the background audit entirely and
     /// rely on on-demand calls to `GET /vault/audit/run`.
     #[arg(long, env = "AUDIT_INTERVAL_SECS", default_value = "0")]
@@ -1368,6 +1377,11 @@ async fn start_server(
         // compute HMAC fingerprints (sensitive operation even though no
         // plaintext leaks in the response).
         .route("/vault/audit/run", get(crate::audit::handle_audit_run))
+        // iter-77: expose current tool permissions as a diagnostic endpoint.
+        // Gated behind the internal bearer token — the permissions map reveals
+        // which tools are allowed/blocked/logged, which is security-relevant
+        // configuration an unauthenticated caller should not see.
+        .route("/vault/permissions", get(handle_get_permissions))
         // Gate the entire sub-router behind the internal bearer token.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -2256,7 +2270,8 @@ async fn start_server(
                                 "vault-proxy credential audit found issues in '{}': \
                                  {} weak password(s), {} item(s) with shared passwords \
                                  across {} reuse group(s) (total {} items scanned). \
-                                 Review with: GET /vault/audit/run",
+                                 Review: GET /vault/audit/run \
+                                 (Authorization: Bearer $(cat /config/internal-token))",
                                 inner_folder,
                                 n_weak,
                                 n_reused_items,
@@ -2429,6 +2444,52 @@ async fn start_server(
 
     tracing::info!("vault-proxy shut down cleanly");
     Ok(())
+}
+
+// -------------------------------------------------------------------------- //
+// Permissions diagnostic endpoint — GET /vault/permissions                    //
+// -------------------------------------------------------------------------- //
+
+/// Return the current `ToolPermissions` configuration as JSON.
+///
+/// # Security
+///
+/// Gated behind the internal bearer token (on `internal_router`).  The
+/// permissions map reveals which tools are allowed, logged, or blocked —
+/// information an unauthenticated caller should not see.  Operators and the
+/// Connecterr TypeScript side can call this to verify that a permissions file
+/// was loaded correctly without reading the raw JSON on disk.
+///
+/// # Response shape
+///
+/// ```json
+/// {
+///   "defaults":   { "list": "allow", "delete": "ask", ... },
+///   "overrides":  { "ssh__exec": "block" },
+///   "note": "GET /vault/permissions — current tool permission configuration ..."
+/// }
+/// ```
+///
+/// `defaults` — category-level defaults (keyword → permission).
+/// `overrides` — per-tool-name exact overrides (higher priority than defaults).
+///
+/// iter-77: added to surface live permissions without requiring disk access or
+/// a restart.  Previously the only way to inspect the effective permissions was
+/// to read $CONFIG_DIR/tool-permissions.json and mentally apply the priority
+/// rules (overrides > longest-category-match > Log default) — error-prone and
+/// not available to operators running in Docker without shell access.
+async fn handle_get_permissions(
+    AxumState(state): AxumState<Arc<AppState>>,
+) -> AxumJson<serde_json::Value> {
+    let perms = state.permissions.read().await;
+    tracing::debug!("GET /vault/permissions — returning current tool permissions");
+    AxumJson(serde_json::json!({
+        "defaults": perms.defaults,
+        "overrides": perms.overrides,
+        "note": "GET /vault/permissions — current tool permission configuration (defaults = category-level, overrides = per-tool-name; overrides take priority). \
+                 Permissions are loaded from $CONFIG_DIR/tool-permissions.json at startup; \
+                 restart vault-proxy to reload after editing the file."
+    }))
 }
 
 // -------------------------------------------------------------------------- //

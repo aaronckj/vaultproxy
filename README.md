@@ -331,7 +331,7 @@ Returns a JSON object:
   ],
   "fair_passwords_count": 3,
   "weak_threshold_len": 8,
-  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters); each AuditItem includes a `reason` field with an actionable explanation"
+  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters); each AuditItem includes a `reason` field with an actionable explanation; reuse reason name lists are capped at 5 names per item (see reused_passwords groups for the full membership list when a group exceeds this limit)"
 }
 ```
 
@@ -343,7 +343,7 @@ Returns a JSON object:
 - `fair_passwords_count`: count of vault items whose password scored `"fair"` (8–15 characters, or 16+ characters with fewer than 3 character classes). `"fair"` items are NOT included in `weak_passwords` but are above the minimum length floor. An operator whose entire vault scores `"fair"` would otherwise see `weak_passwords: []` and might incorrectly conclude all credentials are strong. Added iter-68.
 - `password_strength` values: `"weak"` (fewer than `weak_threshold_len` characters), `"fair"` (meets minimum length but not strong), `"strong"` (16+ characters with 3+ character classes: lowercase, uppercase, digit, symbol). Only `"weak"` items appear in `weak_passwords`; `"fair"` and `"strong"` items are excluded from that list but may appear in `reused_passwords`.
 - `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
-- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65). Mentions the `reason` field added in iter-68.
+- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65). Mentions the `reason` field added in iter-68. Mentions the reuse name-list truncation cap (5 names per item, added iter-74).
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
 - Scoped to `vault_folder` — only items inside the configured folder are scanned.
 

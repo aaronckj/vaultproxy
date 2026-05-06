@@ -3,6 +3,71 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.21] — iteration 77: ntfy URL, permissions endpoint, scoring_note docs, README JSON fix
+
+### Bug fixes (iter-77)
+
+- **ntfy notification body missing bearer-token hint (iter-77, LOW)**: The ntfy
+  push notification body for background credential audits ended with
+  `"Review with: GET /vault/audit/run"` but gave no indication that the endpoint
+  requires `Authorization: Bearer <token>`. An operator receiving the alert on their
+  phone had no actionable path without prior knowledge of the auth requirement.
+  Added `"(Authorization: Bearer $(cat /config/internal-token))"` so the full curl
+  command is self-contained in the notification. `src/main.rs:2255–2265`.
+
+- **README `scoring_note` example stale (iter-77, LOW)**: The `scoring_note` field
+  in the `GET /vault/audit/run` JSON response example was missing the reuse
+  name-list truncation clause added in iter-74 (`"reuse reason name lists are capped
+  at 5 names per item ..."`). Updated to match the actual `format!()` output from
+  `run_audit()`. `README.md`.
+
+### Improvements (iter-77)
+
+- **`GET /vault/permissions` endpoint (iter-77, MEDIUM)**: Added a diagnostic
+  endpoint that returns the current `ToolPermissions` configuration as JSON
+  (`defaults` map + `overrides` map). Gated behind the internal bearer token
+  (on `internal_router`). Previously the only way to inspect effective permissions
+  was to read `$CONFIG_DIR/tool-permissions.json` and manually apply priority rules
+  — error-prone and unavailable in Docker without shell access. The new endpoint
+  makes permission inspection possible via any HTTP client without restarting.
+  Removes the need for the `dead_code` annotations on the helper methods used by
+  the dashboard (`save`, `get_default_permission`, `get_category`) — those remain
+  as-is since they are legitimately dashboard-only.
+  `src/main.rs:2440–2482` (handler), `src/main.rs:1376` (router wiring).
+
+- **`--audit-interval-secs` help text includes on-demand endpoint (iter-77, LOW)**:
+  The `--audit-interval-secs` arg docstring now explicitly documents the on-demand
+  `GET /vault/audit/run` endpoint with a complete curl example. Previously a new
+  user reading `--help` would see the background scheduler documented but have no
+  indication that the same audit is available as an HTTP endpoint.
+  `src/main.rs:225–231`.
+
+- **`run_audit()` all-non-login edge case documented (iter-77, LOW)**: Added an
+  inline comment to the `decrypt_password` error-path `continue` in `run_audit()`
+  explaining that if every item fails decryption (vault_folder contains only
+  secure-notes or card items), the result (`total_items > 0`, all counts zero)
+  is indistinguishable from a "100% strong passwords" vault. Operators should
+  cross-check `total_items` against the expected login-item count.
+  `src/audit.rs:306–320`.
+
+### Notes (iter-77)
+
+- **Background scheduler vs HTTP rate-limit model (iter-77)**: `GET /vault/audit/run`
+  is rate-limited to 2 req/60 s. The background scheduler calls `run_audit()`
+  directly (bypasses the HTTP rate limiter) via the `audit_mutex`. If
+  `--audit-interval-secs=10` is set (triggers a startup warning), the scheduler
+  fires 6×/min — 3× the HTTP rate limit — with no error. This is by design: the
+  rate limit protects the HTTP surface from external abuse; the scheduler is a
+  trusted internal caller. Operators who set sub-60 s intervals see a startup
+  `WARN` encouraging them to use ≥ 60 s. No code change; documented here.
+
+### Verification (iter-77)
+
+- `cargo test --all-targets`: 256 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: 0 diff lines (clean).
+- `cargo doc --no-deps`: 0 warnings.
+
 ## [0.2.20] — iteration 76: reused_passwords nested-array shape, n_reused_items tests, v0.2.21 bump
 
 ### Bug fixes (iter-76)
