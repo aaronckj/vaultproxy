@@ -390,6 +390,22 @@ curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
 
 **Migration note (iter-58 upgrade):** If you ran a credential-audit scan before upgrading to iter-58+, flagged items were placed in the old `_review-delete` folder. The `apply` endpoint now looks for `<vault_folder>-review-delete` and will not find those items. To recover: in Vaultwarden, rename `_review-delete` to `<your_vault_folder>-review-delete` (or move items manually). Deployments with `vault_folder = None` (unconfigured) are unaffected.
 
+> **BREAKING CHANGE (v1.0.0-beta.4 / iter-109): `GET /vault/items` response format**
+>
+> Before iter-109, `GET /vault/items` returned a **bare JSON array** `[{...}, ...]`.
+> From iter-109 onward, the response is a **JSON object**: `{"ok": true, "items": [{...}, ...]}`.
+>
+> **What to update:** Any script or client code that iterates the body of `GET /vault/items`
+> directly must be changed to unwrap `body.items` first. Example:
+>
+> ```diff
+> - const items = await res.json();           // was: bare array
+> + const { items } = await res.json();       // now: {ok, items}
+> ```
+>
+> The Connecterr TypeScript `SidecarClient.listVaultItems()` has been updated in iter-110 and
+> continues to return `unknown[]` transparently. No change needed if you use the sidecar client.
+
 ## Operator runbook
 
 ### vault-proxy won't start

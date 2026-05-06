@@ -3,6 +3,61 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.4] — iteration 110: ok:true complete, list_items breaking-change docs
+
+### BREAKING CHANGE (iter-109/110)
+
+- **`GET /vault/items` response format changed** — `src/vault/handlers.rs:757`.
+  **Before (≤ iter-108):** `[{"id":"...","name":"..."},...]` (bare JSON array)
+  **After (iter-109+):** `{"ok": true, "items": [{"id":"...","name":"..."},...]}`
+
+  **Migration:** Any caller treating the response body as a JSON array must be updated to read
+  `body["items"]` instead. The Connecterr TypeScript client (`sidecar-client.ts:listVaultItems`)
+  has been updated in iter-110. Raw `curl` scripts or other consumers that iterate the body
+  directly must be updated to unwrap `body.items`.
+
+### Bugs (iter-110) — collection/mutation handlers missing `"ok": true`
+
+- **`list_duplicates` success missing `"ok": true` (iter-110)** — `src/vault/handlers.rs:768`. MEDIUM.
+  Return type was `Json<Vec<DuplicateGroup>>` — a bare array with no `"ok"` sentinel.
+  Every other collection success path wraps in an object with `"ok": true`. Fixed: return type
+  changed to `Json<Value>`; response is now `{"ok": true, "groups": [...]}`.
+
+- **`list_folders` success missing `"ok": true` — both paths (iter-110)** — `src/vault/handlers.rs:827`. MEDIUM.
+  Both the default (scoped) path and the `?include_all=true` path returned bare `Vec<FolderInfo>`
+  with no `"ok"` sentinel. Return type changed to `Json<Value>`; both paths now return
+  `{"ok": true, "folders": [...]}`.
+
+- **`list_untracked_items` success missing `"ok": true` (iter-110)** — `src/vault/handlers.rs:966`. MEDIUM.
+  Response was `{"count": N, "items": [...]}` — the two data fields were present but `"ok": true`
+  was absent. Added `"ok": true` to the top-level object. The `count` and `items` keys are unchanged.
+
+### Bugs (iter-110) — Connecterr TS client uses pre-iter-109 array shape
+
+- **`listVaultItems()` treats response as bare array (iter-110)** — `Connecterr/src/sidecar-client.ts:229`. HIGH.
+  After iter-109 changed `GET /vault/items` from a bare array to `{"ok": true, "items": [...]}`,
+  `listVaultItems()` still called `res.json() as unknown[]` — wrapping the entire object as if
+  it were the array. All callers received an array of `[object Object]` tokens silently.
+  Fixed: response is now parsed as `{ok, items}` and `body.items ?? []` is returned, preserving
+  the `unknown[]` return type.
+
+### Tests (iter-110)
+
+- **`list_items_returns_ok_true_and_items_array` integration test (iter-110)** — `src/proxy/mod.rs`.
+  `GET /vault/items` had no test asserting the post-iter-109 response shape. Without this, a
+  regression to the bare-array format would go undetected. New test wires the handler against a
+  stub vault and verifies `body["ok"] == true` and `body["items"]` is an array. Gate: no feature
+  flag required.
+
+### Quality gates (iter-110)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **290 passed**; 0 failed
+- `cargo clippy --features browser,dashboard --all-targets -- -D warnings` — 0 errors, 0 warnings
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
+---
+
 ## [Unreleased] — iteration 107: browser_status ok:true, vault_folder_found test, README rotate note
 
 ### Bugs (iter-107)

@@ -2348,6 +2348,58 @@ mod integration_tests {
     }
 
     // ---------------------------------------------------------------------- //
+    // (h2) GET /vault/items — iter-110: response format is {"ok":true,"items"} //
+    // ---------------------------------------------------------------------- //
+
+    /// iter-110: `GET /vault/items` must return `{"ok": true, "items": [...]}`,
+    /// NOT a bare JSON array.
+    ///
+    /// iter-109 changed the response shape from a bare array to an object.
+    /// Without this test, a regression to the old shape would go undetected —
+    /// callers checking `body["ok"] == true` would silently receive `null`.
+    ///
+    /// The vault stub contains no items in `vault_folder` (cache miss / None
+    /// path), so `items` must be `[]` — but the `ok: true` key and `items`
+    /// array key must be present regardless.
+    #[tokio::test]
+    async fn list_items_returns_ok_true_and_items_array() {
+        use crate::vault::handlers;
+        use axum::routing::get;
+
+        let state = make_state(ServiceRegistry::new());
+        let app = Router::new()
+            .route("/vault/items", get(handlers::list_items))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://{}/vault/items", addr))
+            .send()
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/items must return 200 OK"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["ok"], true,
+            "GET /vault/items response must contain ok=true (iter-109 breaking change); \
+             got: {body}"
+        );
+        assert!(
+            body["items"].is_array(),
+            "GET /vault/items response must contain 'items' array key; got: {body}"
+        );
+    }
+
+    // ---------------------------------------------------------------------- //
     // (i) POST /vault/reload-services — HTTP integration tests (iter-35)       //
     // ---------------------------------------------------------------------- //
 

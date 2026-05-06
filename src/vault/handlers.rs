@@ -11,7 +11,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::types::{DuplicateGroup, FolderInfo, MaskedItem};
+use super::types::{FolderInfo, MaskedItem};
 use crate::proxy::AppState;
 
 // -------------------------------------------------------------------------- //
@@ -765,7 +765,7 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// full vault cache and returned names/usernames of personal items (outside
 /// vault_folder) to any local caller. We now filter to vault_folder items
 /// before duplicate detection so personal entries are never exposed.
-pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<DuplicateGroup>> {
+pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Resolve vault_folder → folder_id for filtering (cached after first call).
     let vault_folder_id = resolve_vault_folder_id(&state).await;
 
@@ -774,6 +774,8 @@ pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<Dup
     // scanned ALL vault items — exposing duplicate-credential groups from
     // personal banking, SSH-key, and other folders outside vault_folder.
     // Consistent with the iter-99 precedent established for `list_items`.
+    //
+    // iter-110: wrap in {"ok": true, "groups": [...]} for sentinel consistency.
     let folder_id = match vault_folder_id {
         Some(ref id) => id.as_str(),
         None => {
@@ -784,12 +786,12 @@ pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<Dup
                  Vaultwarden folder name, then call POST /vault/resync)",
                 state.vault_folder
             );
-            return Json(Vec::new());
+            return Json(json!({ "ok": true, "groups": serde_json::Value::Array(vec![]) }));
         }
     };
 
     let groups = state.vault.list_duplicates_in_folder(Some(folder_id)).await;
-    Json(groups)
+    Json(json!({ "ok": true, "groups": groups }))
 }
 
 /// `GET /vault/folders` — list folders scoped to `vault_folder`.
@@ -827,7 +829,7 @@ pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<Dup
 pub async fn list_folders(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<Vec<FolderInfo>> {
+) -> Json<Value> {
     let include_all = params
         .get("include_all")
         .map(|v| v == "true")
@@ -866,7 +868,8 @@ pub async fn list_folders(
             permission: "Allowed".to_string(),
             trigger: "http".to_string(),
         });
-        return Json(all);
+        // iter-110: wrap in {"ok": true, "folders": [...]} for sentinel consistency.
+        return Json(json!({ "ok": true, "folders": all }));
     }
 
     // Default: filter to only entries whose name matches vault_folder. This still
@@ -890,7 +893,8 @@ pub async fn list_folders(
         );
     }
 
-    Json(scoped)
+    // iter-110: wrap in {"ok": true, "folders": [...]} for sentinel consistency.
+    Json(json!({ "ok": true, "folders": scoped }))
 }
 
 /// `GET /vault/items/untracked` — list vault items that have no entry in the
@@ -963,7 +967,9 @@ pub async fn list_untracked_items(State(state): State<Arc<AppState>>) -> Json<se
         }
     };
 
+    // iter-110: add "ok": true for sentinel consistency.
     Json(json!({
+        "ok": true,
         "count": items.len(),
         "items": items
             .into_iter()
