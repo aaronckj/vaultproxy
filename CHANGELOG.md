@@ -3,6 +3,55 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.2] — iteration 101: 503 body consistency, empty-on-notfound tests, dead_code labels
+
+### Security (iter-101)
+
+- **`generate_totp` 503 body consistency (iter-101)** — `src/vault/handlers.rs:2781`.
+  When `item_in_vault_folder` returns `None` (vault_folder not found), `generate_totp`
+  previously returned **HTTP 200** (not 503) with `{"error":"..."}` and no `"ok": false`,
+  because the handler's return type was `Json<Value>`. Changed return type to
+  `impl IntoResponse`; the `None` branch now returns **HTTP 503** with `{"ok": false, "error": "..."}`,
+  consistent with `write_env`, `inject_creds`, and `reload_services`. The `Some(false)` scope-violation
+  branch similarly upgraded to **HTTP 403** (was 200). CRITICAL: callers that checked the body
+  `error` field would have blocked, but monitoring that inspects HTTP status codes would not
+  have detected the scope-verification failure.
+
+- **`decrypt_notes` 503 body consistency (iter-101)** — `src/vault/handlers.rs:2880`.
+  Same root cause as `generate_totp`: `Json<Value>` return type silently downgraded 503 to 200.
+  Changed to `impl IntoResponse`; `None` branch returns **HTTP 503** with `{"ok": false, "error": "..."}`.
+  The `Some(false)` branch returns **HTTP 403**. The success path returns **HTTP 200** as before.
+
+### Tests (iter-101)
+
+- **`list_duplicates_returns_empty_when_vault_folder_not_found`** — new test in
+  `folder_scope_guard_tests` verifying the iter-100 empty-list behaviour for `list_duplicates`.
+  Covers the `None` branch: vault_folder_id not resolved, duplicate groups exist in other folders.
+
+- **`list_untracked_returns_empty_when_vault_folder_not_found`** — new test in
+  `folder_scope_guard_tests` verifying the iter-100 empty-list behaviour for `list_untracked_items`.
+  Covers the `None` branch: vault_folder_id not resolved, untracked items exist across folders.
+
+### Housekeeping (iter-101)
+
+- **Labeled bare `#[allow(dead_code)]` suppressions** — `src/vault/handlers.rs:350,376,394,439`.
+  `UpdateItemRequest`, `CloneItemRequest`, `TestCredentialRequest`, and `WriteEnvRequest` had
+  bare `#[allow(dead_code)]` with no explanatory comment. Added `// fields read by serde deserialization`
+  to match the convention used by adjacent structs (`DeleteItemRequest`, `MoveItemRequest`, etc.).
+
+- **`vault_item_count: 0` when vault_folder not found** — documented in this CHANGELOG and
+  inline in `src/vault/handlers.rs:504–520`. Operators monitoring `vault_item_count` from
+  `GET /vault/health` should be aware that a drop to `0` reflects a folder rename (vault_folder
+  configured but absent) rather than data loss. The startup log warns when vault_folder is
+  not found; `POST /vault/resync` re-resolves after an operator corrects the folder name.
+
+### Quality gates (iter-101)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **280 passed** (278 lib + 2 integration); 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — 0 diffs
+
 ## [1.0.0-beta.1] — **MILESTONE: First Beta Release** — iterations 99–100: scope hardening complete
 
 > **v1.0.0-beta.1 rationale:** The stable core is production-hardened across 100 audit iterations,

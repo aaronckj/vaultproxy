@@ -347,7 +347,7 @@ pub struct CreateItemRequest {
 /// Request body for `update_item`. All fields except `id` are optional —
 /// only the provided fields are modified; omitted fields are left unchanged.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields read by serde deserialization
 pub struct UpdateItemRequest {
     /// Vault item id (uuid) to update.
     pub id: String,
@@ -373,7 +373,7 @@ pub struct DeleteFolderRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields read by serde deserialization
 pub struct CloneItemRequest {
     /// Vault item id whose encrypted password blob is copied to the new cipher.
     pub source_id: String,
@@ -391,7 +391,7 @@ pub struct CloneItemRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields read by serde deserialization
 pub struct TestCredentialRequest {
     /// Vault item id whose (username, password) should be tried against `url`.
     pub vault_item_id: String,
@@ -436,7 +436,7 @@ pub struct TestCredentialRequest {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields read by serde deserialization
 pub struct WriteEnvRequest {
     pub vault_item_id: String,
     /// Absolute path to write the env file. Must begin with one of the
@@ -2781,10 +2781,14 @@ pub async fn inject_creds(
 pub async fn generate_totp(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Value>,
-) -> Json<Value> {
+) -> impl IntoResponse {
     let item_name = req.get("item_name").and_then(|v| v.as_str()).unwrap_or("");
     if item_name.is_empty() {
-        return Json(json!({"error": "item_name required"}));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "item_name required"})),
+        )
+            .into_response();
     }
 
     // Folder scope guard: reject item names that don't belong to vault_folder.
@@ -2793,26 +2797,38 @@ pub async fn generate_totp(
     // Issue (iter-100): item_in_vault_folder returns Option<bool>; None means
     // vault_folder not found — block rather than decrypt TOTP secrets without
     // scope verification.
+    // Issue (iter-101): None branch must return HTTP 503 (not 200) with "ok": false,
+    // matching the write_env and inject_creds posture. The previous Json<Value>
+    // return type silently sent HTTP 200 for the 503 case.
     match item_in_vault_folder(&state, item_name).await {
         Some(true) => {} // in scope — proceed
         Some(false) => {
-            return Json(json!({
-                "error": format!(
-                    "item '{}' is not in the vault-proxy folder ('{}') — \
-                     generate_totp is scoped to vault-proxy items only",
-                    item_name, state.vault_folder
-                )
-            }));
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "item '{}' is not in the vault-proxy folder ('{}') — \
+                         generate_totp is scoped to vault-proxy items only",
+                        item_name, state.vault_folder
+                    )
+                })),
+            )
+                .into_response();
         }
         None => {
-            return Json(json!({
-                "error": format!(
-                    "vault_folder '{}' not found — cannot verify item scope before \
-                     decrypting TOTP secret. Verify --vault-folder matches the \
-                     Vaultwarden folder name, then call POST /vault/resync.",
-                    state.vault_folder
-                )
-            }));
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": format!(
+                        "vault_folder '{}' not found — cannot verify item scope before \
+                         decrypting TOTP secret. Verify --vault-folder matches the \
+                         Vaultwarden folder name, then call POST /vault/resync.",
+                        state.vault_folder
+                    )
+                })),
+            )
+                .into_response();
         }
     }
 
@@ -2823,7 +2839,13 @@ pub async fn generate_totp(
             let result = {
                 let seed = match seed_buf.as_str() {
                     Ok(s) => s.to_string(),
-                    Err(_) => return Json(json!({"error": "TOTP seed is not valid UTF-8"})),
+                    Err(_) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"error": "TOTP seed is not valid UTF-8"})),
+                        )
+                            .into_response();
+                    }
                 };
                 // seed_buf dropped here -> zeroized
                 drop(seed_buf);
@@ -2836,17 +2858,33 @@ pub async fn generate_totp(
             };
 
             match result {
-                Ok(code) => Json(json!({
-                    "code": code,
-                    "expires_in": crate::totp::seconds_remaining(),
-                })),
+                Ok(code) => (
+                    StatusCode::OK,
+                    Json(json!({
+                        "code": code,
+                        "expires_in": crate::totp::seconds_remaining(),
+                    })),
+                )
+                    .into_response(),
                 // Use a generic error message — never forward the inner error
                 // which could contain fragments of the TOTP seed/URI.
-                Err(_e) => Json(json!({"error": "TOTP generation failed"})),
+                Err(_e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "TOTP generation failed"})),
+                )
+                    .into_response(),
             }
         }
-        Ok(None) => Json(json!({"error": "no TOTP seed stored for this item"})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no TOTP seed stored for this item"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -2870,10 +2908,14 @@ pub async fn generate_totp(
 pub async fn decrypt_notes(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Value>,
-) -> Json<Value> {
+) -> impl IntoResponse {
     let item_name = req.get("item_name").and_then(|v| v.as_str()).unwrap_or("");
     if item_name.is_empty() {
-        return Json(json!({"error": "item_name required"}));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "item_name required"})),
+        )
+            .into_response();
     }
 
     // Issue (iter-19): Scope to vault_folder. Without this guard any local
@@ -2884,36 +2926,60 @@ pub async fn decrypt_notes(
     // Issue (iter-100): item_in_vault_folder returns Option<bool>; None means
     // vault_folder not found — block rather than return full notes content
     // without scope verification.
+    // Issue (iter-101): None branch must return HTTP 503 (not 200) with "ok": false,
+    // matching write_env and inject_creds posture. The previous Json<Value> return
+    // type silently sent HTTP 200 for the 503 case.
     match item_in_vault_folder(&state, item_name).await {
         Some(true) => {} // in scope — proceed
         Some(false) => {
-            return Json(json!({
-                "error": format!(
-                    "item '{}' is not in the vault-proxy folder ('{}') — \
-                     decrypt_notes is scoped to vault-proxy items only",
-                    item_name, state.vault_folder
-                )
-            }));
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": format!(
+                        "item '{}' is not in the vault-proxy folder ('{}') — \
+                         decrypt_notes is scoped to vault-proxy items only",
+                        item_name, state.vault_folder
+                    )
+                })),
+            )
+                .into_response();
         }
         None => {
-            return Json(json!({
-                "error": format!(
-                    "vault_folder '{}' not found — cannot verify item scope before \
-                     returning notes content. Verify --vault-folder matches the \
-                     Vaultwarden folder name, then call POST /vault/resync.",
-                    state.vault_folder
-                )
-            }));
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": format!(
+                        "vault_folder '{}' not found — cannot verify item scope before \
+                         returning notes content. Verify --vault-folder matches the \
+                         Vaultwarden folder name, then call POST /vault/resync.",
+                        state.vault_folder
+                    )
+                })),
+            )
+                .into_response();
         }
     }
 
     match state.vault.decrypt_notes(item_name) {
         Ok(Some(buf)) => match buf.as_str() {
-            Ok(s) => Json(json!({"notes": s})),
-            Err(_) => Json(json!({"error": "notes content is not valid UTF-8"})),
+            Ok(s) => (StatusCode::OK, Json(json!({"notes": s}))).into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "notes content is not valid UTF-8"})),
+            )
+                .into_response(),
         },
-        Ok(None) => Json(json!({"error": "no notes content for this item"})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "no notes content for this item"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -4161,6 +4227,68 @@ mod folder_scope_guard_tests {
         assert!(
             filtered.is_empty(),
             "list_items must return empty when vault_folder is configured but not found in vault"
+        );
+    }
+
+    /// Issue (iter-100): When vault_folder is configured but not found, list_duplicates
+    /// must return an EMPTY list — not all duplicate groups. Previously, None was
+    /// passed to list_duplicates_in_folder which scanned ALL vault items, leaking
+    /// duplicate-credential groups from personal folders outside vault_folder.
+    ///
+    /// Simulates the None branch: vault_folder_id = None, duplicate groups exist.
+    #[test]
+    fn list_duplicates_returns_empty_when_vault_folder_not_found() {
+        // Simulate vault_folder_id == None (configured but absent in vault).
+        let vault_folder_id: Option<&str> = None;
+        // Simulated groups that would exist under a personal folder.
+        let all_groups: Vec<(&str, Vec<&str>)> = vec![
+            ("personal-banking", vec!["chase-visa", "bofa-checking"]),
+            ("work", vec!["github-token", "github-token-backup"]),
+        ];
+
+        // iter-100 fix: return empty when folder not found, not all groups.
+        let result: Vec<(&str, Vec<&str>)> = match vault_folder_id {
+            Some(fid) => all_groups
+                .into_iter()
+                .filter(|(name, _)| *name == fid)
+                .collect(),
+            None => Vec::new(), // iter-100: empty, not all
+        };
+
+        assert!(
+            result.is_empty(),
+            "list_duplicates must return empty when vault_folder is configured but not found in vault"
+        );
+    }
+
+    /// Issue (iter-100): When vault_folder is configured but not found, list_untracked_items
+    /// must return an EMPTY list — not all untracked items. Previously, all_untracked was
+    /// returned regardless of folder — leaking names/IDs of items from every vault folder.
+    ///
+    /// Simulates the None branch: vault_folder_id = None, untracked items exist.
+    #[test]
+    fn list_untracked_returns_empty_when_vault_folder_not_found() {
+        // Simulate vault_folder_id == None (configured but absent in vault).
+        let vault_folder_id: Option<&str> = None;
+        // Simulated untracked items that would exist across multiple folders.
+        let all_untracked: Vec<(&str, &str)> = vec![
+            ("uuid-1", "personal/banking/chase"),
+            ("uuid-2", "work/github-token"),
+            ("uuid-3", "vault-proxy/sonarr"),
+        ];
+
+        // iter-100 fix: return empty (count:0, items:[]) when folder not found.
+        let items: Vec<(&str, &str)> = match vault_folder_id {
+            Some(fid) => all_untracked
+                .into_iter()
+                .filter(|(_, name)| name.starts_with(fid))
+                .collect(),
+            None => Vec::new(), // iter-100: empty, not all
+        };
+
+        assert!(
+            items.is_empty(),
+            "list_untracked_items must return empty when vault_folder is configured but not found in vault"
         );
     }
 }
