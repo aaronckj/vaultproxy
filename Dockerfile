@@ -205,7 +205,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 # iter-117: previously absent; `docker inspect` showed no version label.
 # iter-119: default changed from "1.0.1" to "" so that `docker build .` without
 # --build-arg IMAGE_VERSION stamps "unknown" rather than a stale hardcoded version.
-# CI always passes IMAGE_VERSION=${{ github.ref_name }} via the build-args block.
+# iter-120: CI now passes IMAGE_VERSION=${{ steps.meta.outputs.version }} (from
+# docker/metadata-action) which strips the leading "v" from tag refs so the label
+# carries bare SemVer "1.0.1" instead of "v1.0.1" per the OCI image spec.
 ARG IMAGE_VERSION=""
 LABEL org.opencontainers.image.title="vaultproxy" \
       org.opencontainers.image.description="Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents" \

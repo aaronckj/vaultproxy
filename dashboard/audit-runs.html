@@ -297,11 +297,14 @@
             const tdata = await api("/api/credaudit/telemetry/" + encodeURIComponent(runId));
             const tbox = document.getElementById("detail-telemetry");
             tbox.replaceChildren();
-            if (tdata && tdata.error) {
-                tbox.textContent = "telemetry unavailable: " + tdata.error;
+            // iter-119 wrapped the engine value in {"ok":true,"telemetry":{...}}.
+            // iter-120: read tdata.telemetry.summary instead of tdata.summary.
+            if (tdata && tdata.ok === false) {
+                tbox.textContent = "telemetry unavailable: " + (tdata.error || "unknown error");
                 return;
             }
-            const summary = (tdata && tdata.summary) || {};
+            const telemetry = (tdata && tdata.telemetry) || {};
+            const summary = telemetry.summary || {};
             const rows = [
                 ["Total LLM calls", summary.total ?? 0],
                 ["Successful", summary.success ?? 0],

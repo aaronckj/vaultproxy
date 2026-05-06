@@ -214,14 +214,20 @@
         // Fetch and render
         // iter-112: /api/policies now returns {"ok": true, "policies": [...]}
         // instead of a bare array. Extract body.policies before rendering.
+        // iter-120: surface server-side errors instead of silently showing empty.
         function loadPolicies() {
             fetch('/api/policies')
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
+                    if (data && data.ok === false) {
+                        showError('Error loading policies: ' + (data.error || 'unknown error'));
+                        renderTable([]);
+                        return;
+                    }
                     var list = Array.isArray(data) ? data : (data.policies || []);
                     renderTable(list);
                 })
-                .catch(function () { renderTable([]); });
+                .catch(function (e) { showError('Failed to load policies: ' + e.toString()); renderTable([]); });
         }
 
         // POST (create or update)

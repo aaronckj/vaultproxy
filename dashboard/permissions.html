@@ -205,7 +205,14 @@
         });
 
         function loadPerms() {
-            api('/api/permissions').then(renderTable).catch(function() {});
+            // iter-120: surface server-side errors instead of silently showing empty.
+            api('/api/permissions').then(function(data) {
+                if (data && data.ok === false) {
+                    showStatus('Error loading permissions: ' + (data.error || 'unknown error'), false);
+                    return;
+                }
+                renderTable(data);
+            }).catch(function() {});
         }
 
         loadPerms();

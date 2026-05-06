@@ -123,4 +123,5 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
-            IMAGE_VERSION=${{ github.ref_name }}
+            IMAGE_VERSION=${{ steps.meta.outputs.version }}
+

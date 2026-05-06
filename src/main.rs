@@ -2658,12 +2658,16 @@ pub(crate) async fn handle_get_permissions(
     tracing::debug!("GET /vault/permissions — returning current tool permissions");
     // iter-109: add "ok": true for consistency with all other success bodies;
     // callers checking body["ok"] were getting undefined instead of true here.
+    // iter-120: include configured_vault_folder so operators can confirm which
+    // vault folder is scoped alongside the permission configuration. Mirrors
+    // the same field already present in list_folders and sync_status (iter-115/117).
     AxumJson(serde_json::json!({
         "ok": true,
         "defaults": defaults,
         "overrides": overrides,
         "config_file_exists": config_file_exists,
         "permissions_source": permissions_source,
+        "configured_vault_folder": state.vault_folder,
         "note": "GET /vault/permissions — current tool permission configuration (defaults = category-level, overrides = per-tool-name; overrides take priority). \
                  config_file_exists=true means tool-permissions.json was found in $CONFIG_DIR at startup; \
                  false means built-in defaults are active. \
