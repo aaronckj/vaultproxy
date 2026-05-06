@@ -2848,6 +2848,75 @@ vault_item  = "vault-proxy - Beta"
         );
     }
 
+    /// iter-79: GET /vault/permissions — config_file_exists: true when the
+    /// permissions file is present on disk.
+    ///
+    /// Complements the false-case test above.  Creates a temporary directory,
+    /// writes a minimal tool-permissions.json into it, sets AppState.config_dir
+    /// to that directory, then verifies that the handler returns
+    /// `config_file_exists: true`.
+    ///
+    /// This tests the runtime file-existence check in `handle_get_permissions`
+    /// rather than the in-memory permissions map — the two are intentionally
+    /// separate (the file is only read at startup; config_file_exists reflects
+    /// whether the file is on disk now).
+    #[tokio::test]
+    async fn get_vault_permissions_config_file_exists_true_when_file_present() {
+        use crate::security::rate_limit::RateLimiter;
+
+        // Build a temp dir and write a minimal permissions file into it.
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let perms_path = tmp.path().join("tool-permissions.json");
+        std::fs::write(&perms_path, r#"{"defaults":{},"overrides":{}}"#)
+            .expect("failed to write test permissions file");
+
+        // Construct state with config_dir pointing at the temp dir.
+        let mut inner_state = (*make_state(ServiceRegistry::new())).clone();
+        inner_state.config_dir = tmp.path().to_str().unwrap().to_string();
+        let state = Arc::new(inner_state);
+        let token = state.internal_token.as_str().to_string();
+
+        let internal_router = Router::new()
+            .route("/vault/permissions", get(crate::handle_get_permissions))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let limiter = RateLimiter::new(60, 60);
+        let app = Router::new()
+            .merge(internal_router)
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                crate::security::rate_limit::rate_limit_middleware,
+            ))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://{}/vault/permissions", addr))
+            .header("authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/permissions with file present must return 200 OK"
+        );
+        let body: serde_json::Value = resp.json().await.expect("response must be JSON");
+        assert_eq!(
+            body["config_file_exists"].as_bool(),
+            Some(true),
+            "config_file_exists must be true when tool-permissions.json exists; got: {body}"
+        );
+    }
+
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires
     /// a tight 2 req/60 s limiter across the full HTTP stack so the third
     /// request returns 429 TOO_MANY_REQUESTS.

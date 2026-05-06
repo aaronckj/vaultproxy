@@ -1007,11 +1007,14 @@ async fn start_server(
         // iter-78: surface the on-demand audit endpoint in startup logs when the
         // background scheduler is enabled, so operators who set --audit-interval-secs
         // for the first time see both the scheduled cadence and the manual endpoint.
+        // iter-79: use config_dir instead of the hardcoded "/config" path so the
+        // log reflects the actual token location when --config-dir is set.
         if args.audit_interval_secs > 0 {
             tracing::info!(
                 audit_interval_secs = args.audit_interval_secs,
                 "credential audit scheduler enabled — on-demand endpoint: \
-                 GET /vault/audit/run (Authorization: Bearer <token from /config/internal-token>)"
+                 GET /vault/audit/run (Authorization: Bearer <token from {}/internal-token>)",
+                config_dir
             );
         }
     }
@@ -2144,6 +2147,10 @@ async fn start_server(
         // In a multi-instance deployment (prod/staging both writing to the same
         // log stream) the vault_folder distinguishes which instance's audit fired.
         let audit_vault_folder = args.vault_folder.clone();
+        // iter-79: capture config_dir so the ntfy notification body references
+        // the correct token path (e.g. /tmp/vp-test/internal-token) rather than
+        // the hardcoded /config/internal-token that was in iter-72's format string.
+        let audit_config_dir = config_dir.to_string();
         // iter-72: capture notifier so the background task can push alerts when
         // weak or reused passwords are found.  Previously the task only logged at
         // WARN, so operators using ntfy.sh/email never received a push notification
@@ -2190,6 +2197,7 @@ async fn start_server(
                 let inner_folder = audit_vault_folder.clone();
                 let inner_notifier = audit_notifier.clone();
                 let inner_shutdown = audit_shutdown_child.clone();
+                let inner_config_dir = audit_config_dir.clone();
                 let inner = tokio::spawn(async move {
                     tracing::info!(
                         vault_folder = %inner_folder,
@@ -2284,17 +2292,20 @@ async fn start_server(
                                 "Vault audit: {} weak, {} item(s) with shared passwords — {}",
                                 n_weak, n_reused_items, inner_folder
                             );
+                            // iter-79: use inner_config_dir so the body references
+                            // the actual token path (respects --config-dir flag).
                             let body = format!(
                                 "vault-proxy credential audit found issues in '{}': \
                                  {} weak password(s), {} item(s) with shared passwords \
                                  across {} reuse group(s) (total {} items scanned). \
                                  Review: GET /vault/audit/run \
-                                 (Authorization: Bearer <token from /config/internal-token>)",
+                                 (Authorization: Bearer <token from {}/internal-token>)",
                                 inner_folder,
                                 n_weak,
                                 n_reused_items,
                                 n_reuse_groups,
-                                result.total_items
+                                result.total_items,
+                                inner_config_dir
                             );
                             // iter-74: log a warning if the notification fails so
                             // operators know the audit alert was not delivered.
