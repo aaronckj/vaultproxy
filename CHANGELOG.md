@@ -5,6 +5,75 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.2] — iteration 122: JS correctness audit, approvals envelope fix
+
+### Bugs (iter-122)
+
+- **`GET /api/approvals` returns bare JSON array without `"ok"` envelope (iter-122)** — `src/dashboard/api.rs:298`. MEDIUM.
+  Every other dashboard collection endpoint (`/api/items`, `/api/sync`, `/api/permissions`, etc.)
+  returns `{"ok":true,"<key>":[...]}`. `GET /api/approvals` was the sole exception — it returned a
+  raw JSON array with no `"ok"` sentinel, inconsistent with the pattern established in iter-109 through
+  iter-117. The JavaScript in `approvals.html:241` compensated with `Array.isArray(data) ? data : []`,
+  masking the inconsistency. Fixed: response wrapped in `{"ok":true,"approvals":[...]}`;
+  `approvals.html` updated to unwrap `data.approvals` with the Array.isArray fallback retained for
+  graceful rollback; shape test added (`api_approvals_has_ok_true_and_approvals_array`).
+
+### Verified (iter-122) — iter-121 JS correctness audit
+
+Ten specific areas were audited. Nine passed; one new bug was found (above).
+
+1. **`rotation.html:244` — interval ID accessible** — PASS. `refreshTimer` is declared
+   `var refreshTimer;` at line 242, assigned `refreshTimer = setInterval(...)` at line 327
+   (module scope), and `clearInterval(refreshTimer)` is called at lines 259 and 323. Both call
+   sites share the same var scope. Correct.
+
+2. **`sync.html:121` — `applyState("error")` defined** — PASS. `applyState` is defined at line 99.
+   Line 106 explicitly handles `"error"`: `state === "error" || state === "idle_with_errors"` adds
+   the `err` CSS class. Calling `applyState("error")` on server error is safe and visible.
+
+3. **`audit.html:304` — `statusNote` DOM element exists** — PASS. `statusNote` is obtained via
+   `document.getElementById("status-note")` at line 155. The HTML element `<p id="status-note">`
+   exists at line 140. Not null.
+
+4. **`index.html` — all API calls protected** — PASS. `index.html` makes exactly one API call
+   (`/api/status`). Vault count, sync state, and service count all derive from that single response.
+   The iter-121 `ok === false` guard covers all three fields. No unguarded second call.
+
+5. **`settings.html:880` `loadCredentials` error messaging** — PASS (with note). The error string
+   is rendered in the `creds-vw-url` display element labeled "Vault URL". Operator sees `Error: <msg>`
+   in the URL field; email and cloud-status show `"--"`. Error IS visible; no silent failure. The
+   display location (URL card) is slightly misleading but not a crash or data loss scenario.
+
+6. **`v1.0.2` patch release** — DONE. Cargo.toml bumped to `1.0.2`; this CHANGELOG entry added;
+   `cargo update --workspace` ran to sync Cargo.lock.
+
+7. **`settings.html:343` wizard error visibility** — PASS. `setupWizard` has `style="display:none"`
+   in HTML (line 30). The iter-121 fix calls `setupWizard.style.display = ""` at line 361, making
+   the panel visible regardless of prior setup state. Error heading and description are rendered
+   inside the visible panel.
+
+8. **`dashboard/api.rs` — remaining success handlers without `"ok": true`** — 173 occurrences of
+   `"ok"` in file. All `json!({...})` success handlers confirmed to have `"ok": true`. The one
+   exception by design is `setup_cloud_via_dashboard` which proxies the raw sidecar body (that
+   body always contains `ok` from the sidecar's own handler). `GET /api/approvals` was the only
+   true gap — fixed above.
+
+9. **`CHANGELOG.md [1.0.1]` — complete through iter-121** — PASS. The iter-121 section accurately
+   describes all 9 bugs fixed. Quality gates section correctly shows 317 total tests (315 + 2
+   integration) for both iter-119 and iter-121 passes — the iter-121 test was a rename
+   (not a net-new test), so the count is unchanged and accurate.
+
+10. **Final quality gates (iter-122)** — see below.
+
+### Quality gates (iter-122)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **316 passed** (+ 2 integration) = **318 total**; 0 failed (1 new shape test: `api_approvals_has_ok_true_and_approvals_array`)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
+
+---
+
 ## [1.0.1] — iterations 117–121: dashboard "ok" sentinel pass, diagnostic fields, CI OCI fix, stability hardening
 
 ### Bugs (iter-121) — complete dashboard silent-error audit

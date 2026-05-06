@@ -238,7 +238,10 @@
                     return res.json();
                 })
                 .then(function (data) {
-                    renderApprovals(Array.isArray(data) ? data : []);
+                    // iter-122: server now returns {"ok":true,"approvals":[...]} envelope.
+                    // Array.isArray fallback retained for graceful rollback.
+                    var list = Array.isArray(data) ? data : (Array.isArray(data.approvals) ? data.approvals : []);
+                    renderApprovals(list);
                     updateRefreshIndicator(false);
                 })
                 .catch(function () {

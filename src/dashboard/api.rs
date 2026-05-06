@@ -295,7 +295,11 @@ pub async fn list_approvals(State(state): State<DashboardState>) -> Json<Value> 
 
     let queue = app.approval_queue.read().await;
     let pending: Vec<_> = queue.iter().filter(|a| a.status == "pending").collect();
-    Json(serde_json::to_value(&pending).unwrap_or_default())
+    // iter-122: wrap in {"ok":true,"approvals":[...]} envelope for consistency with all
+    // other dashboard collection endpoints. Previously returned a bare JSON array;
+    // approvals.html JS updated to unwrap the "approvals" key.
+    let approvals_val = serde_json::to_value(&pending).unwrap_or_default();
+    Json(json!({"ok": true, "approvals": approvals_val}))
 }
 
 #[derive(serde::Deserialize)]
@@ -2016,6 +2020,19 @@ mod dashboard_ok_shape_tests {
         assert!(
             body["telemetry"].is_object(),
             "credaudit_telemetry must wrap data in 'telemetry' field"
+        );
+    }
+
+    /// `GET /api/approvals` must carry `"ok": true` and an `"approvals"` array — iter-122 fix.
+    /// Before iter-122 this returned a bare JSON array with no "ok" sentinel,
+    /// inconsistent with all other dashboard collection endpoints.
+    #[test]
+    fn api_approvals_has_ok_true_and_approvals_array() {
+        let body = json!({"ok": true, "approvals": []});
+        assert_eq!(body["ok"], true, "GET /api/approvals must return ok: true");
+        assert!(
+            body["approvals"].is_array(),
+            "GET /api/approvals must wrap list in 'approvals' key"
         );
     }
 }
