@@ -1555,9 +1555,9 @@ impl VaultManager {
     /// folder index.
     pub async fn item_name_is_in_folder_id(&self, item_name: &str, folder_id: &str) -> bool {
         let items = self.items.read().await;
-        items.values().any(|(n, c)| {
-            n.as_str() == item_name && c.folder_id.as_deref() == Some(folder_id)
-        })
+        items
+            .values()
+            .any(|(n, c)| n.as_str() == item_name && c.folder_id.as_deref() == Some(folder_id))
     }
 
     /// Return items in the folder with the given (decrypted) name.

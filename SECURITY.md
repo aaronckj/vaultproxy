@@ -66,6 +66,18 @@ All vault item handlers enforce that looked-up items belong to the configured `v
 
 The `vault_folder` → folder ID resolution is cached after the first successful lookup (double-checked locking in `resolve_vault_folder_id`). The cache is invalidated by `POST /vault/resync`. If the folder does not exist in the vault, `None` is returned without caching — every subsequent request re-scans until the folder is created, at which point the cache is populated automatically.
 
+### Folder rename / not-found behavior
+
+If `--vault-folder` no longer matches any folder in the vault (e.g. the folder was renamed in Vaultwarden without updating `--vault-folder`), `resolve_vault_folder_id` returns `None`. The consequence depends on the handler type:
+
+- **Read-only handlers** (`list_items`, `list_duplicates`, `generate_totp`, `decrypt_notes`, `inject_creds`, etc.) — fall through **permissively** (warn! emitted; request proceeds). First-run tooling on a fresh vault where the folder does not yet exist continues to work without operator intervention.
+- **Write/destructive handlers** (`write_env`) — **block with 503 Service Unavailable** and emit `{"ok": false, "error": "..."}`. Writing plaintext credentials to disk without folder-scope verification would allow any vault item UUID (including personal entries outside `vault_folder`) to be exfiltrated to disk. Blocking is the correct posture here.
+- **Self-protection guard** (`delete_folder`) — falls through **permissively** but emits warn! so operators see that the guard is disabled. The folder cannot be identified as the vault-proxy folder when `None` is returned, so the deletion proceeds unblocked — this is logged explicitly.
+
+In all cases, the remediation is: verify `--vault-folder` matches the Vaultwarden folder name, then call `POST /vault/resync`.
+
+The item membership check (`item_in_vault_folder`) is cache-aware: it calls `resolve_vault_folder_id` (O(1) after first lookup) and then checks the item's `folder_id` field directly — no per-call folder-name scan.
+
 ## Two-tier security model
 
 ### Tier 1: Native `/proxy` integration (recommended)

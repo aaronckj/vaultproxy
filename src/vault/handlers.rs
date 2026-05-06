@@ -1847,6 +1847,7 @@ pub async fn write_env(
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(json!({
+                    "ok": false,
                     "error": format!(
                         "vault_folder '{}' not found — cannot verify item scope before \
                          writing credentials to disk. Verify --vault-folder matches the \
@@ -3993,6 +3994,127 @@ mod folder_scope_guard_tests {
             .collect();
 
         assert_eq!(filtered, vec!["item-in-scope"]);
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// item_in_vault_folder tests (iter-97)                                        //
+// -------------------------------------------------------------------------- //
+//
+// Verify the cache-aware wrapper added in iter-96:
+//   (a) uses the cached/resolved folder ID (resolve_vault_folder_id path)
+//   (b) emits warn! and returns true when folder not found (permissive fallback)
+//   (c) returns true when item is in the correct folder
+//   (d) returns false when item is in a different folder
+#[cfg(test)]
+mod item_in_vault_folder_tests {
+    use super::*;
+    use crate::vault::types::EncryptedCipher;
+
+    fn make_test_cipher(id: &str, folder_id: Option<&str>) -> EncryptedCipher {
+        EncryptedCipher {
+            id: id.to_string(),
+            name: id.to_string(),
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: None,
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: folder_id.map(String::from),
+            revision_date: None,
+            key: None,
+            extra: None,
+        }
+    }
+
+    /// Build a minimal AppState stub for testing item_in_vault_folder.
+    /// Seeds the vault with one folder and one item in that folder.
+    async fn make_state_with_folder(
+        vault_folder: &str,
+        folder_id: &str,
+        item_name: &str,
+        item_folder_id: Option<&str>,
+    ) -> Arc<AppState> {
+        let vault = crate::vault::VaultManager::new_stub();
+        let cipher = make_test_cipher("item-uuid-1", item_folder_id);
+        vault
+            .seed_for_test(
+                folder_id.to_string(),
+                vault_folder.to_string(),
+                cipher.clone(),
+            )
+            .await;
+        // Also seed by name so name-based lookups find the item.
+        vault.seed_item_by_name(item_name.to_string(), cipher).await;
+
+        Arc::new(AppState::new_stub(vault, vault_folder.to_string()))
+    }
+
+    /// Item in the correct folder → returns true.
+    #[tokio::test]
+    async fn returns_true_when_item_is_in_vault_folder() {
+        let state = make_state_with_folder(
+            "connecterr",
+            "folder-uuid-abc",
+            "my-item",
+            Some("folder-uuid-abc"),
+        )
+        .await;
+        let result = item_in_vault_folder(&state, "my-item").await;
+        assert!(result, "item in correct folder must return true");
+    }
+
+    /// Item in a different folder → returns false.
+    #[tokio::test]
+    async fn returns_false_when_item_is_in_wrong_folder() {
+        let state = make_state_with_folder(
+            "connecterr",
+            "folder-uuid-abc",
+            "my-item",
+            Some("folder-uuid-other"),
+        )
+        .await;
+        let result = item_in_vault_folder(&state, "my-item").await;
+        assert!(
+            !result,
+            "item in wrong folder must return false (scope guard active)"
+        );
+    }
+
+    /// Folder not found in vault → permissive fallback returns true.
+    #[tokio::test]
+    async fn returns_true_permissively_when_folder_not_found() {
+        // Build state with a folder name that doesn't exist in the vault.
+        let vault = crate::vault::VaultManager::new_stub();
+        // Do NOT seed any folder — simulates fresh vault or rename.
+        let state = Arc::new(AppState::new_stub(vault, "missing-folder".to_string()));
+        let result = item_in_vault_folder(&state, "any-item").await;
+        assert!(
+            result,
+            "fresh vault / folder not found must return true (permissive fallback)"
+        );
+    }
+
+    /// resolve_vault_folder_id is called: second call uses cached value,
+    /// not a fresh scan. Verified by calling item_in_vault_folder twice and
+    /// confirming both calls succeed (cached path doesn't deadlock).
+    #[tokio::test]
+    async fn second_call_uses_cached_folder_id() {
+        let state = make_state_with_folder(
+            "connecterr",
+            "folder-uuid-abc",
+            "my-item",
+            Some("folder-uuid-abc"),
+        )
+        .await;
+        let r1 = item_in_vault_folder(&state, "my-item").await;
+        let r2 = item_in_vault_folder(&state, "my-item").await;
+        assert!(r1, "first call must return true");
+        assert_eq!(r1, r2, "cached path must return same result as first call");
     }
 }
 

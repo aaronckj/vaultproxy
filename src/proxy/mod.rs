@@ -1353,6 +1353,65 @@ fn proxy_error(code: StatusCode, message: String) -> (StatusCode, Json<ProxyErro
 }
 
 // -------------------------------------------------------------------------- //
+// Test helpers                                                                 //
+// -------------------------------------------------------------------------- //
+
+#[cfg(test)]
+impl AppState {
+    /// Build a minimal stub `AppState` for use in unit tests.
+    ///
+    /// Accepts a pre-built `VaultManager` (e.g. `VaultManager::new_stub()` or
+    /// a seeded stub) and a `vault_folder` string. All other fields are set to
+    /// safe no-op defaults. Used by `vault::handlers` tests that call functions
+    /// which require `Arc<AppState>` (e.g. `item_in_vault_folder`).
+    pub fn new_stub(vault: crate::vault::VaultManager, vault_folder: String) -> Self {
+        use crate::notify::Notifier;
+        use crate::security::audit_log::AuditLog;
+        use crate::security::permissions::ToolPermissions;
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicBool, AtomicU64};
+
+        static STUB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = STUB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let audit_path = format!("/tmp/vault-proxy-stub-audit-{n}.json");
+
+        AppState {
+            vault: Arc::new(vault),
+            registry: Arc::new(tokio::sync::RwLock::new(
+                crate::proxy::registry::ServiceRegistry::new(),
+            )),
+            http: reqwest::Client::new(),
+            http_permissive: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap(),
+            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            unifi_sessions: Arc::new(crate::proxy::unifi_session::UnifiSessionCache::new()),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            client_certs: None,
+            cloud_sync: None,
+            approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
+            browser: None,
+            permissions: Arc::new(tokio::sync::RwLock::new(ToolPermissions::load(
+                "/nonexistent/tool-permissions.json",
+            ))),
+            audit_log: Arc::new(AuditLog::new(&audit_path)),
+            notifier: Arc::new(Notifier::disabled()),
+            handshake_completed: Arc::new(AtomicBool::new(false)),
+            vault_folder,
+            last_resync_unix: Arc::new(AtomicU64::new(0)),
+            internal_token: Arc::new("test-stub-token".to_string()),
+            cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
+            env_write_root: String::new(),
+            config_dir: "/tmp/stub-config".to_string(),
+            proxy_timeout: 120,
+            reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+// -------------------------------------------------------------------------- //
 // Tests                                                                        //
 // -------------------------------------------------------------------------- //
 

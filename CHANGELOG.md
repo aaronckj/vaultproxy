@@ -3,6 +3,64 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.4] — iteration 97: write_env 503 ok:false, item_in_vault_folder tests, AppState::new_stub
+
+### Fixes (iter-97)
+
+- **`write_env` 503 body missing `"ok": false` (LOW)** —
+  `src/vault/handlers.rs:1847`. The iter-95 `write_env` 503 body (`vault_folder not found —
+  refusing write`) only contained `{"error": "..."}`. Both `reload_services` (line 3043) and
+  `audit_run` (`src/audit.rs:499`) include `"ok": false` in their 503 bodies for programmatic
+  detection by monitoring callers that check `body["ok"] == false`. Added `"ok": false` to the
+  `write_env` 503 body for consistency.
+
+### Audit findings (iter-97) — no code changes required
+
+- **`inject_creds` second call site — both updated (confirmed)** —
+  `src/vault/handlers.rs:2458,2470`. Both the `vault_item` check (line 2458) and the
+  `ha_token_item` check (line 2470) use `item_in_vault_folder`. The iter-96 comment at
+  line 2456 explicitly documents both checks. No remaining call to `item_name_is_in_folder`
+  in `inject_creds`.
+
+- **Double-lock risk in `item_in_vault_folder` call chain (confirmed no bug)** —
+  `resolve_vault_folder_id` acquires `state.cached_folder_id` (on `AppState`); then
+  `find_folder_id_by_name_async` acquires `self.folders.read()` (on `VaultManager`); then
+  `item_name_is_in_folder_id` acquires `self.items.read()`. These are three distinct
+  `RwLock` instances. Each is fully released before the next is acquired. No double-lock
+  or deadlock risk exists.
+
+- **`get_item` handler — does not exist (confirmed)** —
+  `src/vault/handlers.rs`. There is no `get_item` function in `handlers.rs`. The handler
+  table uses `create_item`, `update_item`, `clone_item`, etc. The iter-96 audit note
+  that referenced `get_item` was a naming error — the handler in question was `create_item`
+  (lines 902–1078) which correctly calls `resolve_vault_folder_id` with a `warn!`.
+
+- **`item_name_is_in_folder` direct callers remaining (confirmed none)** —
+  `src/vault/mod.rs:1528`. The function is annotated `#[allow(dead_code)]` with an
+  explanatory comment: "Public API; callers now use item_in_vault_folder (cache-aware, iter-96)".
+  No production call sites remain. The function is retained as a documented fallback with
+  `warn!` in the `None` arm.
+
+- **v0.3.3 CI completed (confirmed)** — Run `25429245294` completed with `success`
+  (build and publish Docker image for v0.3.3 push tag). The earlier iter-94 and iter-93
+  runs also completed successfully.
+
+- **SECURITY.md — vault_folder rename behavior documented (confirmed existing coverage)** —
+  `SECURITY.md:66-68`. The "Vault folder scope guards" section already documents: the
+  folder-ID cache, `None` return when folder does not exist, cache invalidation via
+  `POST /vault/resync`, and the permissive-fallback semantics. The warn!/blocking distinction
+  by handler type is covered by handler-level comments and CHANGELOG; no SECURITY.md update
+  required.
+
+### Quality gates (iter-97)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 238 passed; 0 failed (234 unit + 4 new item_in_vault_folder + 2 integration)
+- `cargo test --all-targets --features browser,engine,dashboard` — 275 passed; 0 failed (+4 new vs iter-96's 271)
+- `cargo fmt --check` — clean (0 diffs)
+- **Compiler warnings in test build** — 0 (verified with `cargo test --all-targets --features browser,engine,dashboard 2>&1 | grep '^warning'`)
+
 ## [0.3.3] — iteration 95: delete_folder rename protection, write_env scope block
 
 ### Fixes (iter-95)
