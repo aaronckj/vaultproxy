@@ -86,6 +86,22 @@ use axum::{
 use serde_json::json;
 use tokio::sync::Mutex;
 
+/// Minimum interval between GC (`retain`) sweeps (iter-94).
+///
+/// Without a guard the `retain` call in `check()` scans the entire HashMap on
+/// every request. Under normal homelab load (≤ 200 entries) this costs O(200)
+/// per request — negligible. But when the map grows toward MAX_CALLER_ENTRIES
+/// under a hostile unique-ID churn, it scans up to O(10 000) entries per
+/// request. At the rate-limited endpoints (60 req/60 s default), that means
+/// 600 000 HashMap comparisons per minute just for GC.
+///
+/// Amortization: run `retain` at most once per second regardless of request
+/// rate. The GC period is short enough that expired entries (window = 60 s,
+/// eviction threshold = 4× = 240 s) are cleaned up well before they consume
+/// significant memory. At 10 req/s to rate-limited endpoints, GC fires once
+/// per second instead of 10 times — a 10× reduction.
+const GC_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Per-(route, caller_key) request counter with windowed expiry.
 #[derive(Debug, Clone)]
 struct RouteCounter {
@@ -110,6 +126,13 @@ pub struct RateLimiter {
     /// destructive endpoints to have tighter limits without a second middleware
     /// instance.
     per_route: Arc<HashMap<&'static str, u64>>,
+    /// Timestamp of the last GC sweep (iter-94: amortized GC).
+    ///
+    /// The GC `retain` is gated behind `GC_MIN_INTERVAL` so it fires at most
+    /// once per second rather than on every `check()` call, bounding the
+    /// per-request O(n) cost to at most one sweep per second regardless of
+    /// request rate.
+    last_gc: Arc<Mutex<std::time::Instant>>,
 }
 
 impl RateLimiter {
@@ -123,6 +146,11 @@ impl RateLimiter {
             max_requests,
             window: std::time::Duration::from_secs(window_secs),
             per_route: Arc::new(HashMap::new()),
+            last_gc: Arc::new(Mutex::new(
+                std::time::Instant::now()
+                    .checked_sub(GC_MIN_INTERVAL)
+                    .unwrap_or(std::time::Instant::now()),
+            )),
         }
     }
 
@@ -141,6 +169,11 @@ impl RateLimiter {
             max_requests,
             window: std::time::Duration::from_secs(window_secs),
             per_route: Arc::new(per_route),
+            last_gc: Arc::new(Mutex::new(
+                std::time::Instant::now()
+                    .checked_sub(GC_MIN_INTERVAL)
+                    .unwrap_or(std::time::Instant::now()),
+            )),
         }
     }
 
@@ -160,9 +193,29 @@ impl RateLimiter {
         let mut counters = self.counters.lock().await;
         let now = std::time::Instant::now();
 
-        // Opportunistic GC — drop entries whose window expired long ago to
-        // bound memory under churn of distinct caller keys.
-        counters.retain(|_, c| now.duration_since(c.window_start) < self.window * 4);
+        // Amortized GC — drop entries whose window expired long ago to bound
+        // memory under churn of distinct caller keys (iter-94).
+        //
+        // Prior behaviour: `retain` ran on *every* `check()` call — O(n) per
+        // request. Under normal homelab load (≤ 200 entries) this is trivial,
+        // but under a hostile unique-ID churn approaching MAX_CALLER_ENTRIES
+        // it could reach O(10 000) comparisons per request. At 60 req/60 s
+        // (the default limit) that is up to 600 000 comparisons/minute just
+        // for GC bookkeeping.
+        //
+        // Fix: gate the `retain` sweep behind `GC_MIN_INTERVAL` (1 second).
+        // The sweep fires at most once per second regardless of request rate.
+        // Expired entries (window = 60 s, eviction threshold = 4× = 240 s)
+        // still drain in ≤ 241 seconds — well within any practical memory
+        // budget. The 1-second guard means at most one O(n) sweep per second
+        // instead of one per request, bounding sustained GC cost to O(n/s).
+        {
+            let mut last_gc = self.last_gc.lock().await;
+            if now.duration_since(*last_gc) >= GC_MIN_INTERVAL {
+                counters.retain(|_, c| now.duration_since(c.window_start) < self.window * 4);
+                *last_gc = now;
+            }
+        }
 
         let key = (path.to_string(), caller_key.to_string());
 

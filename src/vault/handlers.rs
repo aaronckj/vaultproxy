@@ -656,6 +656,17 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
 pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<DuplicateGroup>> {
     // Resolve vault_folder → folder_id for filtering (cached after first call).
     let vault_folder_id = resolve_vault_folder_id(&state).await;
+    if vault_folder_id.is_none() {
+        // vault_folder not found — fresh vault or folder renamed (iter-94).
+        // list_duplicates_in_folder(None) scans ALL items, exposing entries
+        // outside vault_folder. Warn so operators notice after a rename.
+        tracing::warn!(
+            "list_duplicates: vault_folder '{}' not found — scanning all items \
+             (fresh vault or folder renamed? verify --vault-folder, \
+             then call POST /vault/resync)",
+            state.vault_folder
+        );
+    }
     let groups = state
         .vault
         .list_duplicates_in_folder(vault_folder_id.as_deref())
@@ -1079,9 +1090,15 @@ pub async fn update_item(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "update_item: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
-        // If vault_folder_id is None (folder not found), fall through and allow
-        // the update — the operator is likely running a fresh/test vault.
     }
 
     let enc_key = state.vault.enc_key();
@@ -1288,6 +1305,14 @@ pub async fn clone_item(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "clone_item: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
     }
 
@@ -1388,9 +1413,15 @@ pub async fn test_credential(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "test_credential: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
-        // If vault_folder_id is None (folder not found), fall through
-        // permissively — fresh vault / first-run scenario.
     }
 
     // Decrypt creds. Plaintext lives in SecureBuffers, zeroised on drop.
@@ -1746,9 +1777,15 @@ pub async fn write_env(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "write_env: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
-        // If vault_folder_id is None (folder not found), fall through
-        // permissively — fresh vault / first-run scenario.
     }
 
     let (username_buf, password_buf) = match state
@@ -2069,6 +2106,14 @@ pub async fn move_item(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "move_item: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
     }
 
@@ -2198,6 +2243,14 @@ pub async fn delete_item(
                 }
                 _ => {} // folder_id matches vault_folder — proceed
             }
+        } else {
+            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            tracing::warn!(
+                "delete_item: vault_folder '{}' not found — folder-scope guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
+            );
         }
     }
 

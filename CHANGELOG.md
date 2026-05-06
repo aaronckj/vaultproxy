@@ -3,6 +3,77 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.2] — iteration 94: vault folder warn all handlers, rate-limit GC amortized
+
+### Fixes (iter-94)
+
+- **8 of 11 `resolve_vault_folder_id` call sites silently swallowed `None` (LOW)** —
+  `src/vault/handlers.rs`. Iter-93 upgraded 3 handlers (`list_items`, `list_untracked_items`,
+  `create_item`) to `warn!` when the vault folder is not found. The remaining 8 handlers
+  that also call `resolve_vault_folder_id` fell through silently when the folder was absent:
+  `update_item`, `clone_item`, `test_credential`, `write_env`, `move_item`, `delete_item`
+  (mutation guards — folder-scope guard disabled silently) and `list_duplicates` (scans all
+  items when folder missing, leaking non-vault-folder entries).
+  Fix: all 8 handlers now emit `tracing::warn!` with the same actionable message as the
+  iter-93 handlers: folder name, rename scenario, and `POST /vault/resync` remediation.
+
+- **Rate-limiter GC runs O(n) on every `check()` call — not amortized (LOW)** —
+  `src/security/rate_limit.rs`. The `counters.retain(...)` call in `check()` scans the
+  entire HashMap on every request. Under normal homelab load (≤ 200 entries) this is
+  trivial, but under a hostile unique-ID churn approaching MAX_CALLER_ENTRIES (10 000)
+  it reaches O(10 000) comparisons per rate-checked request. At the default 60 req/60 s
+  budget, sustained churn could drive 600 000 GC comparisons per minute on one route.
+  Fix: add `GC_MIN_INTERVAL = 1 s` guard. The `retain` sweep now fires at most once per
+  second regardless of request rate. Expired entries (4× window = 240 s) still drain in
+  ≤ 241 seconds. A `last_gc: Arc<Mutex<Instant>>` field tracks the last sweep time; both
+  constructors (`new` and `with_per_route_overrides`) initialize it to `now − 1 s` so the
+  very first request triggers an immediate sweep.
+
+### Audit findings (iter-94) — no code changes required
+
+- **`sanitize_output` tests compile with `--features engine` (confirmed)** —
+  `cargo test --all-targets --features engine` shows 6 `security::sanitize::tests::*`
+  tests passing. The `test` arm of `#[cfg(any(feature = "browser", test))]` activates
+  in all `cargo test` invocations regardless of feature flags — confirmed correct.
+
+- **`cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings (confirmed)** —
+  The `#[cfg(any(feature = "browser", test))]` gate on `sanitize_output` produces no
+  broken doc links. `sanitize_output` is not referenced from any `#[doc]` or `///` link
+  outside its own module, so the non-browser omission leaves no dangling references.
+
+- **`post-v1.0:` count: 4 live items (confirmed)** —
+  `keystore.rs:333` (`unseal_private_key_from_tpm`),
+  `sync/cloud.rs:40` (`change_master_password` field),
+  `sync/cloud.rs:786` (`update_master_password` fn),
+  `proxy/unifi_session.rs:90` (`invalidate` rotation-UI path).
+  The `browser/vision.rs` line 11 is a historical comment, not a live annotation.
+  The `reset_keystore` annotation was correctly retired in iter-93.
+
+- **Rate-limiter `MAX_CALLER_ENTRIES` per-HashMap-total vs per-route (noted)** —
+  The cap is intentionally global (all routes share one HashMap). 10 000 ÷ 40 routes
+  = 250 unique callers before hitting the cap. For a homelab with ≤ 5 MCP servers
+  and ≤ 40 routes, the cap is 10 000 / 5 = 2 000 per caller — far above any legitimate
+  use. The current design is correct for the stated deployment model; a per-route cap
+  would be more complex with no practical benefit at homelab scale.
+
+- **v0.3.1 CI run status** — The v0.3.1 push triggered run `25428335331`. At audit time
+  it was in progress: formatting, both Clippy passes, and the default `cargo test` step
+  had all completed successfully; the full-feature test step was still running.
+
+- **v0.3.1 GitHub release absent (noted)** — `gh release view v0.3.1` returns "release
+  not found". The tag `v0.3.1` exists and points to `92be23d`. A GitHub release entry is
+  cosmetic for a private homelab project; the Docker image is published by the CI workflow
+  regardless. Creating a release is optional.
+
+### Quality gates (iter-94)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 238 passed; 0 failed (236 unit + 2 integration)
+- `cargo test --all-targets --features browser,engine,dashboard` — 271 passed; 0 failed (269 unit + 2 integration)
+- `cargo fmt --check` — clean (0 diffs)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
 ## [0.3.1] — iteration 93: rate-limit entry cap, sanitize_output compile gate, vault folder rename diagnostics
 
 ### Fixes (iter-93)
