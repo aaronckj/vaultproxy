@@ -5,8 +5,9 @@ pub mod strategies;
 
 use std::sync::Arc;
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::proxy::AppState;
 use strategies::RotationResult;
@@ -44,21 +45,32 @@ pub struct RotateRequest {
 /// token via `require_internal_token` middleware applied to the `/rotate` sub-router
 /// in `main.rs`. Callers must present `Authorization: Bearer <token>` where the
 /// token is read from `$CONFIG_DIR/internal-token` (0o600 permissions).
+///
+/// # Response body format (iter-104)
+///
+/// All non-200 paths include `"ok": false` for consistency with every other
+/// handler in the codebase.  The 501 stub path previously returned only a
+/// bare `RotationResult` struct (missing `"ok": false` / `"error"` fields)
+/// which broke callers that check `body["ok"] == false`.
 pub async fn handle_rotate(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RotateRequest>,
-) -> Result<Json<RotationResult>, (StatusCode, Json<RotationResult>)> {
+) -> impl IntoResponse {
     // Only the "api" strategy is accepted.
     if req.strategy != "api" {
-        let result = RotationResult {
-            service: req.service.clone(),
-            status: "error".to_string(),
-            message: format!(
-                "unsupported strategy '{}'; only 'api' is accepted",
-                req.strategy
-            ),
-        };
-        return Err((StatusCode::BAD_REQUEST, Json(result)));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": format!(
+                    "unsupported strategy '{}'; only 'api' is accepted",
+                    req.strategy
+                ),
+                "service": req.service,
+                "status": "error",
+            })),
+        )
+            .into_response();
     }
 
     // Dispatch to the per-service strategy function.
@@ -115,9 +127,44 @@ pub async fn handle_rotate(
     // Return 501 Not Implemented when the strategy is a known stub.
     // "unsupported" means the strategy exists in code but is not yet
     // implemented — this is distinct from "error" (bad input) and "success".
+    //
+    // Issue (iter-104): The previous `Err((StatusCode::NOT_IMPLEMENTED, Json(result)))`
+    // returned a `RotationResult` struct body — missing the `"ok": false` and
+    // `"error"` fields expected by all callers that check `body["ok"] == false`.
+    // Convert to a consistent error envelope here.
     if result.status == "unsupported" {
-        return Err((StatusCode::NOT_IMPLEMENTED, Json(result)));
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({
+                "ok": false,
+                "error": result.message,
+                "service": result.service,
+                "status": "unsupported",
+            })),
+        )
+            .into_response();
     }
 
-    Ok(Json(result))
+    // Any unexpected non-success status (future strategies may add new values)
+    // is treated as an internal error with a consistent body.
+    if result.status != "success" {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "ok": false,
+                "error": result.message,
+                "service": result.service,
+                "status": result.status,
+            })),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(json!({
+        "ok": true,
+        "service": result.service,
+        "status": result.status,
+        "message": result.message,
+    })))
+        .into_response()
 }

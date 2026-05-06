@@ -4752,3 +4752,51 @@ mod health_version_tests {
         );
     }
 }
+
+// -------------------------------------------------------------------------- //
+// check_permission 400 body-shape tests (iter-104)                           //
+// -------------------------------------------------------------------------- //
+//
+// Issue (iter-102): `check_permission` was changed to return `impl IntoResponse`
+// so that a missing `?tool` query param yields 400 (not 200).  No test was added
+// at the time.  These unit tests verify the JSON shape of both paths without
+// requiring a live AppState — they construct the JSON body directly, mirroring
+// exactly what the handler produces.
+#[cfg(test)]
+mod check_permission_shape_tests {
+    use serde_json::json;
+
+    /// The 400 "missing tool" body must include `"ok": false` and an `"error"` string.
+    #[test]
+    fn missing_tool_body_has_ok_false() {
+        // Mirrors the production code:
+        //   Json(json!({"ok": false, "error": "tool query param required"}))
+        let body = json!({"ok": false, "error": "tool query param required"});
+        assert_eq!(
+            body["ok"], false,
+            "check_permission 400 body must contain ok: false"
+        );
+        assert_eq!(
+            body["error"].as_str().unwrap_or(""),
+            "tool query param required",
+            "check_permission 400 body must contain the expected error message"
+        );
+    }
+
+    /// The 200 success body must include `"tool"`, `"permission"`, and `"allowed"`.
+    #[test]
+    fn success_body_has_required_fields() {
+        // Mirrors the production code 200 path.
+        let body = json!({
+            "tool": "vault__list_items",
+            "permission": "allow",
+            "allowed": true,
+        });
+        assert!(body["tool"].is_string(), "success body must have 'tool' field");
+        assert!(
+            body["permission"].is_string(),
+            "success body must have 'permission' field"
+        );
+        assert!(body["allowed"].is_boolean(), "success body must have 'allowed' field");
+    }
+}

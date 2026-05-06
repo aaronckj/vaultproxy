@@ -1857,6 +1857,18 @@ mod integration_tests {
             403,
             "external Host header must be blocked with 403 FORBIDDEN"
         );
+        // Issue (iter-104): verify that the 403 body includes "ok": false —
+        // added to dns_rebinding_guard in iter-103; these assertions lock in
+        // the regression test so future changes can't silently drop the field.
+        let body: serde_json::Value = resp.json().await.expect("403 body must be valid JSON");
+        assert_eq!(
+            body["ok"], false,
+            "dns_rebinding_guard 403 body must contain ok: false (invalid-host path)"
+        );
+        assert!(
+            body["error"].is_string(),
+            "dns_rebinding_guard 403 body must contain an 'error' string"
+        );
 
         // Good Host — must be allowed through (health returns 200).
         let resp = client
@@ -1922,6 +1934,18 @@ mod integration_tests {
             401,
             "missing Authorization header must return 401 UNAUTHORIZED"
         );
+        // Issue (iter-104): verify that the 401 body includes "ok": false —
+        // added to require_internal_token in iter-103; this assertion locks in
+        // the regression test so future changes can't silently drop it.
+        let body: serde_json::Value = resp.json().await.expect("401 body must be valid JSON");
+        assert_eq!(
+            body["ok"], false,
+            "401 body must contain ok: false (missing-header path)"
+        );
+        assert!(
+            body["error"].is_string(),
+            "401 body must contain an 'error' string (missing-header path)"
+        );
 
         // Wrong token → 401.
         let resp = client
@@ -1935,6 +1959,11 @@ mod integration_tests {
             resp.status().as_u16(),
             401,
             "invalid token must return 401 UNAUTHORIZED"
+        );
+        let body: serde_json::Value = resp.json().await.expect("401 body must be valid JSON");
+        assert_eq!(
+            body["ok"], false,
+            "401 body must contain ok: false (wrong-token path)"
         );
 
         // Correct token → NOT 401 (handler runs; stub returns 501 for sonarr).

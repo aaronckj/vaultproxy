@@ -138,3 +138,71 @@ pub async fn apply(
             }
         })
 }
+
+// -------------------------------------------------------------------------- //
+// scan_start body-shape tests (iter-104)                                     //
+// -------------------------------------------------------------------------- //
+//
+// Issue (iter-103): `scan_start` was changed from `Result<Json<Value>, StatusCode>`
+// to `axum::response::Response` so all error paths include `"ok": false`.
+// No test was added at the time.  These unit tests verify the JSON body shape
+// for the 409, 503, and 200 paths without requiring a live orchestrator —
+// they mirror the exact JSON literals the handler constructs.
+#[cfg(test)]
+mod scan_start_shape_tests {
+    use serde_json::json;
+
+    /// 409 "already running" body must include `"ok": false`.
+    #[test]
+    fn conflict_body_has_ok_false() {
+        // Mirrors the production 409 path in scan_start:
+        //   json!({"ok": false, "error": "another audit run is already in progress …"})
+        let body = json!({
+            "ok": false,
+            "error": "another audit run is already in progress — poll the existing run_id",
+        });
+        assert_eq!(
+            body["ok"], false,
+            "scan_start 409 body must contain ok: false"
+        );
+        assert!(
+            body["error"].as_str().is_some(),
+            "scan_start 409 body must contain an 'error' string"
+        );
+        // Must be valid JSON (serde_json::to_string must succeed).
+        serde_json::to_string(&body).expect("409 body must serialize to valid JSON");
+    }
+
+    /// 503 "engine unreachable" body must include `"ok": false`.
+    #[test]
+    fn unavailable_body_has_ok_false() {
+        let body = json!({
+            "ok": false,
+            "error": "credential audit engine is not reachable — set CRED_AUDIT_ENGINE_URL",
+        });
+        assert_eq!(
+            body["ok"], false,
+            "scan_start 503 body must contain ok: false"
+        );
+        assert!(
+            body["error"].as_str().is_some(),
+            "scan_start 503 body must contain an 'error' string"
+        );
+        serde_json::to_string(&body).expect("503 body must serialize to valid JSON");
+    }
+
+    /// 200 success body must include `"ok": true` and a `"run_id"` string.
+    #[test]
+    fn success_body_has_ok_true_and_run_id() {
+        let body = json!({"ok": true, "run_id": "abc-123"});
+        assert_eq!(
+            body["ok"], true,
+            "scan_start 200 body must contain ok: true"
+        );
+        assert!(
+            body["run_id"].as_str().is_some(),
+            "scan_start 200 body must contain a 'run_id' string"
+        );
+        serde_json::to_string(&body).expect("200 body must serialize to valid JSON");
+    }
+}

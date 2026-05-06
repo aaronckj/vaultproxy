@@ -2597,10 +2597,18 @@ pub(crate) async fn handle_get_permissions(
 async fn browser_rotate(
     AxumState(state): AxumState<Arc<AppState>>,
     AxumJson(req): AxumJson<serde_json::Value>,
-) -> AxumJson<serde_json::Value> {
+) -> axum::response::Response {
+    // Issue (iter-104): All early-return error paths previously returned
+    // HTTP 200 via `AxumJson<Value>`.  Callers checking the status code could
+    // not distinguish success from a configuration error.  Each path now returns
+    // the appropriate 4xx/5xx status code and includes `"ok": false` for
+    // consistency with every other handler in the codebase.
     let browser = match &state.browser {
         Some(b) => Arc::clone(b),
-        None => return AxumJson(serde_json::json!({"error": "browser agent not configured"})),
+        None => return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+        ).into_response(),
     };
 
     let item_name = req
@@ -2615,7 +2623,10 @@ async fn browser_rotate(
         .to_string();
 
     if item_name.is_empty() {
-        return AxumJson(serde_json::json!({"error": "item_name required"}));
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            AxumJson(serde_json::json!({"ok": false, "error": "item_name required"})),
+        ).into_response();
     }
 
     // Issue (iter-8): Guard against an empty litellm_url. When --litellm-url is
@@ -2625,9 +2636,13 @@ async fn browser_rotate(
     // producing a log error with no clear indication that the root cause is a
     // missing LITELLM_URL. Return a clear 400 here before spawning anything.
     if browser.litellm_url.is_empty() {
-        return AxumJson(serde_json::json!({
-            "error": "browser rotation requires a vision model — set LITELLM_URL (e.g. LITELLM_URL=http://mlbox.local:4000)"
-        }));
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            AxumJson(serde_json::json!({
+                "ok": false,
+                "error": "browser rotation requires a vision model — set LITELLM_URL (e.g. LITELLM_URL=http://mlbox.local:4000)"
+            })),
+        ).into_response();
     }
 
     // Issue (iter-48): Guard against an empty vision model name. When
@@ -2637,9 +2652,13 @@ async fn browser_rotate(
     // model. Return a clear 400 before spawning the workflow so the operator
     // gets an actionable message rather than a log-buried API error.
     if browser.model_name.is_empty() {
-        return AxumJson(serde_json::json!({
-            "error": "browser rotation requires a vision model name — set VISION_MODEL (e.g. VISION_MODEL=gpt-4o)"
-        }));
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            AxumJson(serde_json::json!({
+                "ok": false,
+                "error": "browser rotation requires a vision model name — set VISION_MODEL (e.g. VISION_MODEL=gpt-4o)"
+            })),
+        ).into_response();
     }
 
     // iter-50: Guard against a missing Playwright agent script.  Without this
@@ -2673,12 +2692,16 @@ async fn browser_rotate(
                 .any(|p| std::path::Path::new(p).exists())
     };
     if !playwright_available {
-        return AxumJson(serde_json::json!({
-            "error": "browser rotation is not available — playwright/agent.py was not found. \
-                      Mount the playwright/ directory into the container at /app/playwright/, \
-                      place agent.py at ./playwright/agent.py, or set PLAYWRIGHT_AGENT_PATH \
-                      to a custom location."
-        }));
+        return (
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            AxumJson(serde_json::json!({
+                "ok": false,
+                "error": "browser rotation is not available — playwright/agent.py was not found. \
+                          Mount the playwright/ directory into the container at /app/playwright/, \
+                          place agent.py at ./playwright/agent.py, or set PLAYWRIGHT_AGENT_PATH \
+                          to a custom location."
+            })),
+        ).into_response();
     }
 
     // Validate login_url against the same SSRF policy used by `inject_creds`
@@ -2686,9 +2709,13 @@ async fn browser_rotate(
     // The previous inline check only blocked two literal hostnames — bypassed
     // by any other link-local IP or the IPv6 IMDS address.
     if !login_url.is_empty() && !crate::vault::handlers::is_allowed_outbound_url(&login_url) {
-        return AxumJson(serde_json::json!({
-            "error": "login_url must be http(s) and resolve to a non-metadata, non-link-local host"
-        }));
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            AxumJson(serde_json::json!({
+                "ok": false,
+                "error": "login_url must be http(s) and resolve to a non-metadata, non-link-local host"
+            })),
+        ).into_response();
     }
 
     let vault = state.vault.clone();
@@ -2742,7 +2769,10 @@ async fn browser_rotate(
         });
     });
 
-    AxumJson(serde_json::json!({"status": "started", "item_name": item_name_response}))
+    (
+        axum::http::StatusCode::OK,
+        AxumJson(serde_json::json!({"ok": true, "status": "started", "item_name": item_name_response})),
+    ).into_response()
 }
 
 #[cfg(feature = "browser")]
@@ -2761,26 +2791,34 @@ async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<
 #[cfg(feature = "browser")]
 async fn browser_screenshot(
     AxumState(state): AxumState<Arc<AppState>>,
-) -> AxumJson<serde_json::Value> {
+) -> axum::response::Response {
+    // Issue (iter-104): "not configured" path returned HTTP 200; changed to 503.
     let browser = match &state.browser {
         Some(b) => b,
-        None => return AxumJson(serde_json::json!({"error": "not configured"})),
+        None => return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+        ).into_response(),
     };
     let screenshot = browser.last_screenshot.read().await;
     match &*screenshot {
-        Some(b64) => AxumJson(serde_json::json!({"image_b64": b64})),
-        None => AxumJson(serde_json::json!({"image_b64": null})),
+        Some(b64) => AxumJson(serde_json::json!({"image_b64": b64})).into_response(),
+        None => AxumJson(serde_json::json!({"image_b64": null})).into_response(),
     }
 }
 
 #[cfg(feature = "browser")]
-async fn browser_abort(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
+async fn browser_abort(AxumState(state): AxumState<Arc<AppState>>) -> axum::response::Response {
+    // Issue (iter-104): "not configured" path returned HTTP 200; changed to 503.
     let browser = match &state.browser {
         Some(b) => b,
-        None => return AxumJson(serde_json::json!({"error": "not configured"})),
+        None => return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            AxumJson(serde_json::json!({"ok": false, "error": "browser agent not configured"})),
+        ).into_response(),
     };
     *browser.current_job.write().await = None;
-    AxumJson(serde_json::json!({"status": "aborted"}))
+    AxumJson(serde_json::json!({"ok": true, "status": "aborted"})).into_response()
 }
 
 /// Bearer-token gate for internal-only endpoints (implemented iter-22).
