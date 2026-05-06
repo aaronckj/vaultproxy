@@ -337,7 +337,29 @@ pub async fn launch(
     // takes precedence over any VAULT_PROXY_URL the operator may have set in the
     // mcp-servers.toml `env` list (that list is processed after this injection
     // and would overwrite it — intentional, giving the operator the last word).
-    let vault_proxy_url = format!("http://{}", listen_addr);
+    //
+    // Issue (iter-40): Normalise wildcard listen addresses before embedding them
+    // in VAULT_PROXY_URL.  `--listen 0.0.0.0:3201` (IPv4 unspecified) and
+    // `--listen [::]:3201` (IPv6 unspecified) mean "bind on all interfaces".
+    // Injecting `http://0.0.0.0:3201` or `http://[::]:3201` as VAULT_PROXY_URL
+    // would be wrong — clients cannot *connect* to the unspecified address.
+    // Map unspecified → loopback so the injected URL always resolves correctly
+    // from the same host.  Operators who deliberately bind to a LAN address
+    // (e.g. 192.168.1.10) are unaffected — only the INADDR_ANY / IN6ADDR_ANY
+    // wildcards are rewritten.
+    let connect_ip: std::net::IpAddr = match listen_addr.ip() {
+        ip if ip.is_unspecified() => {
+            // IPv4 0.0.0.0  →  127.0.0.1
+            // IPv6 ::       →  ::1
+            if ip.is_ipv6() {
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+            } else {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            }
+        }
+        ip => ip,
+    };
+    let vault_proxy_url = format!("http://{}:{}", connect_ip, listen_addr.port());
 
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
     // (Command::status() does not redirect them). This is intentional: MCP
@@ -624,5 +646,56 @@ command = "cmd-b"
         assert!(!server_name_has_path_separator("my-mcp-server"), "hyphenated name must pass");
         assert!(!server_name_has_path_separator("server_a"), "underscored name must pass");
         assert!(!server_name_has_path_separator("unifi"), "simple name must pass");
+    }
+
+    // Issue (iter-40): Wildcard listen-address normalisation for VAULT_PROXY_URL.
+    // Replicates the address-normalisation logic inline so it can be unit-tested
+    // without spawning a live VaultManager or binding a socket.
+    fn normalise_listen_ip(listen: std::net::SocketAddr) -> std::net::IpAddr {
+        match listen.ip() {
+            ip if ip.is_unspecified() => {
+                if ip.is_ipv6() {
+                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+                } else {
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+                }
+            }
+            ip => ip,
+        }
+    }
+
+    #[test]
+    fn test_vault_proxy_url_ipv4_wildcard_normalised() {
+        let addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
+        let ip = normalise_listen_ip(addr);
+        assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            "0.0.0.0 must be normalised to 127.0.0.1 for VAULT_PROXY_URL");
+        assert_eq!(format!("http://{}:{}", ip, addr.port()), "http://127.0.0.1:3201");
+    }
+
+    #[test]
+    fn test_vault_proxy_url_ipv6_wildcard_normalised() {
+        let addr: std::net::SocketAddr = "[::]:3201".parse().unwrap();
+        let ip = normalise_listen_ip(addr);
+        assert_eq!(ip, std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            ":: must be normalised to ::1 for VAULT_PROXY_URL");
+        assert_eq!(format!("http://{}:{}", ip, addr.port()), "http://::1:3201");
+    }
+
+    #[test]
+    fn test_vault_proxy_url_explicit_ip_unchanged() {
+        // A specific LAN address should pass through unmodified.
+        let addr: std::net::SocketAddr = "192.168.1.50:3201".parse().unwrap();
+        let ip = normalise_listen_ip(addr);
+        assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)),
+            "explicit LAN IP must not be rewritten");
+    }
+
+    #[test]
+    fn test_vault_proxy_url_loopback_unchanged() {
+        // 127.0.0.1 is already loopback — no rewrite needed.
+        let addr: std::net::SocketAddr = "127.0.0.1:3201".parse().unwrap();
+        let ip = normalise_listen_ip(addr);
+        assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     }
 }

@@ -40,6 +40,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --workspace
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
