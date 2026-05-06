@@ -1,8 +1,8 @@
 //! Site profiles — pre-configured selectors for common websites.
 
-use std::collections::HashMap;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SiteProfile {
@@ -49,7 +49,7 @@ pub fn match_profile<'a>(
         // Try without subdomain: secure.chase.com → chase.com
         let parts: Vec<&str> = domain.split('.').collect();
         if parts.len() > 2 {
-            let parent = parts[parts.len()-2..].join(".");
+            let parent = parts[parts.len() - 2..].join(".");
             profiles.get(parent.as_str())
         } else {
             None

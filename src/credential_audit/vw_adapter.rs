@@ -18,7 +18,9 @@ impl VwAdapter {
     }
 
     fn host_of(uri: &str) -> Option<String> {
-        Url::parse(uri).ok().and_then(|p| p.host_str().map(String::from))
+        Url::parse(uri)
+            .ok()
+            .and_then(|p| p.host_str().map(String::from))
     }
 }
 
@@ -34,7 +36,11 @@ impl VaultAdapter for VwAdapter {
                 .decrypt_notes(&item.name)
                 .ok()
                 .flatten()
-                .and_then(|sb| sb.as_str().ok().map(|s| s.chars().take(200).collect::<String>()));
+                .and_then(|sb| {
+                    sb.as_str()
+                        .ok()
+                        .map(|s| s.chars().take(200).collect::<String>())
+                });
             let custom_field_names = self
                 .vault
                 .list_field_names(&item.name)
@@ -42,12 +48,7 @@ impl VaultAdapter for VwAdapter {
                 .unwrap_or_default();
             // has_password: try decrypt_credentials_by_id and check if it succeeds.
             let has_password = self.vault.decrypt_credentials_by_id(&item.id).await.is_ok();
-            let has_totp = self
-                .vault
-                .decrypt_totp(&item.name)
-                .ok()
-                .flatten()
-                .is_some();
+            let has_totp = self.vault.decrypt_totp(&item.name).ok().flatten().is_some();
             out.push(EngineInputItem {
                 id: item.id,
                 name: item.name,
@@ -57,8 +58,8 @@ impl VaultAdapter for VwAdapter {
                 custom_field_names,
                 has_password,
                 has_totp,
-                has_ssh_key: false,  // VaultManager doesn't distinguish ssh items
-                has_attachments: false,  // not exposed by MaskedItem
+                has_ssh_key: false, // VaultManager doesn't distinguish ssh items
+                has_attachments: false, // not exposed by MaskedItem
                 notes_excerpt,
             });
         }
@@ -147,8 +148,14 @@ mod tests {
 
     #[test]
     fn host_of_extracts_host() {
-        assert_eq!(VwAdapter::host_of("https://example.com/path"), Some("example.com".to_string()));
+        assert_eq!(
+            VwAdapter::host_of("https://example.com/path"),
+            Some("example.com".to_string())
+        );
         assert_eq!(VwAdapter::host_of("not a url"), None);
-        assert_eq!(VwAdapter::host_of("https://Example.COM"), Some("example.com".to_string()));
+        assert_eq!(
+            VwAdapter::host_of("https://Example.COM"),
+            Some("example.com".to_string())
+        );
     }
 }

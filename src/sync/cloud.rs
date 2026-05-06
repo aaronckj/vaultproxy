@@ -8,9 +8,8 @@ use reqwest::Client;
 
 use crate::secure::SecureBuffer;
 use crate::vault::crypto::{
-    decrypt_cipher_string, decrypt_cipher_string_rsa, decrypt_private_key,
-    decrypt_symmetric_key, derive_master_key, encrypt_cipher_string,
-    hash_master_password, stretch_master_key,
+    decrypt_cipher_string, decrypt_cipher_string_rsa, decrypt_private_key, decrypt_symmetric_key,
+    derive_master_key, encrypt_cipher_string, hash_master_password, stretch_master_key,
 };
 use crate::vault::types::*;
 
@@ -88,10 +87,13 @@ impl CloudClient {
             key: Option<String>,
         }
 
-        let token_data: RefreshResp = resp.json().await
+        let token_data: RefreshResp = resp
+            .json()
+            .await
             .context("failed to parse refresh token response")?;
 
-        let new_refresh = token_data.refresh_token
+        let new_refresh = token_data
+            .refresh_token
             .unwrap_or_else(|| refresh_token.to_string());
 
         tracing::info!("authenticated to Bitwarden cloud via refresh token");
@@ -109,7 +111,8 @@ impl CloudClient {
             .await
             .context("failed to parse sync response")?;
 
-        let profile = sync.get("profile")
+        let profile = sync
+            .get("profile")
             .ok_or_else(|| anyhow!("sync response missing profile"))?;
 
         // Get KDF iterations: override → profile → prelogin fallback.
@@ -135,13 +138,13 @@ impl CloudClient {
         let master_key = derive_master_key(master_password, email, kdf_iterations);
 
         // Get the encrypted symmetric key from token response or profile
-        let encrypted_key = token_data.key
-            .unwrap_or_else(|| {
-                profile.get("key")
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            });
+        let encrypted_key = token_data.key.unwrap_or_else(|| {
+            profile
+                .get("key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string()
+        });
 
         if encrypted_key.is_empty() {
             bail!("no encrypted symmetric key found in token response or profile");
@@ -232,7 +235,9 @@ impl CloudClient {
             key: Option<String>,
         }
 
-        let token_data: ApiKeyResp = resp.json().await
+        let token_data: ApiKeyResp = resp
+            .json()
+            .await
             .context("failed to parse API key auth response")?;
 
         tracing::info!("authenticated to Bitwarden cloud via API key");
@@ -250,7 +255,8 @@ impl CloudClient {
             .await
             .context("failed to parse sync response")?;
 
-        let profile = sync.get("profile")
+        let profile = sync
+            .get("profile")
             .ok_or_else(|| anyhow!("sync response missing profile"))?;
 
         let kdf_iterations = if let Some(override_val) = kdf_iterations_override {
@@ -267,13 +273,13 @@ impl CloudClient {
 
         let master_key = derive_master_key(master_password, email, kdf_iterations);
 
-        let encrypted_key = token_data.key
-            .unwrap_or_else(|| {
-                profile.get("key")
-                    .and_then(|k| k.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            });
+        let encrypted_key = token_data.key.unwrap_or_else(|| {
+            profile
+                .get("key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string()
+        });
 
         if encrypted_key.is_empty() {
             bail!("no encrypted symmetric key found in response or profile");
@@ -372,8 +378,14 @@ impl CloudClient {
             ("scope".to_string(), "api offline_access".to_string()),
             ("client_id".to_string(), "web".to_string()),
             ("deviceType".to_string(), "10".to_string()),
-            ("deviceIdentifier".to_string(), "connecterr-vault-proxy".to_string()),
-            ("deviceName".to_string(), "Connecterr Vault Proxy".to_string()),
+            (
+                "deviceIdentifier".to_string(),
+                "connecterr-vault-proxy".to_string(),
+            ),
+            (
+                "deviceName".to_string(),
+                "Connecterr Vault Proxy".to_string(),
+            ),
         ];
 
         // Add 2FA params if provided
@@ -421,7 +433,9 @@ impl CloudClient {
             two_factor_token: Option<String>,
         }
 
-        let token_resp: TokenResp2FA = resp.json().await
+        let token_resp: TokenResp2FA = resp
+            .json()
+            .await
             .context("failed to parse token response")?;
 
         let saved_device_token = token_resp.two_factor_token.clone();
@@ -468,7 +482,8 @@ impl CloudClient {
             _ => bail!("no API key credentials stored for re-authentication"),
         };
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(format!("{}/connect/token", self.identity_url))
             .header("Bitwarden-Client-Version", "2026.3.0")
             .form(&[
@@ -490,9 +505,14 @@ impl CloudClient {
         }
 
         #[derive(serde::Deserialize)]
-        struct TokenResp { access_token: String }
+        struct TokenResp {
+            access_token: String,
+        }
 
-        let data: TokenResp = resp.json().await.context("failed to parse reauth response")?;
+        let data: TokenResp = resp
+            .json()
+            .await
+            .context("failed to parse reauth response")?;
         self.access_token = data.access_token;
         tracing::info!("re-authenticated to Bitwarden cloud via API key");
         Ok(())
@@ -533,7 +553,8 @@ impl CloudClient {
         // Decrypt the RSA private key from the profile if we don't have it yet.
         if self.private_key.is_none() {
             if let Some(ref pk_str) = resp.profile.private_key {
-                match decrypt_private_key(pk_str, self.enc_key.as_bytes(), self.mac_key.as_bytes()) {
+                match decrypt_private_key(pk_str, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                {
                     Ok(pk) => {
                         tracing::debug!("decrypted RSA private key from sync profile");
                         self.private_key = Some(pk);
@@ -708,7 +729,10 @@ impl CloudClient {
                     .context("failed to decrypt per-item cipher key")?;
                 let key_bytes = key_buf.as_bytes();
                 if key_bytes.len() < 64 {
-                    bail!("per-item key too short: {} bytes (need 64)", key_bytes.len());
+                    bail!(
+                        "per-item key too short: {} bytes (need 64)",
+                        key_bytes.len()
+                    );
                 }
                 let mut enc = [0u8; 32];
                 let mut mac = [0u8; 32];
@@ -769,7 +793,8 @@ impl CloudClient {
 
         // 1. Hash CURRENT password for API verification.
         let current_master_key = derive_master_key(current_password, email, kdf_iterations);
-        let current_password_hash = hash_master_password(current_master_key.as_bytes(), current_password);
+        let current_password_hash =
+            hash_master_password(current_master_key.as_bytes(), current_password);
 
         // 2. Derive new master key from new password + email.
         let new_master_key = derive_master_key(new_password, email, kdf_iterations);
@@ -787,11 +812,9 @@ impl CloudClient {
             stretch_master_key(new_master_key.as_bytes());
 
         // 6. Re-encrypt the 64-byte symmetric key with new stretched keys.
-        let encrypted_key = encrypt_cipher_string(
-            &combined_key,
-            &new_stretch_enc,
-            &new_stretch_mac,
-        ).context("failed to re-encrypt symmetric key with new master password")?;
+        let encrypted_key =
+            encrypt_cipher_string(&combined_key, &new_stretch_enc, &new_stretch_mac)
+                .context("failed to re-encrypt symmetric key with new master password")?;
 
         // 7. POST to Bitwarden API.
         let body = serde_json::json!({
@@ -847,23 +870,25 @@ impl CloudClient {
     ///
     /// The decrypted payload is 64 bytes: first 32 = enc_key, last 32 = mac_key.
     fn decrypt_org_key(&self, encrypted_key: &str) -> Result<(SecureBuffer, SecureBuffer)> {
-        let cipher_type = encrypted_key
-            .split('.')
-            .next()
-            .unwrap_or("");
+        let cipher_type = encrypted_key.split('.').next().unwrap_or("");
 
         let decrypted = match cipher_type {
             "4" => {
                 // RSA-OAEP: decrypt with user's RSA private key
-                let pk = self.private_key.as_ref()
-                    .ok_or_else(|| anyhow!("org key is RSA-encrypted (type 4) but no RSA private key available"))?;
+                let pk = self.private_key.as_ref().ok_or_else(|| {
+                    anyhow!("org key is RSA-encrypted (type 4) but no RSA private key available")
+                })?;
                 decrypt_cipher_string_rsa(encrypted_key, pk.as_bytes())
                     .context("failed to decrypt org key with RSA")?
             }
             _ => {
                 // Type 2 (AES-CBC) or other: decrypt with symmetric key
-                decrypt_cipher_string(encrypted_key, self.enc_key.as_bytes(), self.mac_key.as_bytes())
-                    .context("failed to decrypt org key")?
+                decrypt_cipher_string(
+                    encrypted_key,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .context("failed to decrypt org key")?
             }
         };
 

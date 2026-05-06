@@ -2,12 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::{extract::State, http::{HeaderMap, HeaderValue, StatusCode}, response::IntoResponse, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::proxy::AppState;
 use super::types::{DuplicateGroup, FolderInfo, MaskedItem};
+use crate::proxy::AppState;
 
 // -------------------------------------------------------------------------- //
 // Helpers                                                                     //
@@ -58,7 +63,10 @@ pub async fn resolve_vault_folder_id(state: &Arc<AppState>) -> Option<String> {
         return Some(id.clone());
     }
     // We are the first writer — resolve and populate.
-    let id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+    let id = state
+        .vault
+        .find_folder_id_by_name_async(&state.vault_folder)
+        .await;
     if let Some(ref resolved) = id {
         *write_guard = Some(resolved.clone());
     }
@@ -146,7 +154,9 @@ pub struct CreateItemFieldInput {
     #[serde(default = "default_field_type")]
     pub field_type: u8,
 }
-fn default_field_type() -> u8 { 1 }
+fn default_field_type() -> u8 {
+    1
+}
 
 /// Reject URL values that don't pass a minimal SSRF policy: scheme must be
 /// http or https, and the host must not resolve to a cloud-metadata IP,
@@ -195,12 +205,12 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     };
     // Block well-known cloud metadata hostnames and loopback hostname outright.
     const BLOCKED_HOSTS: &[&str] = &[
-        "169.254.169.254",               // AWS/GCP/Azure IMDS
-        "metadata.google.internal",      // GCP
+        "169.254.169.254",          // AWS/GCP/Azure IMDS
+        "metadata.google.internal", // GCP
         "metadata.aws.cloud",
         "metadata.azure.com",
-        "fd00:ec2::254",                 // AWS IPv6 IMDS
-        "localhost",                     // loopback hostname — blocks loop-back into vault-proxy
+        "fd00:ec2::254", // AWS IPv6 IMDS
+        "localhost",     // loopback hostname — blocks loop-back into vault-proxy
     ];
     if BLOCKED_HOSTS.iter().any(|b| b.eq_ignore_ascii_case(host)) {
         return false;
@@ -247,7 +257,9 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
 fn is_safe_flow_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,7 +409,14 @@ pub struct MoveItemRequest {
 /// `GET /vault/health` — liveness + summary.
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     let items = state.vault.list_items().await;
-    let services = state.registry.read().await.list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let services = state
+        .registry
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
 
     let cloud_sync_status = match &state.cloud_sync {
         Some(sync) => {
@@ -503,47 +522,63 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
     use crate::proxy::registry::AuthPattern;
 
     let reg = state.registry.read().await;
-    let services: Vec<Value> = reg.list().iter().map(|name| {
-        if let Some(entry) = reg.get(name) {
-            let auth_type = match &entry.auth {
-                AuthPattern::Bearer { .. }    => "bearer",
-                AuthPattern::Header { .. }    => "header",
-                AuthPattern::QueryParam { .. } => "query_param",
-                AuthPattern::Basic { .. }     => "basic",
-                AuthPattern::Session { .. }   => "session",
-                AuthPattern::UnifiDual { .. } => "unifi_dual",
-            };
-            // Include header_name / param_name — needed to understand auth wiring.
-            // Do NOT include vault_item — exposes credential naming conventions.
-            // Do NOT include base_url — leaks internal network topology (iter-28).
-            // Do NOT include login_path — combined with base_url enables
-            //   credential-stuffing / SSRF probes (iter-27).
-            let auth_detail: Value = match &entry.auth {
-                AuthPattern::Header { header_name, .. } => json!({ "header_name": header_name }),
-                AuthPattern::QueryParam { param_name, .. } => json!({ "param_name": param_name }),
-                AuthPattern::Basic { key_field, secret_field, .. } => json!({
-                    "key_field": key_field,
-                    "secret_field": secret_field,
-                }),
-                AuthPattern::Session { token_field, login_include_username, .. } => json!({
-                    "token_field": token_field,
-                    "login_include_username": login_include_username,
-                }),
-                AuthPattern::UnifiDual { .. } => json!({}),
-                AuthPattern::Bearer { .. } => json!({}),
-            };
-            json!({
-                "name": entry.name,
-                // base_url intentionally omitted — leaks internal topology (iter-28).
-                "auth": auth_type,
-                "auth_detail": auth_detail,
-                "insecure_tls": entry.insecure_tls,
-                "ca_cert": entry.ca_cert_path.is_some(),
-            })
-        } else {
-            json!({ "name": name })
-        }
-    }).collect();
+    let services: Vec<Value> = reg
+        .list()
+        .iter()
+        .map(|name| {
+            if let Some(entry) = reg.get(name) {
+                let auth_type = match &entry.auth {
+                    AuthPattern::Bearer { .. } => "bearer",
+                    AuthPattern::Header { .. } => "header",
+                    AuthPattern::QueryParam { .. } => "query_param",
+                    AuthPattern::Basic { .. } => "basic",
+                    AuthPattern::Session { .. } => "session",
+                    AuthPattern::UnifiDual { .. } => "unifi_dual",
+                };
+                // Include header_name / param_name — needed to understand auth wiring.
+                // Do NOT include vault_item — exposes credential naming conventions.
+                // Do NOT include base_url — leaks internal network topology (iter-28).
+                // Do NOT include login_path — combined with base_url enables
+                //   credential-stuffing / SSRF probes (iter-27).
+                let auth_detail: Value = match &entry.auth {
+                    AuthPattern::Header { header_name, .. } => {
+                        json!({ "header_name": header_name })
+                    }
+                    AuthPattern::QueryParam { param_name, .. } => {
+                        json!({ "param_name": param_name })
+                    }
+                    AuthPattern::Basic {
+                        key_field,
+                        secret_field,
+                        ..
+                    } => json!({
+                        "key_field": key_field,
+                        "secret_field": secret_field,
+                    }),
+                    AuthPattern::Session {
+                        token_field,
+                        login_include_username,
+                        ..
+                    } => json!({
+                        "token_field": token_field,
+                        "login_include_username": login_include_username,
+                    }),
+                    AuthPattern::UnifiDual { .. } => json!({}),
+                    AuthPattern::Bearer { .. } => json!({}),
+                };
+                json!({
+                    "name": entry.name,
+                    // base_url intentionally omitted — leaks internal topology (iter-28).
+                    "auth": auth_type,
+                    "auth_detail": auth_detail,
+                    "insecure_tls": entry.insecure_tls,
+                    "ca_cert": entry.ca_cert_path.is_some(),
+                })
+            } else {
+                json!({ "name": name })
+            }
+        })
+        .collect();
 
     Json(json!({
         "count": services.len(),
@@ -565,13 +600,14 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// If the folder isn't found (fresh vault / mid-setup) we fall through and
 /// return all items so first-run usability is preserved — the same permissive
 /// fallback used by update_item and delete_item.
-pub async fn list_items(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<MaskedItem>> {
+pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedItem>> {
     let items = state.vault.list_items().await;
 
     // Find the folder_id that corresponds to vault_folder.
-    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+    let vault_folder_id = state
+        .vault
+        .find_folder_id_by_name_async(&state.vault_folder)
+        .await;
 
     let filtered = match vault_folder_id {
         Some(ref folder_id) => items
@@ -600,12 +636,16 @@ pub async fn list_items(
 /// full vault cache and returned names/usernames of personal items (outside
 /// vault_folder) to any local caller. We now filter to vault_folder items
 /// before duplicate detection so personal entries are never exposed.
-pub async fn list_duplicates(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<DuplicateGroup>> {
+pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<DuplicateGroup>> {
     // Resolve vault_folder → folder_id for filtering.
-    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
-    let groups = state.vault.list_duplicates_in_folder(vault_folder_id.as_deref()).await;
+    let vault_folder_id = state
+        .vault
+        .find_folder_id_by_name_async(&state.vault_folder)
+        .await;
+    let groups = state
+        .vault
+        .list_duplicates_in_folder(vault_folder_id.as_deref())
+        .await;
     Json(groups)
 }
 
@@ -645,7 +685,10 @@ pub async fn list_folders(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<Vec<FolderInfo>> {
-    let include_all = params.get("include_all").map(|v| v == "true").unwrap_or(false);
+    let include_all = params
+        .get("include_all")
+        .map(|v| v == "true")
+        .unwrap_or(false);
     let tracked: std::collections::HashSet<String> = if let Some(ref sm) = state.cloud_sync {
         sm.map
             .read()
@@ -707,9 +750,7 @@ pub async fn list_folders(
 /// `vault_folder` that are also outside the sync map are none of vault-proxy's
 /// concern; an operator who wants to find personal vault orphans should use the
 /// Vaultwarden UI directly.
-pub async fn list_untracked_items(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn list_untracked_items(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let tracked: std::collections::HashSet<String> = if let Some(ref sm) = state.cloud_sync {
         sm.map
             .read()
@@ -726,7 +767,10 @@ pub async fn list_untracked_items(
     // returns ALL items not in the sync map — including personal items from other
     // folders. Filter to vault_folder before returning so callers cannot enumerate
     // names/usernames/URIs of personal vault entries.
-    let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+    let vault_folder_id = state
+        .vault
+        .find_folder_id_by_name_async(&state.vault_folder)
+        .await;
 
     let all_untracked = state.vault.list_untracked_item_ids(&tracked).await;
 
@@ -809,16 +853,30 @@ pub async fn create_item(
 
     let enc_name = match encrypt_to_cipher_string(&req.name, enc_key, mac_key) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("encrypt name: {}", e)}))),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("encrypt name: {}", e)})),
+            )
+        }
     };
 
-    let enc_username = req.username.as_deref().and_then(|u| encrypt_to_cipher_string(u, enc_key, mac_key).ok());
-    let enc_password = req.password.as_deref().and_then(|p| encrypt_to_cipher_string(p, enc_key, mac_key).ok());
-    let enc_notes    = req.notes   .as_deref().and_then(|n| encrypt_to_cipher_string(n, enc_key, mac_key).ok());
+    let enc_username = req
+        .username
+        .as_deref()
+        .and_then(|u| encrypt_to_cipher_string(u, enc_key, mac_key).ok());
+    let enc_password = req
+        .password
+        .as_deref()
+        .and_then(|p| encrypt_to_cipher_string(p, enc_key, mac_key).ok());
+    let enc_notes = req
+        .notes
+        .as_deref()
+        .and_then(|n| encrypt_to_cipher_string(n, enc_key, mac_key).ok());
     let enc_uris = req.uri.as_deref().and_then(|u| {
-        encrypt_to_cipher_string(u, enc_key, mac_key).ok().map(|enc_uri| {
-            vec![EncryptedUri { uri: Some(enc_uri) }]
-        })
+        encrypt_to_cipher_string(u, enc_key, mac_key)
+            .ok()
+            .map(|enc_uri| vec![EncryptedUri { uri: Some(enc_uri) }])
     });
 
     // Validate field_type range (BW types are 0=text, 1=hidden, 2=boolean, 3=linked).
@@ -840,11 +898,21 @@ pub async fn create_item(
         for f in &req.fields {
             let enc_fname = match encrypt_to_cipher_string(&f.name, enc_key, mac_key) {
                 Ok(s) => s,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("encrypt field name '{}': {}", f.name, e)}))),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("encrypt field name '{}': {}", f.name, e)})),
+                    )
+                }
             };
             let enc_fval = match encrypt_to_cipher_string(&f.value, enc_key, mac_key) {
                 Ok(s) => s,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("encrypt field value '{}': {}", f.name, e)}))),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("encrypt field value '{}': {}", f.name, e)})),
+                    )
+                }
             };
             out.push(EncryptedField {
                 name: Some(enc_fname),
@@ -860,7 +928,11 @@ pub async fn create_item(
     // places the new item inside the owned folder. Returns None only when the
     // folder doesn't exist yet (fresh vault) — the item will be created without
     // a folder, which is acceptable for first-run tooling.
-    let folder_id = match state.vault.find_folder_id_by_name_async(&effective_folder_name).await {
+    let folder_id = match state
+        .vault
+        .find_folder_id_by_name_async(&effective_folder_name)
+        .await
+    {
         Some(id) => Some(id),
         None => {
             tracing::debug!(
@@ -881,7 +953,9 @@ pub async fn create_item(
             uris: enc_uris,
             totp: None,
         }),
-        card: None, identity: None, secure_note: None,
+        card: None,
+        identity: None,
+        secure_note: None,
         fields: enc_fields,
         notes: enc_notes,
         organization_id: None,
@@ -913,7 +987,10 @@ pub async fn create_item(
         }
         Err(e) => {
             tracing::error!("create cipher failed: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
         }
     }
 }
@@ -932,13 +1009,21 @@ pub async fn update_item(
     use crate::vault::types::EncryptedLogin;
 
     if req.id.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "id must not be empty"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "id must not be empty"})),
+        );
     }
 
     // Fetch the existing cipher so we only overwrite the requested fields.
     let cipher = match state.vault.get_cipher_by_id(&req.id).await {
         Some(c) => c,
-        None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "item not found"})),
+            )
+        }
     };
 
     // Issue (iter-17): Scope update_item to items inside state.vault_folder only.
@@ -953,7 +1038,10 @@ pub async fn update_item(
     // vault, or the operator may be mid-setup).  We only block when we can
     // positively confirm the item belongs to a *different* folder.
     {
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -996,18 +1084,29 @@ pub async fn update_item(
     // Update name if provided.
     if let Some(ref new_name) = req.name {
         if new_name.trim().is_empty() {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "name must not be empty"})));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "name must not be empty"})),
+            );
         }
         updated.name = match encrypt_to_cipher_string(new_name, enc_key, mac_key) {
             Ok(s) => s,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("encrypt name: {}", e)}))),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("encrypt name: {}", e)})),
+                )
+            }
         };
     }
 
     // Update login fields if any are provided.
     if req.username.is_some() || req.password.is_some() || req.uri.is_some() {
         let login = updated.login.get_or_insert(EncryptedLogin {
-            username: None, password: None, uris: None, totp: None,
+            username: None,
+            password: None,
+            uris: None,
+            totp: None,
         });
         if let Some(ref u) = req.username {
             login.username = encrypt_to_cipher_string(u, enc_key, mac_key).ok();
@@ -1017,9 +1116,9 @@ pub async fn update_item(
         }
         if let Some(ref uri) = req.uri {
             use crate::vault::types::EncryptedUri;
-            login.uris = encrypt_to_cipher_string(uri, enc_key, mac_key).ok().map(|enc| {
-                vec![EncryptedUri { uri: Some(enc) }]
-            });
+            login.uris = encrypt_to_cipher_string(uri, enc_key, mac_key)
+                .ok()
+                .map(|enc| vec![EncryptedUri { uri: Some(enc) }]);
         }
     }
 
@@ -1046,7 +1145,10 @@ pub async fn update_item(
         }
         Err(e) => {
             tracing::error!("update cipher failed: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
         }
     }
 }
@@ -1085,7 +1187,10 @@ pub async fn update_item(
 /// unauthenticated callers.
 pub async fn handshake(State(state): State<Arc<AppState>>) -> Json<Value> {
     // Only allow handshake once — prevent key exfiltration after startup.
-    if state.handshake_completed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .handshake_completed
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         return Json(json!({
             "error": "handshake already completed — restart sidecar to re-handshake",
         }));
@@ -1139,9 +1244,17 @@ pub async fn clone_item(
     {
         let source = match state.vault.get_cipher_by_id(&req.source_id).await {
             Some(c) => c,
-            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "source item not found"}))),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "source item not found"})),
+                )
+            }
         };
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match source.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1221,7 +1334,9 @@ pub async fn test_credential(
     if !is_allowed_outbound_url(&req.url) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "url must be http(s) and resolve to a non-metadata, non-link-local host" })),
+            Json(
+                json!({ "error": "url must be http(s) and resolve to a non-metadata, non-link-local host" }),
+            ),
         );
     }
 
@@ -1232,9 +1347,17 @@ pub async fn test_credential(
     {
         let cipher = match state.vault.get_cipher_by_id(&req.vault_item_id).await {
             Some(c) => c,
-            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "vault item not found"}))),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "vault item not found"})),
+                )
+            }
         };
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1422,7 +1545,11 @@ pub async fn test_credential(
                 }
             };
             let truncated = bytes.len() > MAX_BODY_BYTES;
-            let slice = if truncated { &bytes[..MAX_BODY_BYTES] } else { &bytes[..] };
+            let slice = if truncated {
+                &bytes[..MAX_BODY_BYTES]
+            } else {
+                &bytes[..]
+            };
             let body_str = String::from_utf8_lossy(slice).into_owned();
             (
                 StatusCode::OK,
@@ -1538,7 +1665,10 @@ pub async fn write_env(
     //   "/envs/.."       (ends with `..` without preceding `/`)
     //   "/envs/./sub"    (single-dot kept as-is by std::fs on some kernels)
     // Splitting on `/` and checking each segment is comprehensive.
-    let has_traversal = req.target_path.split('/').any(|seg| seg == ".." || seg == ".");
+    let has_traversal = req
+        .target_path
+        .split('/')
+        .any(|seg| seg == ".." || seg == ".");
     if has_traversal {
         return (
             StatusCode::BAD_REQUEST,
@@ -1585,7 +1715,10 @@ pub async fn write_env(
                 )
             }
         };
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1644,7 +1777,11 @@ pub async fn write_env(
     // Build desired env-var assignments.
     let mut desired: HashMap<String, Zeroizing<String>> = HashMap::new();
     for (env_name, field) in &req.mappings {
-        if env_name.is_empty() || !env_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if env_name.is_empty()
+            || !env_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
@@ -1829,7 +1966,11 @@ pub async fn delete_folder(
     // Deleting vault_folder would silently break all credential lookups —
     // list_items, update_item, delete_item, etc. all filter by vault_folder.
     // If the requested folder id matches vault_folder's id, refuse.
-    if let Some(vault_folder_id) = state.vault.find_folder_id_by_name_async(&state.vault_folder).await {
+    if let Some(vault_folder_id) = state
+        .vault
+        .find_folder_id_by_name_async(&state.vault_folder)
+        .await
+    {
         if req.id.trim() == vault_folder_id.as_str() {
             return (
                 StatusCode::FORBIDDEN,
@@ -1897,9 +2038,17 @@ pub async fn move_item(
     {
         let cipher = match state.vault.get_cipher_by_id(&req.id).await {
             Some(c) => c,
-            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "item not found"})),
+                )
+            }
         };
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1952,7 +2101,9 @@ pub async fn move_item(
     match result {
         Ok(()) => {
             // Issue (iter-26): Audit move — move_item was previously unlogged.
-            let dest = req.folder_id.as_deref()
+            let dest = req
+                .folder_id
+                .as_deref()
                 .or(req.folder_name.as_deref())
                 .unwrap_or("<unknown>");
             state.audit_log.log(crate::security::audit_log::AuditEntry {
@@ -2019,9 +2170,17 @@ pub async fn delete_item(
     {
         let cipher = match state.vault.get_cipher_by_id(&req.id).await {
             Some(c) => c,
-            None => return (StatusCode::NOT_FOUND, Json(json!({"error": "item not found"}))),
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({"error": "item not found"})),
+                )
+            }
         };
-        let vault_folder_id = state.vault.find_folder_id_by_name_async(&state.vault_folder).await;
+        let vault_folder_id = state
+            .vault
+            .find_folder_id_by_name_async(&state.vault_folder)
+            .await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -2140,13 +2299,17 @@ pub async fn inject_creds(
         tracing::warn!("inject_creds rejected ha_url (scheme/host policy): <redacted>");
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "ha_url must be http(s) and resolve to a non-metadata, non-link-local host"})),
+            Json(
+                json!({"error": "ha_url must be http(s) and resolve to a non-metadata, non-link-local host"}),
+            ),
         );
     }
     if !is_safe_flow_id(&req.flow_id) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "flow_id must be alphanumeric (with - or _), non-empty, max 128 chars"})),
+            Json(
+                json!({"error": "flow_id must be alphanumeric (with - or _), non-empty, max 128 chars"}),
+            ),
         );
     }
 
@@ -2161,7 +2324,11 @@ pub async fn inject_creds(
     //
     // Both vault_item (credential source) and ha_token_item (HA token source)
     // must be inside vault_folder.
-    if !state.vault.item_name_is_in_folder(&req.vault_item, &state.vault_folder).await {
+    if !state
+        .vault
+        .item_name_is_in_folder(&req.vault_item, &state.vault_folder)
+        .await
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -2173,7 +2340,11 @@ pub async fn inject_creds(
             })),
         );
     }
-    if !state.vault.item_name_is_in_folder(&req.ha_token_item, &state.vault_folder).await {
+    if !state
+        .vault
+        .item_name_is_in_folder(&req.ha_token_item, &state.vault_folder)
+        .await
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -2198,15 +2369,27 @@ pub async fn inject_creds(
     let password = match state.vault.decrypt_password(&req.vault_item) {
         Ok(buf) => match buf.as_str() {
             Ok(s) => s.to_string(),
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "password is not valid UTF-8"}))),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "password is not valid UTF-8"})),
+                )
+            }
         },
         Err(e) => {
             // Log the detail (vault item name, underlying error) for operators
             // but return a generic 400 to callers — vault item names are
             // considered internal topology that should not be exposed in API
             // responses reachable by MCP callers.
-            tracing::warn!("inject_creds: decrypt password for '{}': {:#}", req.vault_item, e);
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "vault credential not found or decryption failed"})));
+            tracing::warn!(
+                "inject_creds: decrypt password for '{}': {:#}",
+                req.vault_item,
+                e
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "vault credential not found or decryption failed"})),
+            );
         }
     };
 
@@ -2214,15 +2397,33 @@ pub async fn inject_creds(
     let ha_token = match state.vault.decrypt_notes(&req.ha_token_item) {
         Ok(Some(buf)) => match buf.as_str() {
             Ok(s) => s.to_string(),
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "HA token is not valid UTF-8"}))),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "HA token is not valid UTF-8"})),
+                )
+            }
         },
         Ok(None) => {
-            tracing::warn!("inject_creds: no notes on ha_token_item '{}'", req.ha_token_item);
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "HA token vault item has no notes field"})));
+            tracing::warn!(
+                "inject_creds: no notes on ha_token_item '{}'",
+                req.ha_token_item
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "HA token vault item has no notes field"})),
+            );
         }
         Err(e) => {
-            tracing::warn!("inject_creds: HA token decrypt for '{}': {:#}", req.ha_token_item, e);
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "HA token vault credential not found or decryption failed"})));
+            tracing::warn!(
+                "inject_creds: HA token decrypt for '{}': {:#}",
+                req.ha_token_item,
+                e
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "HA token vault credential not found or decryption failed"})),
+            );
         }
     };
 
@@ -2230,10 +2431,14 @@ pub async fn inject_creds(
     let mut payload = serde_json::Map::new();
 
     // Map vault fields to flow fields
-    let username_field = req.field_map.get("username")
+    let username_field = req
+        .field_map
+        .get("username")
         .and_then(|v| v.as_str())
         .unwrap_or("username");
-    let password_field = req.field_map.get("password")
+    let password_field = req
+        .field_map
+        .get("password")
         .and_then(|v| v.as_str())
         .unwrap_or("password");
 
@@ -2249,19 +2454,32 @@ pub async fn inject_creds(
 
     tracing::info!(
         "injecting credentials from '{}' into HA flow {} (fields: {})",
-        req.vault_item, req.flow_id,
-        payload.keys().map(|k| {
-            if k.contains("password") || k.contains("secret") || k.contains("token") {
-                format!("{}=***", k)
-            } else {
-                format!("{}={}", k, payload.get(k).map(|v| v.to_string()).unwrap_or_default())
-            }
-        }).collect::<Vec<_>>().join(", ")
+        req.vault_item,
+        req.flow_id,
+        payload
+            .keys()
+            .map(|k| {
+                if k.contains("password") || k.contains("secret") || k.contains("token") {
+                    format!("{}=***", k)
+                } else {
+                    format!(
+                        "{}={}",
+                        k,
+                        payload.get(k).map(|v| v.to_string()).unwrap_or_default()
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     // 4. POST to HA config flow
-    let url = format!("{}/api/config/config_entries/flow/{}", req.ha_url, req.flow_id);
-    let resp = match state.http
+    let url = format!(
+        "{}/api/config/config_entries/flow/{}",
+        req.ha_url, req.flow_id
+    );
+    let resp = match state
+        .http
         .post(&url)
         .bearer_auth(&ha_token)
         .json(&Value::Object(payload))
@@ -2271,35 +2489,55 @@ pub async fn inject_creds(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("HA flow submission failed: {}", e);
-            return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("HA request failed: {}", e)})));
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("HA request failed: {}", e)})),
+            );
         }
     };
 
     let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or(json!({"error": "no response body"}));
+    let body: Value = resp
+        .json()
+        .await
+        .unwrap_or(json!({"error": "no response body"}));
 
     // 5. Check result
     if status.is_success() {
-        let result_type = body.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let result_type = body
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let title = body.get("title").and_then(|v| v.as_str()).unwrap_or("");
         let step = body.get("step_id").and_then(|v| v.as_str()).unwrap_or("");
 
-        tracing::info!("HA flow result: type={}, title={}, step={}", result_type, title, step);
+        tracing::info!(
+            "HA flow result: type={}, title={}, step={}",
+            result_type,
+            title,
+            step
+        );
 
-        (StatusCode::OK, Json(json!({
-            "ok": true,
-            "type": result_type,
-            "title": title,
-            "step_id": step,
-            "flow_response": body,
-        })))
+        (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "type": result_type,
+                "title": title,
+                "step_id": step,
+                "flow_response": body,
+            })),
+        )
     } else {
         tracing::warn!("HA flow submission returned {}: {:?}", status, body);
-        (StatusCode::OK, Json(json!({
-            "ok": false,
-            "ha_status": status.as_u16(),
-            "error": body,
-        })))
+        (
+            StatusCode::OK,
+            Json(json!({
+                "ok": false,
+                "ha_status": status.as_u16(),
+                "error": body,
+            })),
+        )
     }
 }
 
@@ -2322,7 +2560,11 @@ pub async fn generate_totp(
     }
 
     // Folder scope guard: reject item names that don't belong to vault_folder.
-    if !state.vault.item_name_is_in_folder(item_name, &state.vault_folder).await {
+    if !state
+        .vault
+        .item_name_is_in_folder(item_name, &state.vault_folder)
+        .await
+    {
         return Json(json!({
             "error": format!(
                 "item '{}' is not in the vault-proxy folder ('{}') — \
@@ -2395,7 +2637,11 @@ pub async fn decrypt_notes(
     // Issue (iter-19): Scope to vault_folder. Without this guard any local
     // caller can extract the full notes field of any vault item — including
     // API tokens, SSH keys, and recovery codes stored in personal entries.
-    if !state.vault.item_name_is_in_folder(item_name, &state.vault_folder).await {
+    if !state
+        .vault
+        .item_name_is_in_folder(item_name, &state.vault_folder)
+        .await
+    {
         return Json(json!({
             "error": format!(
                 "item '{}' is not in the vault-proxy folder ('{}') — \
@@ -2406,12 +2652,10 @@ pub async fn decrypt_notes(
     }
 
     match state.vault.decrypt_notes(item_name) {
-        Ok(Some(buf)) => {
-            match buf.as_str() {
-                Ok(s) => Json(json!({"notes": s})),
-                Err(_) => Json(json!({"error": "notes content is not valid UTF-8"})),
-            }
-        }
+        Ok(Some(buf)) => match buf.as_str() {
+            Ok(s) => Json(json!({"notes": s})),
+            Err(_) => Json(json!({"error": "notes content is not valid UTF-8"})),
+        },
         Ok(None) => Json(json!({"error": "no notes content for this item"})),
         Err(e) => Json(json!({"error": e.to_string()})),
     }
@@ -2503,7 +2747,9 @@ pub async fn check_permission(
 /// that includes `retry_after_s` so callers can back off correctly.
 const RESYNC_COOLDOWN_SECS: u64 = 30;
 
-pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::StatusCode, Json<Value>) {
+pub async fn vault_resync(
+    State(state): State<Arc<AppState>>,
+) -> (axum::http::StatusCode, Json<Value>) {
     use std::sync::atomic::Ordering;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2559,18 +2805,24 @@ pub async fn vault_resync(State(state): State<Arc<AppState>>) -> (axum::http::St
             // `services_toml_note` in the response prevents confusion where an
             // operator adds a service, calls resync, and wonders why it still
             // returns 404 "unknown service".
-            (axum::http::StatusCode::OK, Json(json!({
-                "ok": true,
-                "items": items.len(),
-                "scope": "vault_items_only",
-                "services_toml_note": "services.toml and CA-cert clients are NOT reloaded by this endpoint — restart the process to pick up services.toml changes",
-            })))
+            (
+                axum::http::StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "items": items.len(),
+                    "scope": "vault_items_only",
+                    "services_toml_note": "services.toml and CA-cert clients are NOT reloaded by this endpoint — restart the process to pick up services.toml changes",
+                })),
+            )
         }
         Err(e) => {
             // On error, reset the timestamp so operators can immediately retry
             // after fixing the underlying issue (e.g. Vaultwarden unreachable).
             state.last_resync_unix.store(0, Ordering::Relaxed);
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()})))
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
         }
     }
 }
@@ -2639,39 +2891,38 @@ pub async fn reload_services(
     // will proceed once the lock is released; only callers that wait more than
     // 5 s receive the 503. In practice, manual `POST /vault/reload-services`
     // calls are infrequent (operator-triggered), so lock contention is rare.
-    let _reload_guard = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        state.reload_mutex.lock(),
-    )
-    .await
-    {
-        Ok(guard) => guard,
-        Err(_) => {
-            tracing::warn!(
-                "reload-services: another reload is still in progress; \
+    let _reload_guard =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), state.reload_mutex.lock())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::warn!(
+                    "reload-services: another reload is still in progress; \
                  mutex acquisition timed out after 5 s — returning 503 to caller"
-            );
-            // iter-38: set the standard HTTP `Retry-After` header (RFC 7231 §7.1.3)
-            // so monitoring systems and orchestrators that respect it back off
-            // automatically instead of hammering the endpoint. The body already
-            // carries `retry_after_s` for callers that parse JSON; the header
-            // covers callers that only inspect HTTP headers.
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                axum::http::header::RETRY_AFTER,
-                HeaderValue::from_static("10"),
-            );
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                headers,
-                Json(json!({
-                    "ok": false,
-                    "error": "another reload is in progress — retry after 10 s",
-                    "retry_after_s": 10,
-                })),
-            ).into_response();
-        }
-    };
+                );
+                // iter-38: set the standard HTTP `Retry-After` header (RFC 7231 §7.1.3)
+                // so monitoring systems and orchestrators that respect it back off
+                // automatically instead of hammering the endpoint. The body already
+                // carries `retry_after_s` for callers that parse JSON; the header
+                // covers callers that only inspect HTTP headers.
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    axum::http::header::RETRY_AFTER,
+                    HeaderValue::from_static("10"),
+                );
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    headers,
+                    Json(json!({
+                        "ok": false,
+                        "error": "another reload is in progress — retry after 10 s",
+                        "retry_after_s": 10,
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     // iter-35: use the config_dir captured at startup (stored in AppState) rather
     // than reading CONFIG_DIR from the environment at reload time. Container
@@ -2690,7 +2941,8 @@ pub async fn reload_services(
                     services_path.display()
                 ),
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     let new_registry = ServiceRegistry::from_toml_file(&services_path);
@@ -2715,7 +2967,8 @@ pub async fn reload_services(
                 "hint": "check container logs for per-service rejection reasons \
                          (SSRF violations, missing fields, bad base_url)",
             })),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Rebuild CA-cert clients for any services that specify ca_cert_path.
@@ -2781,7 +3034,8 @@ pub async fn reload_services(
 
     tracing::info!(
         "reload-services: complete — {} service(s) registered (was {})",
-        new_count, prev_count
+        new_count,
+        prev_count
     );
 
     (
@@ -2795,7 +3049,8 @@ pub async fn reload_services(
                      Vault credentials (items) are NOT refreshed — call POST /vault/resync \
                      to reload credentials from Vaultwarden.",
         })),
-    ).into_response()
+    )
+        .into_response()
 }
 
 pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -2877,7 +3132,11 @@ pub async fn sync_init(
     let cloud_email = match crate::keystore::unlock_keystore(&config_dir, None) {
         Ok(c) => match c.cloud {
             Some(cl) => cl.email,
-            None => return Json(json!({"result": "error", "error": "no cloud credentials in keystore"})),
+            None => {
+                return Json(
+                    json!({"result": "error", "error": "no cloud credentials in keystore"}),
+                )
+            }
         },
         Err(_) => return Json(json!({"result": "error", "error": "cannot unlock keystore"})),
     };
@@ -2902,9 +3161,10 @@ pub async fn sync_init(
             let _ = &new_refresh; // suppress unused-variable warning
 
             // Create SyncManager and run initial sync.
-            let sync_mgr = std::sync::Arc::new(
-                crate::sync::SyncManager::new(cloud_client, state.vault.clone()),
-            );
+            let sync_mgr = std::sync::Arc::new(crate::sync::SyncManager::new(
+                cloud_client,
+                state.vault.clone(),
+            ));
 
             if let Err(e) = sync_mgr.full_sync().await {
                 tracing::error!("initial sync after sync/init failed: {:#}", e);
@@ -2955,11 +3215,10 @@ pub struct TotpRequest {
 /// token. Callers must present `Authorization: Bearer <token>` (token from
 /// `$CONFIG_DIR/internal-token`, 0o600 permissions). The TypeScript Connecterr
 /// side reads the token file and includes it in the Authorization header.
-pub async fn connecterr_secrets(
-    State(state): State<Arc<AppState>>,
-) -> (StatusCode, Json<Value>) {
+pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCode, Json<Value>) {
     use crate::security::audit_log::AuditEntry;
-    let result = crate::vault::connecterr_secrets::aggregate(&state.vault, &state.vault_folder).await;
+    let result =
+        crate::vault::connecterr_secrets::aggregate(&state.vault, &state.vault_folder).await;
     match result {
         Ok(v) => {
             // Audit log: top-level key names only (item/field names are
@@ -3012,14 +3271,18 @@ pub async fn provide_totp(
     let creds = match crate::keystore::unlock_keystore(&config_dir, None) {
         Ok(c) => c,
         Err(_) => {
-            return Json(json!({ "result": "error", "error": "cannot unlock keystore to read cloud credentials — use dashboard settings to configure" }));
+            return Json(
+                json!({ "result": "error", "error": "cannot unlock keystore to read cloud credentials — use dashboard settings to configure" }),
+            );
         }
     };
 
     let cloud = match creds.cloud {
         Some(c) => c,
         None => {
-            return Json(json!({ "result": "error", "error": "no cloud credentials configured — add them in dashboard settings" }));
+            return Json(
+                json!({ "result": "error", "error": "no cloud credentials configured — add them in dashboard settings" }),
+            );
         }
     };
 
@@ -3027,22 +3290,18 @@ pub async fn provide_totp(
     let cloud_password = cloud.master_password;
 
     // Retry auth with TOTP code
-    match crate::sync::cloud::CloudClient::new(
-        &cloud_email,
-        &cloud_password,
-        Some(&req.code),
-        None,
-    )
-    .await
+    match crate::sync::cloud::CloudClient::new(&cloud_email, &cloud_password, Some(&req.code), None)
+        .await
     {
         Ok((cloud_client, device_token)) => {
             // TODO: persist device token through keystore reencryption instead
             // of the old cloud_device_token.sealed TPM path.
 
             // Create SyncManager and run initial sync
-            let sync_mgr = std::sync::Arc::new(
-                crate::sync::SyncManager::new(cloud_client, state.vault.clone()),
-            );
+            let sync_mgr = std::sync::Arc::new(crate::sync::SyncManager::new(
+                cloud_client,
+                state.vault.clone(),
+            ));
 
             if let Err(e) = sync_mgr.full_sync().await {
                 tracing::error!("initial sync after setup_cloud failed: {:#}", e);
@@ -3132,13 +3391,23 @@ pub async fn upsert_connecterr_secrets(
             .await
         {
             Ok(was_create) => {
-                if was_create { created.push(item.name); } else { merged.push(item.name); }
+                if was_create {
+                    created.push(item.name);
+                } else {
+                    merged.push(item.name);
+                }
             }
             Err(e) => {
-                tracing::error!("upsert_connecterr_secrets failed on item '{}': {:#}", item.name, e);
+                tracing::error!(
+                    "upsert_connecterr_secrets failed on item '{}': {:#}",
+                    item.name,
+                    e
+                );
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({ "error": "vault-proxy returned 503 — vault locked or VW unreachable" })),
+                    Json(
+                        json!({ "error": "vault-proxy returned 503 — vault locked or VW unreachable" }),
+                    ),
                 ));
             }
         }
@@ -3200,19 +3469,40 @@ mod upsert_tests {
     #[test]
     fn control_characters_in_name_are_rejected() {
         // Newline (LF)
-        assert!(validate_item_name("ssh/kali\n").is_err(), "LF must be rejected");
+        assert!(
+            validate_item_name("ssh/kali\n").is_err(),
+            "LF must be rejected"
+        );
         // Carriage return (CR)
-        assert!(validate_item_name("ssh/kali\r").is_err(), "CR must be rejected");
+        assert!(
+            validate_item_name("ssh/kali\r").is_err(),
+            "CR must be rejected"
+        );
         // Null byte
-        assert!(validate_item_name("ssh/kali\x00").is_err(), "null byte must be rejected");
+        assert!(
+            validate_item_name("ssh/kali\x00").is_err(),
+            "null byte must be rejected"
+        );
         // Tab
-        assert!(validate_item_name("ssh/\tkali").is_err(), "tab must be rejected");
+        assert!(
+            validate_item_name("ssh/\tkali").is_err(),
+            "tab must be rejected"
+        );
         // Embedded newline mid-name
-        assert!(validate_item_name("ssh\nkali").is_err(), "embedded LF must be rejected");
+        assert!(
+            validate_item_name("ssh\nkali").is_err(),
+            "embedded LF must be rejected"
+        );
         // DEL (0x7F)
-        assert!(validate_item_name("ssh/kali\x7f").is_err(), "DEL must be rejected");
+        assert!(
+            validate_item_name("ssh/kali\x7f").is_err(),
+            "DEL must be rejected"
+        );
         // Valid names with non-ASCII printable UTF-8 characters are allowed
-        assert!(validate_item_name("ssh/kali-üñicode").is_ok(), "UTF-8 printable must pass");
+        assert!(
+            validate_item_name("ssh/kali-üñicode").is_ok(),
+            "UTF-8 printable must pass"
+        );
     }
 
     /// Exercises the 400 path of `upsert_connecterr_secrets` without a live
@@ -3238,7 +3528,10 @@ mod upsert_tests {
         }
 
         // Should have exactly one validation error (for "bad//name").
-        assert!(!errors.is_empty(), "expected validation errors but got none");
+        assert!(
+            !errors.is_empty(),
+            "expected validation errors but got none"
+        );
 
         // Build the 400 response body the handler returns.
         let body = json!({ "error": "invalid item name(s)", "items": errors });
@@ -3297,27 +3590,54 @@ mod ssrf_tests {
         // Regression: url::Url::host_str() returns "[fe80::1]" WITH brackets.
         // Rust's IpAddr parser does not accept brackets, so the IPv6 link-local
         // check was silently bypassed before the bracket-stripping fix.
-        assert!(!is_allowed_outbound_url("http://[fe80::1]/api"), "fe80::1 must be blocked");
-        assert!(!is_allowed_outbound_url("https://[fe80::abcd:ef01]/path"), "fe80:: prefix must be blocked");
+        assert!(
+            !is_allowed_outbound_url("http://[fe80::1]/api"),
+            "fe80::1 must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("https://[fe80::abcd:ef01]/path"),
+            "fe80:: prefix must be blocked"
+        );
     }
 
     #[test]
     fn ipv4_link_local_169_254_is_blocked() {
-        assert!(!is_allowed_outbound_url("http://169.254.169.254/latest/meta-data"), "AWS IMDS must be blocked");
-        assert!(!is_allowed_outbound_url("http://169.254.1.1/"), "all 169.254.x.x must be blocked");
+        assert!(
+            !is_allowed_outbound_url("http://169.254.169.254/latest/meta-data"),
+            "AWS IMDS must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://169.254.1.1/"),
+            "all 169.254.x.x must be blocked"
+        );
     }
 
     #[test]
     fn blocked_hostname_strings_are_blocked() {
-        assert!(!is_allowed_outbound_url("http://metadata.google.internal/"), "GCP metadata must be blocked");
-        assert!(!is_allowed_outbound_url("http://metadata.aws.cloud/"), "AWS cloud metadata must be blocked");
+        assert!(
+            !is_allowed_outbound_url("http://metadata.google.internal/"),
+            "GCP metadata must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://metadata.aws.cloud/"),
+            "AWS cloud metadata must be blocked"
+        );
     }
 
     #[test]
     fn normal_urls_are_allowed() {
-        assert!(is_allowed_outbound_url("http://192.168.1.1:8123"), "LAN IP should be allowed");
-        assert!(is_allowed_outbound_url("https://vault.example.com"), "public hostname should be allowed");
-        assert!(is_allowed_outbound_url("http://10.0.0.1:8080/api"), "RFC1918 should be allowed");
+        assert!(
+            is_allowed_outbound_url("http://192.168.1.1:8123"),
+            "LAN IP should be allowed"
+        );
+        assert!(
+            is_allowed_outbound_url("https://vault.example.com"),
+            "public hostname should be allowed"
+        );
+        assert!(
+            is_allowed_outbound_url("http://10.0.0.1:8080/api"),
+            "RFC1918 should be allowed"
+        );
     }
 
     #[test]
@@ -3331,12 +3651,30 @@ mod ssrf_tests {
     /// let a /proxy call loop back into vault-proxy and read vault metadata.
     #[test]
     fn loopback_addresses_are_blocked() {
-        assert!(!is_allowed_outbound_url("http://127.0.0.1:3201/vault/items"), "127.0.0.1 must be blocked");
-        assert!(!is_allowed_outbound_url("http://127.0.0.1/"), "bare 127.0.0.1 must be blocked");
-        assert!(!is_allowed_outbound_url("http://127.1.2.3/api"), "127.x.y.z must be blocked");
-        assert!(!is_allowed_outbound_url("http://[::1]/api"), "::1 IPv6 loopback must be blocked");
-        assert!(!is_allowed_outbound_url("http://localhost/api"), "localhost hostname must be blocked");
-        assert!(!is_allowed_outbound_url("http://LOCALHOST:8080/"), "case-insensitive localhost must be blocked");
+        assert!(
+            !is_allowed_outbound_url("http://127.0.0.1:3201/vault/items"),
+            "127.0.0.1 must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://127.0.0.1/"),
+            "bare 127.0.0.1 must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://127.1.2.3/api"),
+            "127.x.y.z must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://[::1]/api"),
+            "::1 IPv6 loopback must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://localhost/api"),
+            "localhost hostname must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://LOCALHOST:8080/"),
+            "case-insensitive localhost must be blocked"
+        );
     }
 
     /// iter-13: Scheme-less URLs (e.g. "homeassistant.local:8123") must be
@@ -3404,15 +3742,30 @@ mod write_env_traversal_tests {
 
         // Previously missed cases
         assert!(has_traversal("/envs/.."), "/envs/.. must be blocked");
-        assert!(has_traversal("/envs/../etc/passwd"), "/envs/../etc/passwd must be blocked");
-        assert!(has_traversal("/envs/./sub"), "/envs/./sub (single-dot) must be blocked");
+        assert!(
+            has_traversal("/envs/../etc/passwd"),
+            "/envs/../etc/passwd must be blocked"
+        );
+        assert!(
+            has_traversal("/envs/./sub"),
+            "/envs/./sub (single-dot) must be blocked"
+        );
 
         // Already caught by old check
-        assert!(has_traversal("/envs/sub/../etc"), "interior .. must be blocked");
+        assert!(
+            has_traversal("/envs/sub/../etc"),
+            "interior .. must be blocked"
+        );
 
         // Normal paths must pass
-        assert!(!has_traversal("/envs/myapp.env"), "normal path should be allowed");
-        assert!(!has_traversal("/envs/sub/myapp.env"), "nested normal path should be allowed");
+        assert!(
+            !has_traversal("/envs/myapp.env"),
+            "normal path should be allowed"
+        );
+        assert!(
+            !has_traversal("/envs/sub/myapp.env"),
+            "nested normal path should be allowed"
+        );
     }
 }
 
@@ -3469,17 +3822,16 @@ mod folder_scope_guard_tests {
         );
         assert!(result.is_err(), "item in wrong folder must be blocked");
         let msg = result.unwrap_err();
-        assert!(msg.contains("vault-proxy"), "error must mention vault_folder name");
+        assert!(
+            msg.contains("vault-proxy"),
+            "error must mention vault_folder name"
+        );
     }
 
     #[test]
     fn item_with_no_folder_is_blocked() {
-        let result = check_folder_scope(
-            None,
-            Some("folder-uuid-abc"),
-            "item-uuid-1",
-            "vault-proxy",
-        );
+        let result =
+            check_folder_scope(None, Some("folder-uuid-abc"), "item-uuid-1", "vault-proxy");
         assert!(result.is_err(), "item with no folder must be blocked");
     }
 
@@ -3493,7 +3845,10 @@ mod folder_scope_guard_tests {
             "item-uuid-1",
             "vault-proxy",
         );
-        assert!(result.is_ok(), "fresh vault (no folder_id) must allow all items");
+        assert!(
+            result.is_ok(),
+            "fresh vault (no folder_id) must allow all items"
+        );
     }
 
     #[test]
@@ -3571,7 +3926,9 @@ mod reload_services_shape_tests {
         assert_eq!(body["ok"], true, "ok must be true");
         assert_eq!(body["prev_service_count"], 3);
         assert_eq!(body["new_service_count"], 4);
-        let svcs = body["services"].as_array().expect("services must be an array");
+        let svcs = body["services"]
+            .as_array()
+            .expect("services must be an array");
         assert_eq!(svcs.len(), 2);
         assert!(
             body["note"].as_str().is_some(),
@@ -3602,7 +3959,9 @@ mod reload_services_shape_tests {
         // Zero services reloaded (when prev was also zero — not a rollback case).
         let body = success_body(0, 0, vec![]);
         assert_eq!(body["ok"], true);
-        let svcs = body["services"].as_array().expect("services must be an array");
+        let svcs = body["services"]
+            .as_array()
+            .expect("services must be an array");
         assert!(svcs.is_empty());
     }
 }

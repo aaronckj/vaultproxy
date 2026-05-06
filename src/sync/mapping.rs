@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemMapping {
@@ -19,7 +19,7 @@ pub struct FolderMapping {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SyncMap {
-    pub items: HashMap<String, ItemMapping>,    // cloud_cipher_id → mapping
+    pub items: HashMap<String, ItemMapping>, // cloud_cipher_id → mapping
     pub folders: HashMap<String, FolderMapping>, // collection_id → folder mapping
 }
 
@@ -83,8 +83,8 @@ impl SyncMap {
     /// existing file (if any) is rotated to a timestamped `.bak.*` snapshot
     /// — older snapshots past the retention window are pruned.
     pub fn save(&self, path: &str) -> Result<()> {
-        let contents = serde_json::to_string_pretty(self)
-            .context("Failed to serialize sync map")?;
+        let contents =
+            serde_json::to_string_pretty(self).context("Failed to serialize sync map")?;
 
         // Rotate the existing live file to a timestamped backup. Errors here
         // are logged but non-fatal: we'd rather lose a backup than lose the
@@ -122,7 +122,11 @@ impl SyncMap {
         if backups.len() > SYNC_MAP_BACKUP_RETENTION {
             for old in backups.drain(SYNC_MAP_BACKUP_RETENTION..) {
                 if let Err(e) = std::fs::remove_file(&old) {
-                    tracing::warn!("failed to prune old sync-map backup {}: {}", old.display(), e);
+                    tracing::warn!(
+                        "failed to prune old sync-map backup {}: {}",
+                        old.display(),
+                        e
+                    );
                 }
             }
         }
@@ -134,7 +138,10 @@ impl SyncMap {
     fn list_backups(path: &str) -> Result<Vec<std::path::PathBuf>> {
         let live = std::path::Path::new(path);
         let dir = live.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let prefix = format!("{}.bak.", live.file_name().and_then(|s| s.to_str()).unwrap_or(""));
+        let prefix = format!(
+            "{}.bak.",
+            live.file_name().and_then(|s| s.to_str()).unwrap_or("")
+        );
 
         let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(dir) {
             Ok(rd) => rd
@@ -158,8 +165,12 @@ impl SyncMap {
     /// non-empty map. None if no usable backup exists.
     fn restore_newest_backup(path: &str) -> Result<Option<Self>> {
         for bp in Self::list_backups(path)? {
-            let Ok(contents) = std::fs::read_to_string(&bp) else { continue };
-            let Ok(map) = serde_json::from_str::<SyncMap>(&contents) else { continue };
+            let Ok(contents) = std::fs::read_to_string(&bp) else {
+                continue;
+            };
+            let Ok(map) = serde_json::from_str::<SyncMap>(&contents) else {
+                continue;
+            };
             if !map.items.is_empty() {
                 return Ok(Some(map));
             }

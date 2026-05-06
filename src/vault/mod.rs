@@ -12,10 +12,13 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::secure::SecureBuffer;
 use crypto::{
-    decrypt_cipher_string, decrypt_to_string, derive_master_key, decrypt_symmetric_key,
+    decrypt_cipher_string, decrypt_symmetric_key, decrypt_to_string, derive_master_key,
     hash_master_password,
 };
-use types::{DuplicateGroup, DuplicateMember, EncryptedCipher, FolderInfo, MaskedItem, PreloginResponse, SyncResponse, TokenResponse};
+use types::{
+    DuplicateGroup, DuplicateMember, EncryptedCipher, FolderInfo, MaskedItem, PreloginResponse,
+    SyncResponse, TokenResponse,
+};
 
 // -------------------------------------------------------------------------- //
 // FolderIndex                                                                  //
@@ -233,9 +236,8 @@ impl VaultManager {
         tracing::info!("authenticated to Vaultwarden");
 
         // --- Step 4: decrypt symmetric key -----------------------------------
-        let (enc_key, mac_key) =
-            decrypt_symmetric_key(&token_resp.key, master_key.as_bytes())
-                .context("failed to decrypt vault symmetric key")?;
+        let (enc_key, mac_key) = decrypt_symmetric_key(&token_resp.key, master_key.as_bytes())
+            .context("failed to decrypt vault symmetric key")?;
 
         // Compute the token expiry instant from expires_in (seconds).
         // Vaultwarden typically returns 3600. A value of 0 means the field was
@@ -267,7 +269,11 @@ impl VaultManager {
         tracing::debug!(
             expires_in = token_resp.expires_in,
             "access token acquired; proactive refresh {}",
-            if token_expires_at.is_some() { "enabled" } else { "disabled (no expires_in)" }
+            if token_expires_at.is_some() {
+                "enabled"
+            } else {
+                "disabled (no expires_in)"
+            }
         );
 
         let manager = VaultManager {
@@ -349,7 +355,10 @@ impl VaultManager {
             bail!("refresh token auth failed: {}", body);
         }
 
-        let data: RefreshResp = resp.json().await.context("failed to parse refresh response")?;
+        let data: RefreshResp = resp
+            .json()
+            .await
+            .context("failed to parse refresh response")?;
         *self.access_token.write().await = data.access_token;
         if let Some(new_rt) = data.refresh_token {
             *self.refresh_token.write().await = Some(new_rt);
@@ -399,7 +408,10 @@ impl VaultManager {
         );
         if let Err(e) = self.reauth().await {
             // Non-fatal: the next request will trigger a reactive 401 refresh.
-            tracing::warn!("proactive token refresh failed (will retry on 401): {:#}", e);
+            tracing::warn!(
+                "proactive token refresh failed (will retry on 401): {:#}",
+                e
+            );
         }
     }
 
@@ -422,7 +434,10 @@ impl VaultManager {
             tracing::warn!("got 401 from Vaultwarden, attempting token refresh");
             self.reauth().await?;
             let token = self.access_token.read().await.clone();
-            let raw = build(&token).send().await.context("request failed (after reauth)")?;
+            let raw = build(&token)
+                .send()
+                .await
+                .context("request failed (after reauth)")?;
             Ok(raw)
         } else {
             Ok(raw)
@@ -721,12 +736,14 @@ impl VaultManager {
         let mut out: Vec<DuplicateGroup> = groups
             .into_iter()
             .filter(|(_, v)| v.len() >= 2)
-            .map(|((organization_id, username, _pw_hash), v)| DuplicateGroup {
-                organization_id,
-                username,
-                count: v.len(),
-                items: v,
-            })
+            .map(
+                |((organization_id, username, _pw_hash), v)| DuplicateGroup {
+                    organization_id,
+                    username,
+                    count: v.len(),
+                    items: v,
+                },
+            )
             .collect();
 
         // Deterministic order: largest groups first, then by org/username so
@@ -785,11 +802,7 @@ impl VaultManager {
             .map(|(_, c)| c)
             .ok_or_else(|| anyhow!("item '{}' not found in vault", item_name))?;
 
-        let username_cs = match cipher
-            .login
-            .as_ref()
-            .and_then(|l| l.username.as_deref())
-        {
+        let username_cs = match cipher.login.as_ref().and_then(|l| l.username.as_deref()) {
             Some(cs) => cs,
             None => return Ok(None),
         };
@@ -819,18 +832,12 @@ impl VaultManager {
             .map(|(_, c)| c)
             .ok_or_else(|| anyhow!("item '{}' not found in vault", item_name))?;
 
-        let totp_cs = cipher
-            .login
-            .as_ref()
-            .and_then(|l| l.totp.as_deref());
+        let totp_cs = cipher.login.as_ref().and_then(|l| l.totp.as_deref());
 
         match totp_cs {
             Some(cs) if !cs.is_empty() => {
-                let buf = decrypt_cipher_string(
-                    cs,
-                    self.enc_key.as_bytes(),
-                    self.mac_key.as_bytes(),
-                )?;
+                let buf =
+                    decrypt_cipher_string(cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())?;
                 Ok(Some(buf))
             }
             _ => Ok(None),
@@ -854,12 +861,9 @@ impl VaultManager {
 
         match notes_cs {
             Some(cs) if !cs.is_empty() => {
-                let buf = decrypt_cipher_string(
-                    cs,
-                    self.enc_key.as_bytes(),
-                    self.mac_key.as_bytes(),
-                )
-                .with_context(|| format!("failed to decrypt notes for '{}'", item_name))?;
+                let buf =
+                    decrypt_cipher_string(cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                        .with_context(|| format!("failed to decrypt notes for '{}'", item_name))?;
                 Ok(Some(buf))
             }
             _ => Ok(None),
@@ -912,11 +916,7 @@ impl VaultManager {
             }
         }
 
-        bail!(
-            "field '{}' not found on item '{}'",
-            field_name,
-            item_name
-        )
+        bail!("field '{}' not found on item '{}'", field_name, item_name)
     }
 
     // ---------------------------------------------------------------------- //
@@ -1007,12 +1007,14 @@ impl VaultManager {
         .context("re-encrypting new password")?;
 
         let mut updated = cipher.clone();
-        let login = updated.login.get_or_insert(crate::vault::types::EncryptedLogin {
-            username: None,
-            password: None,
-            uris: None,
-            totp: None,
-        });
+        let login = updated
+            .login
+            .get_or_insert(crate::vault::types::EncryptedLogin {
+                username: None,
+                password: None,
+                uris: None,
+                totp: None,
+            });
         login.password = Some(enc_pw);
 
         self.update_cipher(&cipher.id, &updated).await?;
@@ -1099,7 +1101,12 @@ impl VaultManager {
             .map(|(id, name)| {
                 let item_count = counts.get(id.as_str()).copied().unwrap_or(0);
                 let tracked = tracked_folder_ids.contains(&id);
-                FolderInfo { id, name, item_count, tracked }
+                FolderInfo {
+                    id,
+                    name,
+                    item_count,
+                    tracked,
+                }
             })
             .collect()
     }
@@ -1160,8 +1167,8 @@ impl VaultManager {
         let mac_key = self.mac_key.as_bytes();
 
         // Encrypt the overridden plaintext fields with the vault's own keys.
-        let enc_name = encrypt_to_cipher_string(new_name, enc_key, mac_key)
-            .context("encrypt new name")?;
+        let enc_name =
+            encrypt_to_cipher_string(new_name, enc_key, mac_key).context("encrypt new name")?;
         let enc_username = match new_username {
             Some(u) if !u.is_empty() => Some(
                 encrypt_to_cipher_string(u, enc_key, mac_key).context("encrypt new username")?,
@@ -1406,8 +1413,10 @@ impl VaultManager {
         }
 
         let url = format!("{}/api/folders", self.vaultwarden_url);
-        let folder_body = serde_json::to_value(&FolderReq { name: name_encrypted })
-            .context("failed to serialize folder request")?;
+        let folder_body = serde_json::to_value(&FolderReq {
+            name: name_encrypted,
+        })
+        .context("failed to serialize folder request")?;
         let resp: FolderResponse = self
             .authed_request(|token| self.http.post(&url).bearer_auth(token).json(&folder_body))
             .await?
@@ -1433,7 +1442,8 @@ impl VaultManager {
     pub async fn get_field_by_item_name(&self, item_name: &str, field: &str) -> Result<String> {
         match field {
             "password" => {
-                let buf = self.decrypt_password(item_name)
+                let buf = self
+                    .decrypt_password(item_name)
                     .with_context(|| format!("decrypt password for '{}'", item_name))?;
                 let s = std::str::from_utf8(&buf)
                     .map_err(|e| anyhow!("password for '{}' is not valid UTF-8: {}", item_name, e))?
@@ -1441,7 +1451,8 @@ impl VaultManager {
                 Ok(s)
             }
             "username" => {
-                let buf = self.decrypt_username(item_name)
+                let buf = self
+                    .decrypt_username(item_name)
                     .with_context(|| format!("decrypt username for '{}'", item_name))?
                     .ok_or_else(|| anyhow!("item '{}' has no username field", item_name))?;
                 let s = std::str::from_utf8(&buf)
@@ -1486,7 +1497,11 @@ impl VaultManager {
     /// Resolve a decrypted folder name to its folder ID.
     /// Returns None if no folder with that name exists in the vault.
     pub async fn find_folder_id_by_name_async(&self, name: &str) -> Option<String> {
-        self.folders.read().await.find_id_by_name(name).map(String::from)
+        self.folders
+            .read()
+            .await
+            .find_id_by_name(name)
+            .map(String::from)
     }
 
     /// Check whether the item with the given decrypted name belongs to the
@@ -1562,25 +1577,21 @@ impl VaultManager {
             // Build a set of field names the caller wants to update.
             // We'll walk existing fields, re-encrypt values for names that match,
             // and collect the names we've handled.
-            let mut handled: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            let mut handled: std::collections::HashSet<String> = std::collections::HashSet::new();
 
             // Update or keep each existing field.
             if let Some(ref mut existing_fields) = cipher.fields {
                 for ef in existing_fields.iter_mut() {
                     // Decrypt the field name (non-sensitive metadata).
-                    if let Some(dec_name) = crypto::decrypt_to_string(
-                        ef.name.as_deref(),
-                        enc_key,
-                        mac_key,
-                    ) {
+                    if let Some(dec_name) =
+                        crypto::decrypt_to_string(ef.name.as_deref(), enc_key, mac_key)
+                    {
                         if let Some(new_val) = fields.get(&dec_name) {
                             // Re-encrypt the new value; leave the encrypted name in place.
-                            let enc_val =
-                                encrypt_to_cipher_string(new_val, enc_key, mac_key)
-                                    .with_context(|| {
-                                        format!("encrypt value for field '{}'", dec_name)
-                                    })?;
+                            let enc_val = encrypt_to_cipher_string(new_val, enc_key, mac_key)
+                                .with_context(|| {
+                                    format!("encrypt value for field '{}'", dec_name)
+                                })?;
                             ef.value = Some(enc_val);
                             handled.insert(dec_name);
                         }
@@ -1621,8 +1632,8 @@ impl VaultManager {
             Ok(false)
         } else {
             // --- CREATE path --------------------------------------------------
-            let enc_name = encrypt_to_cipher_string(name, enc_key, mac_key)
-                .context("encrypt item name")?;
+            let enc_name =
+                encrypt_to_cipher_string(name, enc_key, mac_key).context("encrypt item name")?;
 
             let enc_fields: Option<Vec<EncryptedField>> = if fields.is_empty() {
                 None
@@ -1684,8 +1695,7 @@ impl VaultManager {
         items
             .values()
             .find(|(item_name, cipher)| {
-                item_name.as_str() == name
-                    && cipher.folder_id.as_deref() == Some(folder_id)
+                item_name.as_str() == name && cipher.folder_id.as_deref() == Some(folder_id)
             })
             .map(|(_, cipher)| cipher.clone())
     }
@@ -1748,10 +1758,7 @@ impl VaultManager {
     /// - Item not found in vault.
     /// - Any field's name or value fails to decrypt (hard error, matching
     ///   `list_field_names`'s fatal-on-failure contract).
-    pub async fn list_field_pairs(
-        &self,
-        item_name: &str,
-    ) -> Result<Vec<(String, SecureBuffer)>> {
+    pub async fn list_field_pairs(&self, item_name: &str) -> Result<Vec<(String, SecureBuffer)>> {
         let items = self.items.read().await;
         let cipher = items
             .values()
@@ -1776,9 +1783,7 @@ impl VaultManager {
                 self.enc_key.as_bytes(),
                 self.mac_key.as_bytes(),
             )
-            .ok_or_else(|| {
-                anyhow!("failed to decrypt field name on item '{}'", item_name)
-            })?;
+            .ok_or_else(|| anyhow!("failed to decrypt field name on item '{}'", item_name))?;
 
             // Decrypt the field value in the same pass.
             let value_cs = f
@@ -1786,17 +1791,14 @@ impl VaultManager {
                 .as_deref()
                 .ok_or_else(|| anyhow!("field '{}' on '{}' has no value", field_name, item_name))?;
 
-            let value_buf = decrypt_cipher_string(
-                value_cs,
-                self.enc_key.as_bytes(),
-                self.mac_key.as_bytes(),
-            )
-            .with_context(|| {
-                format!(
-                    "failed to decrypt field '{}' on item '{}'",
-                    field_name, item_name
-                )
-            })?;
+            let value_buf =
+                decrypt_cipher_string(value_cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                    .with_context(|| {
+                    format!(
+                        "failed to decrypt field '{}' on item '{}'",
+                        field_name, item_name
+                    )
+                })?;
 
             pairs.push((field_name, value_buf));
         }
@@ -1838,6 +1840,28 @@ impl VaultManager {
         }
     }
 
+    /// Build a stub `VaultManager` with caller-supplied encryption keys.
+    ///
+    /// Like `new_stub()` but with real (non-zero) keys, so tests that exercise
+    /// the decryption path (e.g. `list_field_pairs`) can pre-encrypt test data
+    /// with `crate::vault::crypto::encrypt_to_cipher_string` and then verify
+    /// the round-trip through the vault.
+    pub fn new_stub_with_keys(enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
+        VaultManager {
+            vaultwarden_url: "http://localhost:0".to_string(),
+            access_token: RwLock::new("test-access-token".to_string()),
+            refresh_token: RwLock::new(None),
+            token_expires_at: RwLock::new(None),
+            reauth_mutex: Mutex::new(()),
+            enc_key: crate::secure::SecureBuffer::new(enc_key),
+            mac_key: crate::secure::SecureBuffer::new(mac_key),
+            items: RwLock::new(std::collections::HashMap::new()),
+            folders: RwLock::new(FolderIndex::default()),
+            all_folders: RwLock::new(Vec::new()),
+            http: Client::new(),
+        }
+    }
+
     /// Seed the stub vault with a cipher and a named folder.
     ///
     /// Only available in test builds. Allows integration tests to populate
@@ -1867,6 +1891,21 @@ impl VaultManager {
         let mut items = self.items.write().await;
         items.insert(cipher.id.clone(), (cipher.id.clone(), cipher));
     }
+
+    /// Seed the stub vault with a named item (pre-decrypted name, raw cipher).
+    ///
+    /// Unlike `seed_for_test`, which stores `cipher.id` as the item name, this
+    /// method stores an explicit `item_name` in the (name, cipher) tuple so
+    /// that methods which look up items by name (e.g. `list_field_pairs`) find
+    /// the correct entry. Use this variant when testing name-keyed lookups.
+    pub async fn seed_item_by_name(
+        &self,
+        item_name: String,
+        cipher: crate::vault::types::EncryptedCipher,
+    ) {
+        let mut items = self.items.write().await;
+        items.insert(cipher.id.clone(), (item_name, cipher));
+    }
 }
 
 #[cfg(test)]
@@ -1880,8 +1919,8 @@ mod tests {
         idx.insert("folder-uuid-2".into(), "Personal".into());
 
         assert_eq!(idx.find_id_by_name("Connecterr"), Some("folder-uuid-1"));
-        assert_eq!(idx.find_id_by_name("Personal"),   Some("folder-uuid-2"));
-        assert_eq!(idx.find_id_by_name("Missing"),    None);
+        assert_eq!(idx.find_id_by_name("Personal"), Some("folder-uuid-2"));
+        assert_eq!(idx.find_id_by_name("Missing"), None);
     }
 
     #[test]
@@ -1889,14 +1928,16 @@ mod tests {
         use crate::vault::types::SyncFolder;
 
         // Simulate the post-sync population step in isolation.
-        let folders = [
-            SyncFolder { id: "id-c".into(), name: "ENCRYPTED_NAME_PLACEHOLDER".into(), revision_date: None },
-        ];
+        let folders = [SyncFolder {
+            id: "id-c".into(),
+            name: "ENCRYPTED_NAME_PLACEHOLDER".into(),
+            revision_date: None,
+        }];
 
         // The real impl decrypts `name`. For this unit test we test the helper that
         // takes already-decrypted (id, name) pairs.
         let mut idx = FolderIndex::default();
-        populate_folder_index(&mut idx, [( "id-c".to_string(), "Connecterr".to_string() )]);
+        populate_folder_index(&mut idx, [("id-c".to_string(), "Connecterr".to_string())]);
 
         assert_eq!(idx.find_id_by_name("Connecterr"), Some("id-c"));
         assert_eq!(folders.len(), 1); // suppress unused-warning
@@ -1910,16 +1951,30 @@ mod tests {
             id: format!("id-{}", name),
             name: name.to_string(),
             cipher_type: 1,
-            login: None, card: None, identity: None, secure_note: None,
-            fields: None, notes: None, organization_id: None, collection_ids: None,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: None,
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
             folder_id: folder.map(String::from),
-            revision_date: None, key: None, extra: None,
+            revision_date: None,
+            key: None,
+            extra: None,
         };
 
         let items = [
             ("apiKey".to_string(), make_cipher("apiKey", Some("id-c"))),
-            ("unifi/home".to_string(), make_cipher("unifi/home", Some("id-c"))),
-            ("personal-thing".to_string(), make_cipher("personal-thing", Some("id-other"))),
+            (
+                "unifi/home".to_string(),
+                make_cipher("unifi/home", Some("id-c")),
+            ),
+            (
+                "personal-thing".to_string(),
+                make_cipher("personal-thing", Some("id-other")),
+            ),
             ("orphan".to_string(), make_cipher("orphan", None)),
         ];
 
@@ -1938,18 +1993,158 @@ mod tests {
             id: "id-1".into(),
             name: "any".into(),
             cipher_type: 1,
-            login: None, card: None, identity: None, secure_note: None,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
             // Plaintext names used here for the pure helper; real impl decrypts.
             fields: Some(vec![
-                EncryptedField { name: Some("apiKey".into()),    value: Some("v".into()), field_type: 1 },
-                EncryptedField { name: Some("password".into()), value: Some("v".into()), field_type: 1 },
-                EncryptedField { name: None,                    value: Some("v".into()), field_type: 1 },
+                EncryptedField {
+                    name: Some("apiKey".into()),
+                    value: Some("v".into()),
+                    field_type: 1,
+                },
+                EncryptedField {
+                    name: Some("password".into()),
+                    value: Some("v".into()),
+                    field_type: 1,
+                },
+                EncryptedField {
+                    name: None,
+                    value: Some("v".into()),
+                    field_type: 1,
+                },
             ]),
-            notes: None, organization_id: None, collection_ids: None,
-            folder_id: None, revision_date: None, key: None, extra: None,
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
         };
 
         let names = field_names_from_cipher(&cipher);
         assert_eq!(names, vec!["apiKey", "password"]);
+    }
+
+    // ---------------------------------------------------------------------- //
+    // list_field_pairs tests (iter-49)                                        //
+    // ---------------------------------------------------------------------- //
+
+    /// `list_field_pairs` returns `Err` when the named item is not in the vault.
+    /// Verifies the "item not found" error path without needing real cipher data.
+    #[tokio::test]
+    async fn list_field_pairs_returns_err_for_missing_item() {
+        let vault = VaultManager::new_stub();
+        let err = vault
+            .list_field_pairs("nonexistent-item")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("item not found"),
+            "expected 'item not found' error, got: {err}"
+        );
+    }
+
+    /// `list_field_pairs` returns `Ok(Vec::new())` when the item exists but
+    /// has no custom fields (`cipher.fields == None`).
+    #[tokio::test]
+    async fn list_field_pairs_returns_empty_for_item_with_no_fields() {
+        use crate::vault::types::EncryptedCipher;
+
+        let vault = VaultManager::new_stub();
+        let cipher = EncryptedCipher {
+            id: "id-nf".into(),
+            name: "item-no-fields".into(),
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: None, // explicitly absent
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+        vault
+            .seed_item_by_name("item-no-fields".into(), cipher)
+            .await;
+
+        let pairs = vault.list_field_pairs("item-no-fields").await.unwrap();
+        assert!(
+            pairs.is_empty(),
+            "item with fields:None should return empty pairs"
+        );
+    }
+
+    /// `list_field_pairs` decrypts field names and values and returns them as
+    /// `(String, SecureBuffer)` pairs, skipping unnamed fields.
+    ///
+    /// The test uses `VaultManager::new_stub_with_keys` so the vault holds
+    /// known enc/mac keys, and `encrypt_to_cipher_string` to pre-encrypt the
+    /// test data — validating the full round-trip through the AES-256-CBC +
+    /// HMAC-SHA256 crypto layer.
+    #[tokio::test]
+    async fn list_field_pairs_decrypts_field_name_and_value() {
+        use crate::vault::crypto::encrypt_to_cipher_string;
+        use crate::vault::types::{EncryptedCipher, EncryptedField};
+
+        // Use distinct, non-zero test keys.
+        let enc_key: Vec<u8> = (1u8..=32).collect();
+        let mac_key: Vec<u8> = (33u8..=64).collect();
+
+        let vault = VaultManager::new_stub_with_keys(enc_key.clone(), mac_key.clone());
+
+        // Encrypt the field name and value with the same keys the vault holds.
+        let enc_name = encrypt_to_cipher_string("apiKey", &enc_key, &mac_key).unwrap();
+        let enc_value = encrypt_to_cipher_string("super-secret-123", &enc_key, &mac_key).unwrap();
+
+        let cipher = EncryptedCipher {
+            id: "id-fp".into(),
+            name: "item-with-fields".into(), // raw; not decrypted by seed helper
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: Some(vec![
+                EncryptedField {
+                    name: Some(enc_name),
+                    value: Some(enc_value),
+                    field_type: 1,
+                },
+                // Unnamed field — must be skipped.
+                EncryptedField {
+                    name: None,
+                    value: Some("v".into()),
+                    field_type: 1,
+                },
+            ]),
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+        vault
+            .seed_item_by_name("item-with-fields".into(), cipher)
+            .await;
+
+        let pairs = vault.list_field_pairs("item-with-fields").await.unwrap();
+
+        assert_eq!(pairs.len(), 1, "only the named field should be returned");
+        let (name, value_buf) = &pairs[0];
+        assert_eq!(name, "apiKey");
+        assert_eq!(
+            std::str::from_utf8(value_buf.as_bytes()).unwrap(),
+            "super-secret-123"
+        );
     }
 }

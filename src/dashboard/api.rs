@@ -20,7 +20,10 @@ use std::sync::Arc;
 
 /// Helper: get the AppState or return 503 if vault not initialized yet.
 fn require_app(state: &DashboardState) -> Result<&Arc<AppState>, Json<Value>> {
-    state.app.as_ref().ok_or_else(|| Json(json!({"error": "vault not initialized — complete setup first"})))
+    state
+        .app
+        .as_ref()
+        .ok_or_else(|| Json(json!({"error": "vault not initialized — complete setup first"})))
 }
 
 // -------------------------------------------------------------------------- //
@@ -63,7 +66,14 @@ pub async fn status(State(state): State<DashboardState>) -> Json<Value> {
         Err(e) => return e,
     };
     let items = app.vault.list_items().await;
-    let services = app.registry.read().await.list().into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let services = app
+        .registry
+        .read()
+        .await
+        .list()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
 
     let cloud_sync = match &app.cloud_sync {
         Some(sync) => {
@@ -145,7 +155,10 @@ pub async fn sync_trigger(State(state): State<DashboardState>) -> (StatusCode, J
                     tracing::error!("dashboard-triggered sync failed: {:#}", e);
                 }
             });
-            (StatusCode::ACCEPTED, Json(json!({ "ok": true, "message": "sync started" })))
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({ "ok": true, "message": "sync started" })),
+            )
         }
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -165,9 +178,9 @@ pub async fn sync_trigger(State(state): State<DashboardState>) -> (StatusCode, J
 pub async fn sse_events(
     State(_state): State<DashboardState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream = tokio_stream::wrappers::IntervalStream::new(
-        tokio::time::interval(std::time::Duration::from_secs(5)),
-    )
+    let stream = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+        std::time::Duration::from_secs(5),
+    ))
     .map(|_| {
         let data = serde_json::json!({ "type": "heartbeat" });
         Ok::<Event, Infallible>(Event::default().data(data.to_string()))
@@ -320,15 +333,16 @@ pub async fn change_master_password(
     // failing or reading from a stale sealed blob.
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({"ok": false, "error": "password change requires keystore — use the keystore setup wizard"})),
+        Json(
+            json!({"ok": false, "error": "password change requires keystore — use the keystore setup wizard"}),
+        ),
     )
-
 }
 
 /// Generate a cryptographically random password with mixed case letters, digits, and symbols.
 fn generate_password(length: usize) -> String {
-    use rand::Rng;
     use rand::rngs::OsRng;
+    use rand::Rng;
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz\
                               ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                               0123456789\
@@ -357,13 +371,16 @@ pub async fn tpm_status(State(state): State<DashboardState>) -> Json<Value> {
         ("private_key.enc", "Encrypted private key (no-TPM fallback)"),
         ("public_key.pem", "Public key"),
     ];
-    let sealed: Vec<serde_json::Value> = keystore_files.iter().map(|(name, label)| {
-        let path = std::path::Path::new(dir).join(name);
-        serde_json::json!({
-            "name": label,
-            "exists": path.exists()
+    let sealed: Vec<serde_json::Value> = keystore_files
+        .iter()
+        .map(|(name, label)| {
+            let path = std::path::Path::new(dir).join(name);
+            serde_json::json!({
+                "name": label,
+                "exists": path.exists()
+            })
         })
-    }).collect();
+        .collect();
 
     Json(serde_json::json!({
         "tpm_available": tpm,
@@ -417,7 +434,9 @@ pub async fn browser_rotate(
         Ok(a) => a,
         Err(e) => return e,
     };
-    match app.http.post("http://127.0.0.1:3201/browser/rotate")
+    match app
+        .http
+        .post("http://127.0.0.1:3201/browser/rotate")
         .json(&req)
         .send()
         .await
@@ -433,7 +452,9 @@ pub async fn browser_abort(State(state): State<DashboardState>) -> Json<Value> {
         Ok(a) => a,
         Err(e) => return e,
     };
-    match app.http.post("http://127.0.0.1:3201/browser/abort")
+    match app
+        .http
+        .post("http://127.0.0.1:3201/browser/abort")
         .send()
         .await
     {
@@ -516,7 +537,9 @@ pub async fn setup_vaultwarden(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({"ok": false, "error": format!("could not reach Vaultwarden at {}: {}", url, e)})),
+                Json(
+                    json!({"ok": false, "error": format!("could not reach Vaultwarden at {}: {}", url, e)}),
+                ),
             );
         }
     };
@@ -535,7 +558,9 @@ pub async fn setup_vaultwarden(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({"ok": false, "error": format!("failed to parse prelogin response: {}", e)})),
+                Json(
+                    json!({"ok": false, "error": format!("failed to parse prelogin response: {}", e)}),
+                ),
             );
         }
     };
@@ -579,7 +604,9 @@ pub async fn setup_vaultwarden(
         let _body = token_resp.text().await.unwrap_or_default();
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"ok": false, "error": format!("authentication failed ({}): invalid email or master password", status)})),
+            Json(
+                json!({"ok": false, "error": format!("authentication failed ({}): invalid email or master password", status)}),
+            ),
         );
     }
 
@@ -592,10 +619,13 @@ pub async fn setup_vaultwarden(
     );
     master_password.zeroize();
 
-    (StatusCode::OK, Json(json!({
-        "ok": true,
-        "message": "Credentials validated. Use the keystore setup wizard to persist them."
-    })))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "message": "Credentials validated. Use the keystore setup wizard to persist them."
+        })),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -616,7 +646,11 @@ pub async fn setup_cloud_credentials(
 ) -> (StatusCode, Json<Value>) {
     let email = req.email.trim().to_string();
     let mut master_password = req.master_password.clone();
-    let totp_code = req.totp_code.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let totp_code = req
+        .totp_code
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let kdf_override = req.kdf_iterations;
 
     if email.is_empty() || master_password.is_empty() {
@@ -626,11 +660,17 @@ pub async fn setup_cloud_credentials(
         );
     }
 
-    let http = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build() {
+    let http = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("HTTP client build error: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": "internal HTTP client error"})));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "internal HTTP client error"})),
+            );
         }
     };
 
@@ -644,15 +684,26 @@ pub async fn setup_cloud_credentials(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Bitwarden prelogin request failed: {}", e);
-            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "cannot reach Bitwarden — check network connectivity"})));
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(
+                    json!({"ok": false, "error": "cannot reach Bitwarden — check network connectivity"}),
+                ),
+            );
         }
     };
 
     let prelogin: serde_json::Value = prelogin_resp.json().await.unwrap_or_default();
-    let kdf_type = prelogin.get("kdfType").and_then(|v| v.as_u64()).unwrap_or(0);
+    let kdf_type = prelogin
+        .get("kdfType")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     tracing::debug!("Bitwarden prelogin: kdfType={}", kdf_type);
     let kdf_iterations = kdf_override.unwrap_or_else(|| {
-        prelogin.get("kdfIterations").and_then(|v| v.as_u64()).unwrap_or(600_000) as u32
+        prelogin
+            .get("kdfIterations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(600_000) as u32
     });
     tracing::info!("using KDF iterations: {}", kdf_iterations);
 
@@ -661,8 +712,10 @@ pub async fn setup_cloud_credentials(
     // prefix plus known email + KDF params materially narrows an offline
     // attack, and these logs ship to stdout and any log aggregator.
     tracing::debug!("cloud auth starting for email={}", email);
-    let master_key = crate::vault::crypto::derive_master_key(&master_password, &email, kdf_iterations);
-    let pw_hash = crate::vault::crypto::hash_master_password(master_key.as_bytes(), &master_password);
+    let master_key =
+        crate::vault::crypto::derive_master_key(&master_password, &email, kdf_iterations);
+    let pw_hash =
+        crate::vault::crypto::hash_master_password(master_key.as_bytes(), &master_password);
 
     // Step 3: Token request with optional 2FA
     let mut params = vec![
@@ -672,8 +725,14 @@ pub async fn setup_cloud_credentials(
         ("scope".to_string(), "api offline_access".to_string()),
         ("client_id".to_string(), "web".to_string()),
         ("deviceType".to_string(), "10".to_string()),
-        ("deviceIdentifier".to_string(), "connecterr-vault-proxy".to_string()),
-        ("deviceName".to_string(), "Connecterr Vault Proxy".to_string()),
+        (
+            "deviceIdentifier".to_string(),
+            "connecterr-vault-proxy".to_string(),
+        ),
+        (
+            "deviceName".to_string(),
+            "Connecterr Vault Proxy".to_string(),
+        ),
     ];
 
     if let Some(code) = totp_code {
@@ -691,7 +750,12 @@ pub async fn setup_cloud_credentials(
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Bitwarden token request failed: {}", e);
-            return (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "error": "token request failed — check network connectivity"})));
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(
+                    json!({"ok": false, "error": "token request failed — check network connectivity"}),
+                ),
+            );
         }
     };
 
@@ -699,21 +763,34 @@ pub async fn setup_cloud_credentials(
         let body: serde_json::Value = resp.json().await.unwrap_or_default();
         // Check if 2FA is required
         if body.get("TwoFactorProviders2").is_some() {
-            return (StatusCode::OK, Json(json!({
-                "ok": false,
-                "needs_2fa": true,
-                "error": "Two-factor authentication required. Enter your TOTP code and try again."
-            })));
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": false,
+                    "needs_2fa": true,
+                    "error": "Two-factor authentication required. Enter your TOTP code and try again."
+                })),
+            );
         }
         tracing::warn!("Bitwarden auth failed (400): {:?}", body);
-        return (StatusCode::OK, Json(json!({"ok": false, "error": "Authentication failed — check credentials and try again"})));
+        return (
+            StatusCode::OK,
+            Json(
+                json!({"ok": false, "error": "Authentication failed — check credentials and try again"}),
+            ),
+        );
     }
 
     let resp_status = resp.status();
     if !resp_status.is_success() {
         let body = resp.text().await.unwrap_or_default();
         tracing::warn!("Bitwarden auth failed ({}): {}", resp_status, body);
-        return (StatusCode::OK, Json(json!({"ok": false, "error": "Authentication failed — check credentials and try again"})));
+        return (
+            StatusCode::OK,
+            Json(
+                json!({"ok": false, "error": "Authentication failed — check credentials and try again"}),
+            ),
+        );
     }
 
     // Step 4: Extract refresh token
@@ -728,13 +805,21 @@ pub async fn setup_cloud_credentials(
         Ok(d) => d,
         Err(e) => {
             tracing::error!("failed to parse Bitwarden token response: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": "failed to parse authentication response"})));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "failed to parse authentication response"})),
+            );
         }
     };
 
     let refresh_token = match token_data.refresh_token {
         Some(rt) => rt,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": "no refresh token in response"}))),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "no refresh token in response"})),
+            )
+        }
     };
 
     tracing::info!("authenticated to Bitwarden cloud via dashboard");
@@ -748,7 +833,10 @@ pub async fn setup_cloud_credentials(
                 master_password: master_password.clone(),
                 refresh_token: Some(refresh_token),
                 api_client_id: creds.cloud.as_ref().and_then(|c| c.api_client_id.clone()),
-                api_client_secret: creds.cloud.as_ref().and_then(|c| c.api_client_secret.clone()),
+                api_client_secret: creds
+                    .cloud
+                    .as_ref()
+                    .and_then(|c| c.api_client_secret.clone()),
                 kdf_iterations: creds.cloud.as_ref().and_then(|c| c.kdf_iterations),
             });
             if let Err(e) = crate::keystore::reencrypt_credentials(config_dir, &creds) {
@@ -764,11 +852,14 @@ pub async fn setup_cloud_credentials(
 
     master_password.zeroize();
 
-    (StatusCode::OK, Json(json!({
-        "ok": true,
-        "message": "Bitwarden cloud connected! Restart to activate cloud sync.",
-        "kdf_iterations": kdf_iterations,
-    })))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "message": "Bitwarden cloud connected! Restart to activate cloud sync.",
+            "kdf_iterations": kdf_iterations,
+        })),
+    )
 }
 
 // -------------------------------------------------------------------------- //
@@ -787,17 +878,20 @@ pub async fn get_permissions(State(state): State<DashboardState>) -> Json<Value>
     // a static list of MCP module tools.
     let known_tools = get_known_tool_list();
 
-    let tools: Vec<Value> = known_tools.iter().map(|name| {
-        let permission = perms.get_permission(name);
-        let default_permission = perms.get_default_permission(name);
-        let category = perms.get_category(name);
-        json!({
-            "name": name,
-            "permission": permission,
-            "default_permission": default_permission,
-            "category": category,
+    let tools: Vec<Value> = known_tools
+        .iter()
+        .map(|name| {
+            let permission = perms.get_permission(name);
+            let default_permission = perms.get_default_permission(name);
+            let category = perms.get_category(name);
+            json!({
+                "name": name,
+                "permission": permission,
+                "default_permission": default_permission,
+                "category": category,
+            })
         })
-    }).collect();
+        .collect();
 
     Json(json!({
         "tools": tools,
@@ -820,7 +914,9 @@ pub async fn save_permissions(
     let overrides: std::collections::HashMap<String, crate::security::permissions::Permission> =
         match serde_json::from_value(req.get("overrides").cloned().unwrap_or(json!({}))) {
             Ok(o) => o,
-            Err(e) => return Json(json!({"ok": false, "error": format!("invalid overrides: {}", e)})),
+            Err(e) => {
+                return Json(json!({"ok": false, "error": format!("invalid overrides: {}", e)}))
+            }
         };
 
     let mut perms = crate::security::permissions::ToolPermissions::default();
@@ -855,25 +951,29 @@ pub async fn get_audit_log(
     };
     let entries = app.audit_log.entries();
 
-    let filtered: Vec<_> = entries.into_iter().filter(|e| {
-        if let Some(tool) = params.get("tool") {
-            if !e.tool_name.contains(tool) {
-                return false;
+    let filtered: Vec<_> = entries
+        .into_iter()
+        .filter(|e| {
+            if let Some(tool) = params.get("tool") {
+                if !e.tool_name.contains(tool) {
+                    return false;
+                }
             }
-        }
-        if let Some(trigger) = params.get("trigger") {
-            if &e.trigger != trigger {
-                return false;
+            if let Some(trigger) = params.get("trigger") {
+                if &e.trigger != trigger {
+                    return false;
+                }
             }
-        }
-        true
-    }).collect();
+            true
+        })
+        .collect();
 
     // Cap the caller-supplied limit at 1000 (the in-memory MAX_ENTRIES
     // bound). Silently accepting any usize was a footgun — if someone
     // later removes the in-memory cap, the UI would consume unbounded
     // heap. Explicit ceiling documents the invariant.
-    let limit: usize = params.get("limit")
+    let limit: usize = params
+        .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(100)
         .min(1000);
@@ -893,64 +993,135 @@ pub async fn get_audit_log(
 fn get_known_tool_list() -> Vec<String> {
     vec![
         // net (src/modules/net/index.ts)
-        "net__ping", "net__traceroute", "net__dns_lookup", "net__list_interfaces",
-        "net__port_check", "net__scan", "net__mac_lookup", "net__wake",
+        "net__ping",
+        "net__traceroute",
+        "net__dns_lookup",
+        "net__list_interfaces",
+        "net__port_check",
+        "net__scan",
+        "net__mac_lookup",
+        "net__wake",
         // ssh (src/modules/ssh/index.ts)
-        "ssh__run", "ssh__list_hosts", "ssh__upload", "ssh__download",
-        "ssh__service_status", "ssh__system_info",
+        "ssh__run",
+        "ssh__list_hosts",
+        "ssh__upload",
+        "ssh__download",
+        "ssh__service_status",
+        "ssh__system_info",
         // unifi (src/modules/unifi/index.ts)
-        "unifi__list_sites", "unifi__list_devices", "unifi__list_clients",
-        "unifi__get_client", "unifi__block_client", "unifi__unblock_client",
-        "unifi__restart_device", "unifi__list_networks", "unifi__list_firewall_rules",
-        "unifi__create_firewall_rule", "unifi__list_port_forwards",
-        "unifi__set_port_poe", "unifi__get_alerts", "unifi__get_events",
-        "unifi__get_site_stats", "unifi__get_client_stats",
+        "unifi__list_sites",
+        "unifi__list_devices",
+        "unifi__list_clients",
+        "unifi__get_client",
+        "unifi__block_client",
+        "unifi__unblock_client",
+        "unifi__restart_device",
+        "unifi__list_networks",
+        "unifi__list_firewall_rules",
+        "unifi__create_firewall_rule",
+        "unifi__list_port_forwards",
+        "unifi__set_port_poe",
+        "unifi__get_alerts",
+        "unifi__get_events",
+        "unifi__get_site_stats",
+        "unifi__get_client_stats",
         // opnsense (src/modules/opnsense/index.ts)
-        "opnsense__system_status", "opnsense__list_interfaces",
-        "opnsense__list_vlans", "opnsense__list_firewall_rules",
-        "opnsense__add_firewall_rule", "opnsense__delete_firewall_rule",
-        "opnsense__apply_firewall", "opnsense__list_dhcp_leases",
-        "opnsense__add_static_lease", "opnsense__list_dns_overrides",
-        "opnsense__add_dns_override", "opnsense__apply_dns",
-        "opnsense__list_port_forwards", "opnsense__add_port_forward",
-        "opnsense__get_traffic", "opnsense__list_services",
+        "opnsense__system_status",
+        "opnsense__list_interfaces",
+        "opnsense__list_vlans",
+        "opnsense__list_firewall_rules",
+        "opnsense__add_firewall_rule",
+        "opnsense__delete_firewall_rule",
+        "opnsense__apply_firewall",
+        "opnsense__list_dhcp_leases",
+        "opnsense__add_static_lease",
+        "opnsense__list_dns_overrides",
+        "opnsense__add_dns_override",
+        "opnsense__apply_dns",
+        "opnsense__list_port_forwards",
+        "opnsense__add_port_forward",
+        "opnsense__get_traffic",
+        "opnsense__list_services",
         "opnsense__restart_service",
         // ha (src/modules/ha/index.ts)
-        "ha__list_entities", "ha__get_state", "ha__call_service",
-        "ha__list_services", "ha__get_history", "ha__list_addons",
-        "ha__restart_addon", "ha__get_config", "ha__get_logbook",
-        "ha__fire_event", "ha__render_template", "ha__create_automation",
+        "ha__list_entities",
+        "ha__get_state",
+        "ha__call_service",
+        "ha__list_services",
+        "ha__get_history",
+        "ha__list_addons",
+        "ha__restart_addon",
+        "ha__get_config",
+        "ha__get_logbook",
+        "ha__fire_event",
+        "ha__render_template",
+        "ha__create_automation",
         // media (src/modules/media/index.ts)
-        "media__plex_status", "media__plex_libraries", "media__plex_now_playing",
-        "media__plex_recent", "media__sonarr_series", "media__sonarr_add",
-        "media__sonarr_queue", "media__sonarr_missing",
-        "media__radarr_movies", "media__radarr_add", "media__radarr_queue",
-        "media__radarr_missing", "media__overseerr_requests",
-        "media__overseerr_request", "media__tautulli_activity",
+        "media__plex_status",
+        "media__plex_libraries",
+        "media__plex_now_playing",
+        "media__plex_recent",
+        "media__sonarr_series",
+        "media__sonarr_add",
+        "media__sonarr_queue",
+        "media__sonarr_missing",
+        "media__radarr_movies",
+        "media__radarr_add",
+        "media__radarr_queue",
+        "media__radarr_missing",
+        "media__overseerr_requests",
+        "media__overseerr_request",
+        "media__tautulli_activity",
         "media__tautulli_history",
         // docker (src/modules/docker/index.ts)
-        "docker__list_containers", "docker__inspect", "docker__logs",
-        "docker__start", "docker__stop", "docker__restart", "docker__stats",
+        "docker__list_containers",
+        "docker__inspect",
+        "docker__logs",
+        "docker__start",
+        "docker__stop",
+        "docker__restart",
+        "docker__stats",
         // npm (src/modules/npm/index.ts)
-        "npm__list_proxy_hosts", "npm__get_proxy_host", "npm__add_proxy_host",
-        "npm__update_proxy_host", "npm__delete_proxy_host",
-        "npm__list_certificates", "npm__request_certificate",
-        "npm__delete_certificate", "npm__list_redirections",
-        "npm__add_redirection", "npm__delete_redirection",
+        "npm__list_proxy_hosts",
+        "npm__get_proxy_host",
+        "npm__add_proxy_host",
+        "npm__update_proxy_host",
+        "npm__delete_proxy_host",
+        "npm__list_certificates",
+        "npm__request_certificate",
+        "npm__delete_certificate",
+        "npm__list_redirections",
+        "npm__add_redirection",
+        "npm__delete_redirection",
         // vaultwarden (src/modules/vaultwarden/index.ts)
-        "vaultwarden__list_items", "vaultwarden__get_item",
-        "vaultwarden__get_password", "vaultwarden__generate_password",
+        "vaultwarden__list_items",
+        "vaultwarden__get_item",
+        "vaultwarden__get_password",
+        "vaultwarden__generate_password",
         "vaultwarden__server_status",
         // duplicati (src/modules/duplicati/index.ts)
-        "duplicati__list_backups", "duplicati__backup_status",
-        "duplicati__run_backup", "duplicati__progress",
-        "duplicati__list_versions", "duplicati__server_info",
+        "duplicati__list_backups",
+        "duplicati__backup_status",
+        "duplicati__run_backup",
+        "duplicati__progress",
+        "duplicati__list_versions",
+        "duplicati__server_info",
         // workflows (module name is `ctr` — the `ctr__*` prefix is deliberate).
-        "ctr__network_overview", "ctr__wake_and_verify", "ctr__device_lookup",
-        "ctr__health_check", "ctr__full_device_status",
-        "ctr__unraid_array_status", "ctr__unraid_ups_status", "ctr__unraid_smart_status",
-        "ctr__wake_and_docker", "ctr__media_health", "ctr__service_overview",
-    ].into_iter().map(String::from).collect()
+        "ctr__network_overview",
+        "ctr__wake_and_verify",
+        "ctr__device_lookup",
+        "ctr__health_check",
+        "ctr__full_device_status",
+        "ctr__unraid_array_status",
+        "ctr__unraid_ups_status",
+        "ctr__unraid_smart_status",
+        "ctr__wake_and_docker",
+        "ctr__media_health",
+        "ctr__service_overview",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 // -------------------------------------------------------------------------- //
@@ -978,7 +1149,11 @@ pub async fn notification_test(State(state): State<DashboardState>) -> Json<Valu
     };
     let notifier = &app.notifier;
     match notifier
-        .send("Test Notification", "This is a test from the Vault Proxy dashboard.", 3)
+        .send(
+            "Test Notification",
+            "This is a test from the Vault Proxy dashboard.",
+            3,
+        )
         .await
     {
         Ok(()) => Json(json!({ "ok": true, "channel": notifier.channel_name() })),
@@ -1032,7 +1207,9 @@ pub async fn handle_configure(
     Json(req): Json<ConfigureRequest>,
 ) -> Json<Value> {
     if crate::keystore::is_configured(&state.config_dir) {
-        return Json(json!({"ok": false, "error": "already configured — use reconfigure from settings"}));
+        return Json(
+            json!({"ok": false, "error": "already configured — use reconfigure from settings"}),
+        );
     }
 
     match crate::setup::run_web_setup(
@@ -1047,7 +1224,8 @@ pub async fn handle_configure(
         Ok(_creds) => {
             // Signal the polling loop with the setup password so it can
             // decrypt. Wrap in Zeroizing so the Drop zeroes the bytes.
-            *state.unlock_password.write().await = Some(zeroize::Zeroizing::new(req.setup_password.clone()));
+            *state.unlock_password.write().await =
+                Some(zeroize::Zeroizing::new(req.setup_password.clone()));
             Json(json!({"ok": true}))
         }
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
@@ -1071,14 +1249,19 @@ pub async fn handle_unlock(
     // limiter an attacker can brute-force the keystore password at full CPU
     // speed, bounded only by Argon2id latency.
     if let Err(e) = state.sessions.check_unlock_rate_limit().await {
-        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"ok": false, "error": e}))).into_response();
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"ok": false, "error": e})),
+        )
+            .into_response();
     }
 
     match crate::keystore::unlock_keystore(&state.config_dir, Some(&req.password)) {
         Ok(_creds) => {
             state.sessions.reset_unlock_failures().await;
             // Signal the polling loop with the unlock password (zeroized on drop).
-            *state.unlock_password.write().await = Some(zeroize::Zeroizing::new(req.password.clone()));
+            *state.unlock_password.write().await =
+                Some(zeroize::Zeroizing::new(req.password.clone()));
 
             // Also create a dashboard session with the same password so the
             // user lands on the authenticated dashboard immediately after
@@ -1109,18 +1292,14 @@ pub async fn handle_unlock(
     }
 }
 
-pub async fn handle_reset(
-    State(state): State<DashboardState>,
-) -> Json<Value> {
+pub async fn handle_reset(State(state): State<DashboardState>) -> Json<Value> {
     match crate::keystore::reset_keystore(&state.config_dir) {
         Ok(()) => Json(json!({"ok": true, "message": "keystore reset — restart to reconfigure"})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
-pub async fn handle_setup_status(
-    State(state): State<DashboardState>,
-) -> Json<Value> {
+pub async fn handle_setup_status(State(state): State<DashboardState>) -> Json<Value> {
     let configured = crate::keystore::is_configured(&state.config_dir);
     let tpm_available = crate::tpm::tpm_available();
     let has_tpm_key = crate::keystore::has_tpm_key(&state.config_dir);
@@ -1136,9 +1315,7 @@ pub async fn handle_setup_status(
 // -------------------------------------------------------------------------- //
 
 /// `GET /api/credentials` — view configured credentials (passwords masked).
-pub async fn get_credentials(
-    State(state): State<DashboardState>,
-) -> Json<Value> {
+pub async fn get_credentials(State(state): State<DashboardState>) -> Json<Value> {
     if !crate::keystore::is_configured(&state.config_dir) {
         return Json(json!({"configured": false}));
     }
@@ -1202,7 +1379,9 @@ pub async fn update_vaultwarden_password(
         &creds.vaultwarden.url,
         &creds.vaultwarden.email,
         &req.new_master_password,
-    ).await {
+    )
+    .await
+    {
         return Json(json!({"ok": false, "error": format!("password validation failed: {}", e)}));
     }
 
@@ -1211,7 +1390,8 @@ pub async fn update_vaultwarden_password(
     match crate::keystore::reencrypt_credentials(&state.config_dir, &creds) {
         Ok(()) => {
             // Signal polling loop to unlock if still in locked mode.
-            *state.unlock_password.write().await = Some(zeroize::Zeroizing::new(req.current_setup_password.clone()));
+            *state.unlock_password.write().await =
+                Some(zeroize::Zeroizing::new(req.current_setup_password.clone()));
             Json(json!({"ok": true, "message": "Vaultwarden master password updated in keystore"}))
         }
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
@@ -1244,15 +1424,22 @@ pub async fn update_cloud_credentials(
     creds.cloud = Some(crate::keystore::CloudCreds {
         email: req.cloud_email,
         master_password: req.cloud_master_password,
-        refresh_token: existing_cloud.as_ref().and_then(|c| c.refresh_token.clone()),
-        api_client_id: existing_cloud.as_ref().and_then(|c| c.api_client_id.clone()),
-        api_client_secret: existing_cloud.as_ref().and_then(|c| c.api_client_secret.clone()),
+        refresh_token: existing_cloud
+            .as_ref()
+            .and_then(|c| c.refresh_token.clone()),
+        api_client_id: existing_cloud
+            .as_ref()
+            .and_then(|c| c.api_client_id.clone()),
+        api_client_secret: existing_cloud
+            .as_ref()
+            .and_then(|c| c.api_client_secret.clone()),
         kdf_iterations: existing_cloud.as_ref().and_then(|c| c.kdf_iterations),
     });
 
     match crate::keystore::reencrypt_credentials(&state.config_dir, &creds) {
         Ok(()) => {
-            *state.unlock_password.write().await = Some(zeroize::Zeroizing::new(req.current_setup_password.clone()));
+            *state.unlock_password.write().await =
+                Some(zeroize::Zeroizing::new(req.current_setup_password.clone()));
             Json(json!({"ok": true, "message": "Bitwarden cloud credentials updated"}))
         }
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
@@ -1264,10 +1451,7 @@ pub async fn remove_cloud_credentials(
     State(state): State<DashboardState>,
     Json(req): Json<UnlockRequest>,
 ) -> Json<Value> {
-    let mut creds = match crate::keystore::unlock_keystore(
-        &state.config_dir,
-        Some(&req.password),
-    ) {
+    let mut creds = match crate::keystore::unlock_keystore(&state.config_dir, Some(&req.password)) {
         Ok(c) => c,
         Err(e) => return Json(json!({"ok": false, "error": format!("unlock failed: {}", e)})),
     };
@@ -1299,11 +1483,19 @@ pub async fn connect_cloud_apikey(
     State(state): State<DashboardState>,
     Json(req): Json<CloudApiKeyRequest>,
 ) -> Json<Value> {
-    if req.email.is_empty() || req.master_password.is_empty() || req.client_id.is_empty() || req.client_secret.is_empty() {
+    if req.email.is_empty()
+        || req.master_password.is_empty()
+        || req.client_id.is_empty()
+        || req.client_secret.is_empty()
+    {
         return Json(json!({"ok": false, "error": "all fields are required"}));
     }
 
-    tracing::info!("attempting Bitwarden cloud auth via API key for {}, kdf_override={:?}", req.email, req.kdf_iterations);
+    tracing::info!(
+        "attempting Bitwarden cloud auth via API key for {}, kdf_override={:?}",
+        req.email,
+        req.kdf_iterations
+    );
 
     match crate::sync::cloud::CloudClient::from_api_key(
         &req.email,
@@ -1311,7 +1503,9 @@ pub async fn connect_cloud_apikey(
         &req.client_id,
         &req.client_secret,
         req.kdf_iterations,
-    ).await {
+    )
+    .await
+    {
         Ok((_client, refresh_token)) => {
             // Save credentials to keystore
             let config_dir = &state.config_dir;
@@ -1338,14 +1532,20 @@ pub async fn connect_cloud_apikey(
                     creds.cloud = Some(crate::keystore::CloudCreds {
                         email: req.email.clone(),
                         master_password: req.master_password.clone(),
-                        refresh_token: if refresh_token.is_empty() { None } else { Some(refresh_token) },
+                        refresh_token: if refresh_token.is_empty() {
+                            None
+                        } else {
+                            Some(refresh_token)
+                        },
                         api_client_id: Some(req.client_id.clone()),
                         api_client_secret: Some(req.client_secret.clone()),
                         kdf_iterations: req.kdf_iterations,
                     });
                     if let Err(e) = crate::keystore::reencrypt_credentials(config_dir, &creds) {
                         tracing::error!("failed to save cloud credentials: {}", e);
-                        return Json(json!({"ok": false, "error": format!("auth succeeded but save failed: {}", e)}));
+                        return Json(
+                            json!({"ok": false, "error": format!("auth succeeded but save failed: {}", e)}),
+                        );
                     }
                     tracing::info!("cloud API key credentials saved to keystore");
                     // Signal unlock if still in locked mode.
@@ -1388,7 +1588,9 @@ pub async fn setup_cloud_via_dashboard(
         Err(e) => return e,
     };
     // Forward to sidecar's internal sync/init endpoint
-    match app.http.post("http://127.0.0.1:3201/sync/init")
+    match app
+        .http
+        .post("http://127.0.0.1:3201/sync/init")
         .json(&req)
         .send()
         .await
@@ -1409,9 +1611,7 @@ fn credaudit_unavailable() -> Json<Value> {
     }))
 }
 
-pub async fn credaudit_runs_list(
-    State(state): State<DashboardState>,
-) -> Json<Value> {
+pub async fn credaudit_runs_list(State(state): State<DashboardState>) -> Json<Value> {
     let Some(orch) = state.cred_audit_orch.as_ref() else {
         return credaudit_unavailable();
     };
@@ -1434,9 +1634,7 @@ pub async fn credaudit_run_detail(
     }
 }
 
-pub async fn credaudit_scan_start(
-    State(state): State<DashboardState>,
-) -> Json<Value> {
+pub async fn credaudit_scan_start(State(state): State<DashboardState>) -> Json<Value> {
     if let Err(e) = state.sessions.check_config_write_rate().await {
         return Json(json!({"ok": false, "error": e}));
     }
@@ -1458,7 +1656,9 @@ pub struct CredauditApplyBody {
     pub confirm_bulk: bool,
 }
 
-fn default_dry_run() -> bool { true }
+fn default_dry_run() -> bool {
+    true
+}
 
 pub async fn credaudit_apply(
     State(state): State<DashboardState>,

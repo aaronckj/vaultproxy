@@ -16,7 +16,9 @@ use crate::browser::BrowserAgent;
 use crate::sync::SyncManager;
 use crate::vault::VaultManager;
 use registry::{AuthPattern, ServiceRegistry};
-use unifi_session::{handle_request as unifi_handle_request, UnifiDualAuthCtx, UnifiRequestCtx, UnifiSessionCache};
+use unifi_session::{
+    handle_request as unifi_handle_request, UnifiDualAuthCtx, UnifiRequestCtx, UnifiSessionCache,
+};
 
 /// Generate a short, URL-safe, lexicographically-sortable request identifier.
 ///
@@ -89,7 +91,8 @@ pub struct AppState {
     ///
     /// iter-28: wrapped in RwLock so the SIGHUP reload handler can atomically
     /// swap in a fresh map after rebuilding the registry.
-    pub ca_cert_clients: Arc<tokio::sync::RwLock<std::collections::HashMap<String, reqwest::Client>>>,
+    pub ca_cert_clients:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<String, reqwest::Client>>>,
     /// Per-service UniFi session cache (cookie jars + CSRF tokens).
     pub unifi_sessions: Arc<UnifiSessionCache>,
     /// Cached session tokens for `AuthPattern::Session` services (NPM, Duplicati).
@@ -300,10 +303,7 @@ pub async fn handle_proxy(
     }
 
     // Log the proxy action for Log and Allow permissions.
-    let should_log = matches!(
-        permission,
-        crate::security::permissions::Permission::Log
-    );
+    let should_log = matches!(permission, crate::security::permissions::Permission::Log);
 
     // 1. Look up the service in the registry.
     // Use a generic "not found" message — echoing req.service verbatim would
@@ -314,12 +314,9 @@ pub async fn handle_proxy(
     // clone ensures we don't hold the lock across await points below.
     let service = {
         let reg = state.registry.read().await;
-        reg.get(&req.service).cloned().ok_or_else(|| {
-            proxy_error(
-                StatusCode::NOT_FOUND,
-                "unknown service".to_string(),
-            )
-        })?
+        reg.get(&req.service)
+            .cloned()
+            .ok_or_else(|| proxy_error(StatusCode::NOT_FOUND, "unknown service".to_string()))?
     };
 
     // 2. Build the target URL.
@@ -405,49 +402,60 @@ pub async fn handle_proxy(
         ca_map.get(service.name.as_str()).cloned()
     };
 
-    let mut response = apply_auth_and_send(&state, &service, ca_client, service.auth.clone(), &target_url, method, &req)
-        .await
-        .map_err(|e| {
-            // Detect timeout: reqwest wraps its own Error type; check the
-            // debug representation since anyhow wraps it. We also test for
-            // "timed out" as a belt-and-suspenders match for the OS-level
-            // "connection timed out" / "operation timed out" messages.
-            let is_timeout = {
-                // Walk the anyhow error chain looking for a reqwest::Error with
-                // is_timeout()==true, or a message containing "timed out".
-                let mut found = false;
-                if let Some(reqwest_err) = e.downcast_ref::<reqwest::Error>() {
-                    if reqwest_err.is_timeout() {
-                        found = true;
-                    }
+    let mut response = apply_auth_and_send(
+        &state,
+        &service,
+        ca_client,
+        service.auth.clone(),
+        &target_url,
+        method,
+        &req,
+    )
+    .await
+    .map_err(|e| {
+        // Detect timeout: reqwest wraps its own Error type; check the
+        // debug representation since anyhow wraps it. We also test for
+        // "timed out" as a belt-and-suspenders match for the OS-level
+        // "connection timed out" / "operation timed out" messages.
+        let is_timeout = {
+            // Walk the anyhow error chain looking for a reqwest::Error with
+            // is_timeout()==true, or a message containing "timed out".
+            let mut found = false;
+            if let Some(reqwest_err) = e.downcast_ref::<reqwest::Error>() {
+                if reqwest_err.is_timeout() {
+                    found = true;
                 }
-                if !found {
-                    let msg = format!("{:#}", e).to_lowercase();
-                    if msg.contains("timed out") || msg.contains("timeout") {
-                        found = true;
-                    }
-                }
-                found
-            };
-            if is_timeout {
-                tracing::debug!(
-                    request_id = %request_id,
-                    "proxy timeout for service '{}': {:#}",
-                    req.service, e
-                );
-                proxy_error(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "upstream request timed out".to_string(),
-                )
-            } else {
-                tracing::debug!(
-                    request_id = %request_id,
-                    "proxy auth/send error for service '{}': {:#}",
-                    req.service, e
-                );
-                proxy_error(StatusCode::BAD_GATEWAY, "upstream request failed".to_string())
             }
-        })?;
+            if !found {
+                let msg = format!("{:#}", e).to_lowercase();
+                if msg.contains("timed out") || msg.contains("timeout") {
+                    found = true;
+                }
+            }
+            found
+        };
+        if is_timeout {
+            tracing::debug!(
+                request_id = %request_id,
+                "proxy timeout for service '{}': {:#}",
+                req.service, e
+            );
+            proxy_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "upstream request timed out".to_string(),
+            )
+        } else {
+            tracing::debug!(
+                request_id = %request_id,
+                "proxy auth/send error for service '{}': {:#}",
+                req.service, e
+            );
+            proxy_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream request failed".to_string(),
+            )
+        }
+    })?;
 
     // 5. Sanitize the response body to strip prompt injection patterns.
     crate::security::sanitize::sanitize_json(&mut response.body);
@@ -500,7 +508,10 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // Header-based auth (X-Api-Key, X-Plex-Token, …)                     //
         // ------------------------------------------------------------------ //
-        AuthPattern::Header { header_name, vault_item } => {
+        AuthPattern::Header {
+            header_name,
+            vault_item,
+        } => {
             let token = state.vault.decrypt_password(&vault_item)?;
             let token_str = std::str::from_utf8(&token)
                 .map_err(|e| anyhow::anyhow!("credential is not valid UTF-8: {}", e))?
@@ -517,7 +528,10 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // Query-param auth (?apikey=xxx)                                      //
         // ------------------------------------------------------------------ //
-        AuthPattern::QueryParam { param_name, vault_item } => {
+        AuthPattern::QueryParam {
+            param_name,
+            vault_item,
+        } => {
             let token = state.vault.decrypt_password(&vault_item)?;
             let token_str = std::str::from_utf8(&token)
                 .map_err(|e| anyhow::anyhow!("credential is not valid UTF-8: {}", e))?
@@ -541,7 +555,8 @@ async fn apply_auth_and_send(
                 .to_string();
             drop(token);
 
-            let request = build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token_str);
+            let request =
+                build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token_str);
 
             send_request(request).await
         }
@@ -549,7 +564,11 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // Basic auth (key:secret from custom vault fields)                    //
         // ------------------------------------------------------------------ //
-        AuthPattern::Basic { vault_item, key_field, secret_field } => {
+        AuthPattern::Basic {
+            vault_item,
+            key_field,
+            secret_field,
+        } => {
             let key = state.vault.decrypt_field(&vault_item, &key_field)?;
             let secret = state.vault.decrypt_field(&vault_item, &secret_field)?;
 
@@ -562,8 +581,8 @@ async fn apply_auth_and_send(
             drop(key);
             drop(secret);
 
-            let request =
-                build_request(state, service, ca_client, method, url, req)?.basic_auth(&key_str, Some(&secret_str));
+            let request = build_request(state, service, ca_client, method, url, req)?
+                .basic_auth(&key_str, Some(&secret_str));
 
             send_request(request).await
         }
@@ -571,7 +590,12 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // Session auth (login first, then use token as Bearer)                //
         // ------------------------------------------------------------------ //
-        AuthPattern::Session { vault_item, login_path, token_field, login_include_username } => {
+        AuthPattern::Session {
+            vault_item,
+            login_path,
+            token_field,
+            login_include_username,
+        } => {
             // Step 1: obtain a session token. Hit the cache first so we don't
             // pay a login round-trip on every proxy call; fall back to the
             // login endpoint on miss, expiry, or upstream 401.
@@ -587,7 +611,8 @@ async fn apply_auth_and_send(
 
             // Step 2: send the actual request with the session token.
             let request =
-                build_request(state, service, ca_client.clone(), method.clone(), url, req)?.bearer_auth(&session_token);
+                build_request(state, service, ca_client.clone(), method.clone(), url, req)?
+                    .bearer_auth(&session_token);
             let response = send_request(request).await?;
 
             // If the upstream rejects the cached token, refresh once and retry.
@@ -613,7 +638,10 @@ async fn apply_auth_and_send(
         // ------------------------------------------------------------------ //
         // UniFi dual auth: X-API-Key with session-cookie fallback             //
         // ------------------------------------------------------------------ //
-        AuthPattern::UnifiDual { vault_item, login_path } => {
+        AuthPattern::UnifiDual {
+            vault_item,
+            login_path,
+        } => {
             // Resolve service name + root URL. The registry stores
             // base_url as "<root>/proxy/network"; login lives at <root>.
             // iter-28: acquire a short-lived read lock, collect the result,
@@ -634,7 +662,8 @@ async fn apply_auth_and_send(
                     }
                     None
                 });
-                found.ok_or_else(|| anyhow::anyhow!("cannot resolve base URL for unifi dual auth"))?
+                found
+                    .ok_or_else(|| anyhow::anyhow!("cannot resolve base URL for unifi dual auth"))?
             };
 
             // Decrypt credentials. Drop SecureBuffers as soon as we have
@@ -653,7 +682,11 @@ async fn apply_auth_and_send(
             drop(username_buf);
             drop(password_buf);
 
-            let ctx = UnifiDualAuthCtx { username, password, login_path };
+            let ctx = UnifiDualAuthCtx {
+                username,
+                password,
+                login_path,
+            };
 
             // Build query pairs from the ProxyRequest (mirrors build_request).
             let query_pairs: Vec<(&str, String)> = req
@@ -676,10 +709,7 @@ async fn apply_auth_and_send(
             // that login_path resolves against the root of UDM. Real API
             // calls must still go through /proxy/network, so re-add it to
             // the path instead.
-            let path_with_prefix = format!(
-                "/proxy/network/{}",
-                req.path.trim_start_matches('/')
-            );
+            let path_with_prefix = format!("/proxy/network/{}", req.path.trim_start_matches('/'));
 
             let unifi_req = UnifiRequestCtx {
                 base_url: &login_base,
@@ -689,15 +719,13 @@ async fn apply_auth_and_send(
                 query: &query_pairs,
                 timeout_secs: service.timeout_secs,
             };
-            let resp = unifi_handle_request(
-                &state.unifi_sessions,
-                &service_name,
-                &unifi_req,
-                &ctx,
-            )
-            .await?;
+            let resp = unifi_handle_request(&state.unifi_sessions, &service_name, &unifi_req, &ctx)
+                .await?;
 
-            Ok(ProxyResponse { status: resp.status, body: resp.body })
+            Ok(ProxyResponse {
+                status: resp.status,
+                body: resp.body,
+            })
         }
     }
 }
@@ -739,7 +767,14 @@ async fn get_or_refresh_session_token(
         }
     }
 
-    let fresh = session_login(state, vault_item, login_path, token_field, login_include_username).await?;
+    let fresh = session_login(
+        state,
+        vault_item,
+        login_path,
+        token_field,
+        login_include_username,
+    )
+    .await?;
     {
         let mut cache = state.session_tokens.write().await;
         // Enforce cap: if the cache is at the limit, evict the oldest entry
@@ -821,37 +856,37 @@ async fn session_login(
     let (base_url, timeout_secs): (String, Option<u64>) = {
         let reg = state.registry.read().await;
         let names = reg.list();
-        names.iter().find_map(|name| {
-            let entry = reg.get(name)?;
-            if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
-                if vi == vault_item {
-                    return Some((entry.base_url.clone(), entry.timeout_secs));
+        names
+            .iter()
+            .find_map(|name| {
+                let entry = reg.get(name)?;
+                if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
+                    if vi == vault_item {
+                        return Some((entry.base_url.clone(), entry.timeout_secs));
+                    }
                 }
-            }
-            None
-        })
-        // iter-44: if the registry scan returns None it means the service
-        // was removed from the registry between the initial `handle_proxy`
-        // lookup (which already cloned the ServiceEntry and released the
-        // lock) and this `session_login` call.  This is a SIGHUP/reload
-        // race: the operator triggered a reload that removed the service
-        // between dispatch and login.  Return a clear error so the caller's
-        // 502 log shows the cause rather than a generic "cannot determine"
-        // message.
-        .ok_or_else(|| anyhow::anyhow!(
-            "session login: service with vault item '{}' not found in registry — \
+                None
+            })
+            // iter-44: if the registry scan returns None it means the service
+            // was removed from the registry between the initial `handle_proxy`
+            // lookup (which already cloned the ServiceEntry and released the
+            // lock) and this `session_login` call.  This is a SIGHUP/reload
+            // race: the operator triggered a reload that removed the service
+            // between dispatch and login.  Return a clear error so the caller's
+            // 502 log shows the cause rather than a generic "cannot determine"
+            // message.
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "session login: service with vault item '{}' not found in registry — \
              the service may have been removed by a concurrent SIGHUP reload \
              between request dispatch and login; the in-flight request will fail \
              with 502 and the next request will use the updated registry",
-            vault_item
-        ))?
+                    vault_item
+                )
+            })?
     };
 
-    let login_url = format!(
-        "{}{}",
-        base_url.trim_end_matches('/'),
-        login_path
-    );
+    let login_url = format!("{}{}", base_url.trim_end_matches('/'), login_path);
 
     // Build the login body using the configured login_include_username flag.
     let login_body = build_session_login_body(state, vault_item, login_include_username)?;
@@ -876,10 +911,7 @@ async fn session_login(
         .get(token_field)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "token field '{}' not found in login response",
-                token_field
-            )
+            anyhow::anyhow!("token field '{}' not found in login response", token_field)
         })?
         .to_string();
 
@@ -1146,30 +1178,33 @@ fn upstream_body_limit_bytes() -> usize {
     const MIN_MB: usize = 1;
     const MAX_MB: usize = 2048;
 
-    let mb = match std::env::var("UPSTREAM_BODY_LIMIT_MB") {
-        Ok(val) => match val.parse::<usize>() {
-            Ok(n) => {
-                if !(MIN_MB..=MAX_MB).contains(&n) {
-                    tracing::warn!(
+    let mb =
+        match std::env::var("UPSTREAM_BODY_LIMIT_MB") {
+            Ok(val) => {
+                match val.parse::<usize>() {
+                    Ok(n) => {
+                        if !(MIN_MB..=MAX_MB).contains(&n) {
+                            tracing::warn!(
                         "UPSTREAM_BODY_LIMIT_MB={} is out of the allowed range [{}, {}] MB — \
                          using default of {} MB",
                         n, MIN_MB, MAX_MB, DEFAULT_MB
                     );
-                    DEFAULT_MB
-                } else {
-                    n
-                }
-            }
-            Err(_) => {
-                tracing::warn!(
+                            DEFAULT_MB
+                        } else {
+                            n
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!(
                     "UPSTREAM_BODY_LIMIT_MB='{}' is not a valid integer — using default of {} MB",
                     val, DEFAULT_MB
                 );
-                DEFAULT_MB
+                        DEFAULT_MB
+                    }
+                }
             }
-        },
-        Err(_) => DEFAULT_MB,
-    };
+            Err(_) => DEFAULT_MB,
+        };
     mb * 1024 * 1024
 }
 
@@ -1224,7 +1259,10 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
     // the correct behaviour: the caller should inspect the Location header (if
     // present), not try to parse the redirect page as JSON.
     if status == 204 || status == 304 {
-        return Ok(ProxyResponse { status, body: Value::Null });
+        return Ok(ProxyResponse {
+            status,
+            body: Value::Null,
+        });
     }
 
     if let Some(content_length) = resp.content_length() {
@@ -1299,9 +1337,15 @@ mod path_traversal_tests {
 
     #[test]
     fn double_dot_segment_is_blocked() {
-        assert!(has_traversal("../etc/passwd"), "../etc/passwd must be blocked");
+        assert!(
+            has_traversal("../etc/passwd"),
+            "../etc/passwd must be blocked"
+        );
         assert!(has_traversal("/../../root"), "leading ../ must be blocked");
-        assert!(has_traversal("api/../secret"), "interior .. must be blocked");
+        assert!(
+            has_traversal("api/../secret"),
+            "interior .. must be blocked"
+        );
         assert!(has_traversal(".."), "bare .. must be blocked");
     }
 
@@ -1315,7 +1359,10 @@ mod path_traversal_tests {
     fn normal_paths_are_allowed() {
         assert!(!has_traversal("/api/v1/users"), "normal path must pass");
         assert!(!has_traversal("stat/sta"), "path without slashes must pass");
-        assert!(!has_traversal("/api/s/default/stat/sta"), "deep path must pass");
+        assert!(
+            !has_traversal("/api/s/default/stat/sta"),
+            "deep path must pass"
+        );
         assert!(!has_traversal(""), "empty path must pass");
         // A path component that contains dots but is not exactly `.` or `..` is fine.
         assert!(!has_traversal("file.json"), "dotted filename must pass");
@@ -1342,7 +1389,10 @@ mod url_join_tests {
         // Operator wrote a trailing slash in services.toml — must not produce //.
         let url = join_url("http://service/api/v3/", "/endpoint");
         assert_eq!(url, "http://service/api/v3/endpoint");
-        assert!(!url.contains("//api"), "double slash must not appear after host");
+        assert!(
+            !url.contains("//api"),
+            "double slash must not appear after host"
+        );
     }
 
     #[test]
@@ -1400,7 +1450,10 @@ mod query_conflict_tests {
             .filter(|k| base_keys.contains(k.as_str()))
             .map(String::as_str)
             .collect();
-        assert!(!conflicts.is_empty(), "apikey conflict must be detected and blocked");
+        assert!(
+            !conflicts.is_empty(),
+            "apikey conflict must be detected and blocked"
+        );
     }
 
     #[test]
@@ -1412,7 +1465,10 @@ mod query_conflict_tests {
             .filter(|k| base_keys.contains(k.as_str()))
             .map(String::as_str)
             .collect();
-        assert!(conflicts.is_empty(), "non-conflicting keys must pass through");
+        assert!(
+            conflicts.is_empty(),
+            "non-conflicting keys must pass through"
+        );
     }
 }
 
@@ -1438,12 +1494,12 @@ mod query_conflict_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::vault::VaultManager;
-    use crate::security::permissions::ToolPermissions;
-    use crate::security::audit_log::AuditLog;
     use crate::notify::Notifier;
-    use crate::proxy::unifi_session::UnifiSessionCache;
     use crate::proxy::registry::{AuthPattern, ServiceEntry, ServiceRegistry};
+    use crate::proxy::unifi_session::UnifiSessionCache;
+    use crate::security::audit_log::AuditLog;
+    use crate::security::permissions::ToolPermissions;
+    use crate::vault::VaultManager;
     use axum::routing::{get, post};
     use axum::Router;
     use serde_json::json;
@@ -1484,20 +1540,16 @@ mod integration_tests {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),
-            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             unifi_sessions: Arc::new(UnifiSessionCache::new()),
-            session_tokens: Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
             browser: None,
-            permissions: Arc::new(tokio::sync::RwLock::new(
-                ToolPermissions::load("/nonexistent/tool-permissions.json"),
-            )),
+            permissions: Arc::new(tokio::sync::RwLock::new(ToolPermissions::load(
+                "/nonexistent/tool-permissions.json",
+            ))),
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1532,9 +1584,7 @@ mod integration_tests {
         let state = make_state(ServiceRegistry::new()); // empty registry
         let app = make_app(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1550,8 +1600,11 @@ mod integration_tests {
             .await
             .expect("request failed");
 
-        assert_eq!(resp.status().as_u16(), 404,
-            "unknown service must return 404");
+        assert_eq!(
+            resp.status().as_u16(),
+            404,
+            "unknown service must return 404"
+        );
 
         // The error body must not reveal the requested service name.
         let body: serde_json::Value = resp.json().await.unwrap();
@@ -1573,9 +1626,7 @@ mod integration_tests {
         let state = make_state(ServiceRegistry::new());
         let app = make_app(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1585,11 +1636,13 @@ mod integration_tests {
             .await
             .expect("request failed");
 
-        assert_eq!(resp.status().as_u16(), 200,
-            "health endpoint must return 200");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "health endpoint must return 200"
+        );
 
-        let body: serde_json::Value = resp.json().await
-            .expect("health must return JSON");
+        let body: serde_json::Value = resp.json().await.expect("health must return JSON");
         assert!(
             body.get("vault_item_count").is_some(),
             "health response must include vault_item_count field"
@@ -1652,7 +1705,8 @@ mod integration_tests {
                 .await
                 .expect("request failed");
             assert_ne!(
-                resp.status().as_u16(), 429,
+                resp.status().as_u16(),
+                429,
                 "request {i} should not be rate-limited yet"
             );
         }
@@ -1665,7 +1719,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 429,
+            resp.status().as_u16(),
+            429,
             "third request must be rate-limited (429 TOO_MANY_REQUESTS)"
         );
         let body: serde_json::Value = resp.json().await.unwrap();
@@ -1684,12 +1739,12 @@ mod integration_tests {
     /// at the routing level with a 404, but not at the DNS guard level).
     #[tokio::test]
     async fn dns_rebinding_guard_blocks_external_host() {
-        use axum::routing::{get, post};
         use crate::vault::handlers;
+        use axum::routing::{get, post};
 
         let state = make_state(ServiceRegistry::new());
         let app = Router::new()
-            .route("/proxy",        post(handle_proxy))
+            .route("/proxy", post(handle_proxy))
             .route("/vault/health", get(handlers::health))
             .layer(axum::middleware::from_fn(crate::dns_rebinding_guard))
             .with_state(state);
@@ -1708,7 +1763,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 403,
+            resp.status().as_u16(),
+            403,
             "external Host header must be blocked with 403 FORBIDDEN"
         );
 
@@ -1720,7 +1776,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 200,
+            resp.status().as_u16(),
+            200,
             "localhost Host header must pass the DNS guard and reach the handler"
         );
     }
@@ -1736,8 +1793,8 @@ mod integration_tests {
     /// itself passed).
     #[tokio::test]
     async fn internal_token_middleware_returns_401_without_header() {
-        use axum::routing::{get, post};
         use crate::vault::handlers;
+        use axum::routing::{get, post};
 
         let state = make_state(ServiceRegistry::new());
         let correct_token = state.internal_token.as_str().to_string();
@@ -1771,7 +1828,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 401,
+            resp.status().as_u16(),
+            401,
             "missing Authorization header must return 401 UNAUTHORIZED"
         );
 
@@ -1784,7 +1842,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 401,
+            resp.status().as_u16(),
+            401,
             "invalid token must return 401 UNAUTHORIZED"
         );
 
@@ -1797,7 +1856,8 @@ mod integration_tests {
             .await
             .expect("request failed");
         assert_ne!(
-            resp.status().as_u16(), 401,
+            resp.status().as_u16(),
+            401,
             "correct token must pass the auth check (handler may return non-401)"
         );
     }
@@ -1820,8 +1880,9 @@ mod integration_tests {
         let upstream = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/api/v1/status"))
-            .respond_with(wiremock::ResponseTemplate::new(200)
-                .set_body_json(json!({"status": "ok"})))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})),
+            )
             .mount(&upstream)
             .await;
 
@@ -1840,9 +1901,7 @@ mod integration_tests {
         let state = make_state(registry);
         let app = make_app(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1859,10 +1918,16 @@ mod integration_tests {
 
         // 502 = reached auth stage, credential lookup failed on stub vault.
         // 404 would mean the service was not found in the registry (a bug).
-        assert_ne!(resp.status().as_u16(), 404,
-            "known service must not return 404 — it should fail at auth (502)");
-        assert_eq!(resp.status().as_u16(), 502,
-            "stub vault with no items must produce 502 (auth failure)");
+        assert_ne!(
+            resp.status().as_u16(),
+            404,
+            "known service must not return 404 — it should fail at auth (502)"
+        );
+        assert_eq!(
+            resp.status().as_u16(),
+            502,
+            "stub vault with no items must produce 502 (auth failure)"
+        );
     }
 
     // ---------------------------------------------------------------------- //
@@ -1884,9 +1949,9 @@ mod integration_tests {
     ///   - Assert 403: item exists but is outside vault_folder.
     #[tokio::test]
     async fn vault_folder_scope_guard_blocks_out_of_folder_delete() {
-        use axum::routing::{get, post};
         use crate::vault::handlers;
         use crate::vault::types::EncryptedCipher;
+        use axum::routing::{get, post};
 
         let state = make_state(ServiceRegistry::new());
 
@@ -1964,7 +2029,8 @@ mod integration_tests {
             .expect("request failed");
 
         assert_eq!(
-            resp.status().as_u16(), 403,
+            resp.status().as_u16(),
+            403,
             "item outside vault_folder must be rejected with 403 FORBIDDEN \
              (scope guard regression check)"
         );
@@ -2036,7 +2102,9 @@ mod integration_tests {
         let names = body["services"].as_array().expect("services must be array");
         assert_eq!(names.len(), 1, "initial registry must have 1 service");
         assert!(
-            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
+            names
+                .iter()
+                .any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
             "service-alpha must be in initial registry"
         );
 
@@ -2081,11 +2149,15 @@ mod integration_tests {
         let names = body["services"].as_array().expect("services must be array");
         assert_eq!(names.len(), 2, "after swap, registry must have 2 services");
         assert!(
-            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-beta")),
+            names
+                .iter()
+                .any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-beta")),
             "service-beta must appear in registry after atomic swap (SIGHUP regression check)"
         );
         assert!(
-            names.iter().any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
+            names
+                .iter()
+                .any(|n| n.get("name").and_then(|v| v.as_str()) == Some("service-alpha")),
             "service-alpha must still be present after swap"
         );
     }
@@ -2118,7 +2190,10 @@ mod integration_tests {
 
         // Apply the rollback guard (same condition as SIGHUP handler).
         let should_rollback = new_svc_count == 0 && prev_svc_count > 0;
-        assert!(should_rollback, "rollback guard must fire when new registry is empty");
+        assert!(
+            should_rollback,
+            "rollback guard must fire when new registry is empty"
+        );
 
         // Guard fires — do NOT swap. Old registry stays in place.
         if !should_rollback {
@@ -2161,7 +2236,9 @@ mod integration_tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Write a services.toml with two bearer-auth services.
-        write_services_toml(&dir, r#"
+        write_services_toml(
+            &dir,
+            r#"
 [[service]]
 name        = "alpha"
 base_url    = "http://alpha.internal/api"
@@ -2173,7 +2250,8 @@ name        = "beta"
 base_url    = "http://beta.internal/api"
 auth        = "bearer"
 vault_item  = "vault-proxy - Beta"
-"#);
+"#,
+        );
 
         // Build state with empty registry but config_dir pointing at our temp dir.
         let mut state = (*make_state(ServiceRegistry::new())).clone();
@@ -2189,7 +2267,9 @@ vault_item  = "vault-proxy - Beta"
             ))
             .with_state(state.clone());
 
-        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let app = Router::new()
+            .merge(internal_router)
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2266,7 +2346,9 @@ vault_item  = "vault-proxy - Beta"
             ))
             .with_state(state.clone());
 
-        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let app = Router::new()
+            .merge(internal_router)
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2280,7 +2362,8 @@ vault_item  = "vault-proxy - Beta"
             .expect("request failed");
 
         assert_eq!(
-            resp.status().as_u16(), 409,
+            resp.status().as_u16(),
+            409,
             "empty services.toml with non-empty existing registry must return 409 Conflict"
         );
         let body: serde_json::Value = resp.json().await.unwrap();
@@ -2325,7 +2408,9 @@ vault_item  = "vault-proxy - Beta"
             ))
             .with_state(state.clone());
 
-        let app = Router::new().merge(internal_router).with_state(state.clone());
+        let app = Router::new()
+            .merge(internal_router)
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2339,7 +2424,8 @@ vault_item  = "vault-proxy - Beta"
             .await
             .expect("request failed");
         assert_eq!(
-            resp.status().as_u16(), 401,
+            resp.status().as_u16(),
+            401,
             "missing Authorization header must return 401 before the handler runs"
         );
 
@@ -2350,10 +2436,7 @@ vault_item  = "vault-proxy - Beta"
             .send()
             .await
             .expect("request failed");
-        assert_eq!(
-            resp.status().as_u16(), 401,
-            "invalid token must return 401"
-        );
+        assert_eq!(resp.status().as_u16(), 401, "invalid token must return 401");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2395,8 +2478,7 @@ vault_item  = "vault-proxy - Beta"
         // Set up in-memory SQLite DB using the real migration path so the schema
         // (including the `fail_reason` column added in migration 3) is correct.
         let conn = Connection::open_in_memory().expect("in-memory DB");
-        crate::credential_audit::db::run_migrations(&conn)
-            .expect("run_migrations on in-memory DB");
+        crate::credential_audit::db::run_migrations(&conn).expect("run_migrations on in-memory DB");
         let conn = Arc::new(Mutex::new(conn));
 
         let engine = Arc::new(EngineClient::new(dead_engine_url.clone()));
@@ -2430,7 +2512,8 @@ vault_item  = "vault-proxy - Beta"
             .expect("request failed");
 
         assert_eq!(
-            resp.status().as_u16(), 503,
+            resp.status().as_u16(),
+            503,
             "scan/start must return 503 SERVICE_UNAVAILABLE when the engine is unreachable \
              (not 500 or a panic)"
         );

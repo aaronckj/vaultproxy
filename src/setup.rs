@@ -86,7 +86,10 @@ pub(crate) fn validate_setup_password(pw: &str) -> Result<()> {
     let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
     let has_digit = pw.chars().any(|c| c.is_ascii_digit());
     let has_symbol = pw.chars().any(|c| !c.is_ascii_alphanumeric());
-    let classes = [has_upper, has_digit, has_symbol].iter().filter(|b| **b).count();
+    let classes = [has_upper, has_digit, has_symbol]
+        .iter()
+        .filter(|b| **b)
+        .count();
     if classes < 2 {
         return Err(anyhow!(
             "setup password must contain at least two of: uppercase letter, digit, non-alphanumeric"
@@ -246,13 +249,20 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     println!("Your Vaultwarden master password is your recovery path — keep it safe.");
     println!();
     println!("Next steps:");
-    println!("  1. In Vaultwarden, create a folder named 'vault-proxy' (or your --vault-folder value).");
+    println!(
+        "  1. In Vaultwarden, create a folder named 'vault-proxy' (or your --vault-folder value)."
+    );
     println!("     Add your service credentials as Login items inside that folder.");
     println!("     Item names must match the `vault_item` field in services.toml");
     println!("     (e.g. an item named 'vault-proxy - Home Assistant' for vault_item = \"vault-proxy - Home Assistant\").");
     println!();
-    println!("  2. Copy services.example.toml to {}/services.toml and edit to match your setup.", config_dir);
-    println!("     Each [[service]] block needs a `vault_item` that matches a Vaultwarden item name.");
+    println!(
+        "  2. Copy services.example.toml to {}/services.toml and edit to match your setup.",
+        config_dir
+    );
+    println!(
+        "     Each [[service]] block needs a `vault_item` that matches a Vaultwarden item name."
+    );
     println!();
     println!("  3. Remove --setup from your start command and restart to begin proxying.");
     println!();
@@ -260,10 +270,14 @@ pub async fn run_cli_setup(config_dir: &str) -> Result<Credentials> {
     println!("     A successful first proxy call looks like:");
     println!("     curl -s -X POST http://127.0.0.1:3201/proxy \\");
     println!("       -H 'Content-Type: application/json' \\");
-    println!("       -d '{{\"service\":\"ha_home\",\"method\":\"GET\",\"path\":\"/api/\"}}' | jq .");
+    println!(
+        "       -d '{{\"service\":\"ha_home\",\"method\":\"GET\",\"path\":\"/api/\"}}' | jq ."
+    );
     println!();
     println!("  Common first-run problems:");
-    println!("    - 'unknown service'  → service name in request doesn't match services.toml `name`");
+    println!(
+        "    - 'unknown service'  → service name in request doesn't match services.toml `name`"
+    );
     println!("    - 'upstream request failed' → base_url is wrong or the service is unreachable");
     println!("    - 'credential not found'    → vault_item name doesn't match a Vaultwarden item");
     println!("    - 'vault unavailable' (503) → check GET /vault/health for sync status");
@@ -326,7 +340,7 @@ mod tests {
     #[test]
     fn validate_setup_password_rejects_too_short() {
         assert!(validate_setup_password("Short1!").is_err());
-        assert!(validate_setup_password("11charPass!").is_err());  // 11 chars
+        assert!(validate_setup_password("11charPass!").is_err()); // 11 chars
         assert!(validate_setup_password("12charPass1!").is_ok()); // 12 chars, has digit + symbol
     }
 
@@ -350,6 +364,9 @@ mod tests {
         // password is now correctly rejected.
         let short = "Pass1word!"; // 10 chars, has upper + digit + symbol
         let result = validate_setup_password(short);
-        assert!(result.is_err(), "10-char password should be rejected by new 12-char minimum");
+        assert!(
+            result.is_err(),
+            "10-char password should be rejected by new 12-char minimum"
+        );
     }
 }

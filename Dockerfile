@@ -23,7 +23,17 @@
 # ---------------------------------------------------------------------------- #
 # Stage 1: builder                                                              #
 # ---------------------------------------------------------------------------- #
-FROM rust:1.82-slim-bookworm AS builder
+# iter-49: Use the rustup-managed `stable` channel instead of a pinned image
+# tag so that Dockerfile and rust-toolchain.toml (channel = "stable") stay in
+# sync automatically.  `rust:slim-bookworm` always ships the current stable;
+# rustup then reads rust-toolchain.toml (copied below) and installs the exact
+# channel/components declared there, making the build environment identical to
+# local development and CI (dtolnay/rust-toolchain@master reads the same file).
+#
+# If you ever need to pin to a specific release, set the channel in
+# rust-toolchain.toml (e.g. `channel = "1.87"`) — one place to update rather
+# than having to sync the Dockerfile separately.
+FROM rust:slim-bookworm AS builder
 
 # Install build dependencies.
 # - libssl-dev / pkg-config: required by reqwest's TLS stack (rustls) linking.
@@ -46,6 +56,11 @@ WORKDIR /build
 # already compiled by that point, which is all we want from this step.
 # The semicolon (`;`) rather than `&&` means `rm -rf src` always runs
 # regardless of whether the dummy build succeeded — correct behaviour.
+#
+# iter-49: Copy rust-toolchain.toml so rustup in this image reads the same
+# channel declaration used by local dev and CI.  Without it the image ignores
+# the file and would diverge if the Dockerfile FROM tag ever lagged behind.
+COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release --features dashboard 2>/dev/null; \

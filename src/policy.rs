@@ -1,7 +1,7 @@
 //! Rotation policy engine — scheduled credential rotation.
 
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -30,7 +30,11 @@ pub fn load_policies(path: &str) -> Vec<Policy> {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
-            tracing::warn!("policies file at {} unreadable: {} — treating as empty", path, e);
+            tracing::warn!(
+                "policies file at {} unreadable: {} — treating as empty",
+                path,
+                e
+            );
             return Vec::new();
         }
     };
@@ -54,7 +58,8 @@ pub fn load_policies(path: &str) -> Vec<Policy> {
         Err(e) => {
             tracing::error!(
                 "policies file at {} is corrupt: {} — no rotations will run until fixed",
-                path, e,
+                path,
+                e,
             );
             Vec::new()
         }

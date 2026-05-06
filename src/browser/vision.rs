@@ -3,22 +3,35 @@
 //! (Qwen3-VL-32B by default) so credentials/screenshots never leave
 //! the homelab network.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum VisionAction {
     #[serde(rename = "click")]
-    Click { selector: String, reason: Option<String> },
+    Click {
+        selector: String,
+        reason: Option<String>,
+    },
     #[serde(rename = "fill")]
-    Fill { field: String, credential: String, selector: String },
+    Fill {
+        field: String,
+        credential: String,
+        selector: String,
+    },
     #[serde(rename = "wait")]
     Wait { condition: String },
     #[serde(rename = "done")]
-    Done { success: bool, reason: Option<String> },
+    Done {
+        success: bool,
+        reason: Option<String>,
+    },
     #[serde(rename = "need_2fa")]
-    Need2FA { r#type: String, reason: Option<String> },
+    Need2FA {
+        r#type: String,
+        reason: Option<String>,
+    },
     #[serde(rename = "stuck")]
     Stuck { reason: String },
 }
@@ -60,7 +73,12 @@ impl VisionModel {
         }
     }
 
-    pub async fn analyze(&self, screenshot_b64: &str, task: &str, step: &str) -> Result<VisionAction> {
+    pub async fn analyze(
+        &self,
+        screenshot_b64: &str,
+        task: &str,
+        step: &str,
+    ) -> Result<VisionAction> {
         let prompt = format!(
 "Look at this screenshot of a web page. You are helping automate a task.\n\
 \n\

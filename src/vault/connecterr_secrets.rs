@@ -5,9 +5,9 @@
 //! they are intentionally surfaced in error messages and tracing logs to keep
 //! operator debugging tractable. Field *values* never appear in logs.
 
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
 use super::VaultManager;
 
@@ -26,7 +26,9 @@ pub fn build_secrets_json(pairs: Vec<(String, Map<String, Value>)>) -> Value {
     for (item_name, fields) in pairs {
         let parts: Vec<&str> = item_name.split('/').collect();
         let leaf = walk_path(&mut root, &parts);
-        for (k, v) in fields { leaf.insert(k, v); }
+        for (k, v) in fields {
+            leaf.insert(k, v);
+        }
     }
     Value::Object(root)
 }
@@ -72,15 +74,27 @@ fn walk_path_inner<'a>(
     };
     if tail.is_empty() {
         // Leaf — ensure key exists as object, return mut ref.
-        let entry = root.entry(head.to_string()).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() { *entry = Value::Object(Map::new()); }
+        let entry = root
+            .entry(head.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
         // SAFETY: we just ensured the entry is an Object above.
         entry.as_object_mut().expect("entry is Object")
     } else {
-        let entry = root.entry(head.to_string()).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() { *entry = Value::Object(Map::new()); }
+        let entry = root
+            .entry(head.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
         // SAFETY: we just ensured the entry is an Object above.
-        walk_path_inner(entry.as_object_mut().expect("entry is Object"), tail, depth + 1)
+        walk_path_inner(
+            entry.as_object_mut().expect("entry is Object"),
+            tail,
+            depth + 1,
+        )
     }
 }
 
@@ -109,7 +123,10 @@ pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<V
     // caller (GET /vault/connecterr-secrets) should still return a valid empty
     // JSON object — returning an HTTP error would break the MCP server's
     // startup health check. The warning in logs is sufficient for diagnosis.
-    let folder_exists = vault.find_folder_id_by_name_async(folder_name).await.is_some();
+    let folder_exists = vault
+        .find_folder_id_by_name_async(folder_name)
+        .await
+        .is_some();
     if !folder_exists {
         tracing::warn!(
             "vault folder '{}' not found — no items will be aggregated. \
@@ -147,12 +164,15 @@ pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<V
         }
 
         // Single-pass O(n): decrypt all field names and values together.
-        let field_pairs = vault.list_field_pairs(&name).await
+        let field_pairs = vault
+            .list_field_pairs(&name)
+            .await
             .with_context(|| format!("list field pairs for '{}'", name))?;
 
         let mut field_map = Map::new();
         for (fname, buf) in field_pairs {
-            let s = buf.as_str()
+            let s = buf
+                .as_str()
                 .map_err(|_| anyhow::anyhow!("field '{}' on '{}' is not valid UTF-8", fname, name))?
                 .to_string();
             field_map.insert(fname, Value::String(s));
@@ -169,14 +189,20 @@ mod tests {
     use serde_json::json;
 
     fn fields(pairs: &[(&str, &str)]) -> Map<String, Value> {
-        pairs.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+            .collect()
     }
 
     #[test]
     fn build_secrets_json_handles_flat_and_nested_paths() {
         let pairs = vec![
             ("apiKey".into(), fields(&[("apiKey", "ABC")])),
-            ("unifi/home".into(), fields(&[("username", "admin"), ("password", "pw")])),
+            (
+                "unifi/home".into(),
+                fields(&[("username", "admin"), ("password", "pw")]),
+            ),
             ("media/plex".into(), fields(&[("apiKey", "PLEX")])),
             ("media/sonarr".into(), fields(&[("apiKey", "SON")])),
         ];
@@ -210,7 +236,10 @@ mod tests {
         // test pins the contract so a future refactor of either layer doesn't
         // accidentally drop the validation responsibility on the floor.
         let v = build_secrets_json(vec![("/apiKey".into(), fields(&[("apiKey", "ABC")]))]);
-        assert!(v.get("").is_some(), "empty leading segment should produce '' key");
+        assert!(
+            v.get("").is_some(),
+            "empty leading segment should produce '' key"
+        );
     }
 
     #[test]

@@ -335,7 +335,11 @@ impl ServiceRegistry {
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                let svc_type = svc.get("type").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+                let svc_type = svc
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&name)
+                    .to_string();
                 let svc_type = svc_type.as_str();
                 let url = match svc.get("url").and_then(|v| v.as_str()) {
                     Some(u) => u.trim_end_matches('/').to_string(),
@@ -647,7 +651,9 @@ impl ServiceRegistry {
                     Some(u) => u.trim_end_matches('/').to_string(),
                     None => continue,
                 };
-                if let Some(entry) = build_media_entry(svc_name.clone(), &svc_type, url, vault_prefix) {
+                if let Some(entry) =
+                    build_media_entry(svc_name.clone(), &svc_type, url, vault_prefix)
+                {
                     registry.register(entry);
                 }
             }
@@ -734,9 +740,12 @@ impl ServiceRegistry {
                          blocks for each downstream API you want vault-proxy to proxy. \
                          In Docker Compose the config mount is ./config:/config, so the \
                          file belongs at ./config/services.toml on the host.",
-                        path, path
+                        path,
+                        path
                     );
-                } else if e.kind() == std::io::ErrorKind::IsADirectory || e.raw_os_error() == Some(21) {
+                } else if e.kind() == std::io::ErrorKind::IsADirectory
+                    || e.raw_os_error() == Some(21)
+                {
                     // Issue (iter-26): IsADirectory is a distinct error kind on Linux
                     // (EISDIR / errno 21). `read_to_string` on a directory returns this
                     // OS error. The generic "check file permissions" message was
@@ -748,13 +757,16 @@ impl ServiceRegistry {
                         "services.toml at {:?} is a DIRECTORY, not a file — starting with \
                          empty registry. Remove the directory and create the file instead: \
                          `rmdir {:?} && cp services.example.toml {:?}`",
-                        path, path, path
+                        path,
+                        path,
+                        path
                     );
                 } else {
                     tracing::warn!(
                         "could not read services.toml at {:?}: {} — starting with empty registry. \
                          Check file permissions (needs read access for the vault-proxy user).",
-                        path, e
+                        path,
+                        e
                     );
                 }
                 return registry;
@@ -787,7 +799,8 @@ impl ServiceRegistry {
                 tracing::warn!(
                     "services.toml: service name '{}' has leading/trailing whitespace — \
                      trimmed to '{}'. Update the config to remove the spaces.",
-                    svc.name, trimmed_name
+                    svc.name,
+                    trimmed_name
                 );
             }
             svc.name = trimmed_name;
@@ -797,7 +810,9 @@ impl ServiceRegistry {
                 tracing::warn!(
                     "services.toml: vault_item '{}' for service '{}' has leading/trailing \
                      whitespace — trimmed to '{}'. Update the config to remove the spaces.",
-                    svc.vault_item, svc.name, trimmed_vault_item
+                    svc.vault_item,
+                    svc.name,
+                    trimmed_vault_item
                 );
             }
             svc.vault_item = trimmed_vault_item;
@@ -874,7 +889,8 @@ impl ServiceRegistry {
                 tracing::error!(
                     "service '{}': vault_item '{}' contains a null byte — \
                      this is never a valid Vaultwarden item name. Skipping.",
-                    svc.name, svc.vault_item
+                    svc.name,
+                    svc.vault_item
                 );
                 continue;
             }
@@ -888,15 +904,18 @@ impl ServiceRegistry {
             // missing "http://" or "https://" prefix (e.g. "homeassistant.local:8123").
             // Catching this case first emits a targeted, actionable error.
             {
-                let looks_schemeless = !base_url.starts_with("http://")
-                    && !base_url.starts_with("https://");
+                let looks_schemeless =
+                    !base_url.starts_with("http://") && !base_url.starts_with("https://");
                 if looks_schemeless {
                     // Still run the full SSRF check to catch edge cases, but
                     // the error message below already covers this branch.
                     tracing::error!(
                         "service '{}': base_url '{}' has no http/https scheme — \
                          did you mean 'http://{}' or 'https://{}'? Skipping.",
-                        svc.name, base_url, base_url, base_url
+                        svc.name,
+                        base_url,
+                        base_url,
+                        base_url
                     );
                     continue;
                 }
@@ -912,7 +931,8 @@ impl ServiceRegistry {
                     "service '{}': base_url '{}' is not allowed — \
                      must be http/https with a non-loopback, non-link-local, \
                      non-cloud-metadata host. Skipping.",
-                    svc.name, base_url
+                    svc.name,
+                    base_url
                 );
                 continue;
             }
@@ -925,7 +945,10 @@ impl ServiceRegistry {
                     let header_name = match svc.header_name {
                         Some(h) => h,
                         None => {
-                            tracing::warn!("service '{}': auth=header requires header_name — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=header requires header_name — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -938,7 +961,10 @@ impl ServiceRegistry {
                     let param_name = match svc.param_name {
                         Some(p) => p,
                         None => {
-                            tracing::warn!("service '{}': auth=query_param requires param_name — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=query_param requires param_name — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -951,14 +977,20 @@ impl ServiceRegistry {
                     let key_field = match svc.key_field {
                         Some(k) => k,
                         None => {
-                            tracing::warn!("service '{}': auth=basic requires key_field — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=basic requires key_field — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
                     let secret_field = match svc.secret_field {
                         Some(s) => s,
                         None => {
-                            tracing::warn!("service '{}': auth=basic requires secret_field — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=basic requires secret_field — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -972,7 +1004,10 @@ impl ServiceRegistry {
                     let login_path = match svc.login_path {
                         Some(p) => p,
                         None => {
-                            tracing::warn!("service '{}': auth=session requires login_path — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=session requires login_path — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -1004,7 +1039,10 @@ impl ServiceRegistry {
                     let token_field = match svc.token_field {
                         Some(t) => t,
                         None => {
-                            tracing::warn!("service '{}': auth=session requires token_field — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=session requires token_field — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -1031,7 +1069,10 @@ impl ServiceRegistry {
                     let login_path = match svc.login_path {
                         Some(p) => p,
                         None => {
-                            tracing::warn!("service '{}': auth=unifi_dual requires login_path — skipping", svc.name);
+                            tracing::warn!(
+                                "service '{}': auth=unifi_dual requires login_path — skipping",
+                                svc.name
+                            );
                             continue;
                         }
                     };
@@ -1049,7 +1090,11 @@ impl ServiceRegistry {
                     }
                 }
                 other => {
-                    tracing::warn!("service '{}': unknown auth type '{}' — skipping", svc.name, other);
+                    tracing::warn!(
+                        "service '{}': unknown auth type '{}' — skipping",
+                        svc.name,
+                        other
+                    );
                     continue;
                 }
             };
@@ -1117,14 +1162,15 @@ impl ServiceRegistry {
                                          blocks (no '-----BEGIN CERTIFICATE-----' header found) — \
                                          skipping service. Ensure the file is a PEM-encoded \
                                          certificate, not DER or another format.",
-                                        svc.name, path
+                                        svc.name,
+                                        path
                                     );
                                     continue;
                                 }
 
                                 // Build test — catches DER-inside-PEM encoding errors.
-                                let build_ok = reqwest::Certificate::from_pem(&pem_bytes)
-                                    .and_then(|cert| {
+                                let build_ok =
+                                    reqwest::Certificate::from_pem(&pem_bytes).and_then(|cert| {
                                         reqwest::Client::builder()
                                             .add_root_certificate(cert)
                                             .build()
@@ -1134,7 +1180,8 @@ impl ServiceRegistry {
                                         tracing::info!(
                                             "service '{}': using custom CA certificate from '{}' \
                                              (PEM validated at load time)",
-                                            svc.name, path
+                                            svc.name,
+                                            path
                                         );
                                         Some(path.clone())
                                     }
@@ -1142,7 +1189,9 @@ impl ServiceRegistry {
                                         tracing::error!(
                                             "service '{}': ca_cert '{}' failed client build test: \
                                              {} — skipping service.",
-                                            svc.name, path, e
+                                            svc.name,
+                                            path,
+                                            e
                                         );
                                         continue;
                                     }
@@ -1176,7 +1225,8 @@ impl ServiceRegistry {
                      DISABLED for this service. All credentials forwarded to '{}' are \
                      sent without cert verification. Suitable only for LAN services with \
                      known self-signed certs; never use for internet-facing endpoints.",
-                    svc.name, base_url
+                    svc.name,
+                    base_url
                 );
             }
 
@@ -1252,7 +1302,10 @@ impl ServiceRegistry {
             let all_names: Vec<String> = registry.entries.keys().cloned().collect();
             let mut sorted_names = all_names.clone();
             sorted_names.sort();
-            let dropped: Vec<&str> = sorted_names[MAX_SERVICES..].iter().map(String::as_str).collect();
+            let dropped: Vec<&str> = sorted_names[MAX_SERVICES..]
+                .iter()
+                .map(String::as_str)
+                .collect();
             tracing::error!(
                 "services.toml contains {} services which exceeds the hard cap of {}. \
                  The following {} service(s) will NOT be registered: {:?}. \
@@ -1336,7 +1389,12 @@ fn login_path_has_traversal(path: &str) -> bool {
 ///
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
 /// types.
-fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &str) -> Option<ServiceEntry> {
+fn build_media_entry(
+    name: String,
+    svc_type: &str,
+    url: String,
+    vault_prefix: &str,
+) -> Option<ServiceEntry> {
     match svc_type {
         "plex" => Some(ServiceEntry {
             name,
@@ -1438,8 +1496,16 @@ mod tests {
         let names = registry.list();
 
         for expected in &[
-            "plex", "sonarr", "radarr", "overseerr", "tautulli",
-            "unifi_home", "ha_home", "opnsense_main", "npm_main", "duplicati_main",
+            "plex",
+            "sonarr",
+            "radarr",
+            "overseerr",
+            "tautulli",
+            "unifi_home",
+            "ha_home",
+            "opnsense_main",
+            "npm_main",
+            "duplicati_main",
         ] {
             assert!(names.contains(expected), "missing service: {}", expected);
         }
@@ -1457,7 +1523,10 @@ mod tests {
         let registry = ServiceRegistry::from_config(&sample_config());
         let svc = registry.get("tautulli").unwrap();
         match &svc.auth {
-            AuthPattern::QueryParam { param_name, vault_item } => {
+            AuthPattern::QueryParam {
+                param_name,
+                vault_item,
+            } => {
                 assert_eq!(param_name, "apikey");
                 assert_eq!(vault_item, "Connecterr - Tautulli");
             }
@@ -1471,7 +1540,11 @@ mod tests {
         let svc = registry.get("opnsense_main").unwrap();
         assert!(svc.base_url.ends_with("/api"));
         match &svc.auth {
-            AuthPattern::Basic { key_field, secret_field, .. } => {
+            AuthPattern::Basic {
+                key_field,
+                secret_field,
+                ..
+            } => {
                 assert_eq!(key_field, "key");
                 assert_eq!(secret_field, "secret");
             }
@@ -1485,7 +1558,10 @@ mod tests {
         let svc = registry.get("unifi_home").unwrap();
         assert_eq!(svc.base_url, "https://192.0.2.2/proxy/network");
         match &svc.auth {
-            AuthPattern::UnifiDual { vault_item, login_path } => {
+            AuthPattern::UnifiDual {
+                vault_item,
+                login_path,
+            } => {
                 assert_eq!(vault_item, "Connecterr - UniFi");
                 assert_eq!(login_path, "/api/auth/login");
             }
@@ -1498,7 +1574,11 @@ mod tests {
         let registry = ServiceRegistry::from_config(&sample_config());
         let svc = registry.get("npm_main").unwrap();
         match &svc.auth {
-            AuthPattern::Session { login_path, token_field, .. } => {
+            AuthPattern::Session {
+                login_path,
+                token_field,
+                ..
+            } => {
                 assert_eq!(login_path, "/tokens");
                 assert_eq!(token_field, "token");
             }
@@ -1521,7 +1601,9 @@ mod from_vault_tests {
         let entry = reg.get("ha_home").expect("ha_home should be registered");
         assert_eq!(entry.base_url, "http://192.0.2.3:8123");
         match &entry.auth {
-            AuthPattern::Bearer { vault_item } => assert_eq!(vault_item, "Connecterr - Home Assistant"),
+            AuthPattern::Bearer { vault_item } => {
+                assert_eq!(vault_item, "Connecterr - Home Assistant")
+            }
             _ => panic!("expected Bearer auth"),
         }
     }
@@ -1530,16 +1612,21 @@ mod from_vault_tests {
     fn from_vault_registers_opnsense_with_basic_auth_and_api_suffix() {
         let blob = json!({ "opnsense": { "main": { "url": "https://192.0.2.4" } } });
         let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
-        let entry = reg.get("opnsense_main").expect("opnsense_main should be registered");
+        let entry = reg
+            .get("opnsense_main")
+            .expect("opnsense_main should be registered");
         assert_eq!(entry.base_url, "https://192.0.2.4/api");
         assert!(matches!(entry.auth, AuthPattern::Basic { .. }));
     }
 
     #[test]
     fn from_vault_registers_unifi_with_proxy_network_suffix() {
-        let blob = json!({ "unifi": { "home": { "url": "https://192.0.2.2", "site": "default" } } });
+        let blob =
+            json!({ "unifi": { "home": { "url": "https://192.0.2.2", "site": "default" } } });
         let reg = ServiceRegistry::from_vault(&blob, "Connecterr");
-        let entry = reg.get("unifi_home").expect("unifi_home should be registered");
+        let entry = reg
+            .get("unifi_home")
+            .expect("unifi_home should be registered");
         assert_eq!(entry.base_url, "https://192.0.2.2/proxy/network");
         assert!(matches!(entry.auth, AuthPattern::UnifiDual { .. }));
     }
@@ -1620,13 +1707,15 @@ mod toml_tests {
 
     #[test]
     fn test_bearer_service_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha_home"
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "myproxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("ha_home").unwrap();
         assert_eq!(svc.base_url, "http://192.0.2.1:8123");
@@ -1638,18 +1727,23 @@ vault_item = "myproxy - HA"
 
     #[test]
     fn test_header_service_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "sonarr"
 base_url = "http://192.0.2.1:8989/api/v3"
 auth = "header"
 header_name = "X-Api-Key"
 vault_item = "myproxy - Sonarr"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("sonarr").unwrap();
         match &svc.auth {
-            AuthPattern::Header { header_name, vault_item } => {
+            AuthPattern::Header {
+                header_name,
+                vault_item,
+            } => {
                 assert_eq!(header_name, "X-Api-Key");
                 assert_eq!(vault_item, "myproxy - Sonarr");
             }
@@ -1659,31 +1753,41 @@ vault_item = "myproxy - Sonarr"
 
     #[test]
     fn test_missing_header_name_skips_service() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "bad"
 base_url = "http://192.0.2.1:8080"
 auth = "header"
 vault_item = "myproxy - Bad"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.get("bad").is_none(), "service with missing header_name should be skipped");
+        assert!(
+            registry.get("bad").is_none(),
+            "service with missing header_name should be skipped"
+        );
     }
 
     #[test]
     fn test_unifi_dual_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "unifi_home"
 base_url = "https://192.0.2.2/proxy/network"
 auth = "unifi_dual"
 vault_item = "myproxy - UniFi"
 login_path = "/api/auth/login"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("unifi_home").unwrap();
         match &svc.auth {
-            AuthPattern::UnifiDual { vault_item, login_path } => {
+            AuthPattern::UnifiDual {
+                vault_item,
+                login_path,
+            } => {
                 assert_eq!(vault_item, "myproxy - UniFi");
                 assert_eq!(login_path, "/api/auth/login");
             }
@@ -1693,19 +1797,22 @@ login_path = "/api/auth/login"
 
     #[test]
     fn test_missing_file_returns_empty_registry() {
-        let registry = ServiceRegistry::from_toml_file(std::path::Path::new("/nonexistent/services.toml"));
+        let registry =
+            ServiceRegistry::from_toml_file(std::path::Path::new("/nonexistent/services.toml"));
         assert!(registry.list().is_empty());
     }
 
     #[test]
     fn test_trailing_slash_stripped_from_base_url() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha"
 base_url = "http://192.0.2.1:8123/"
 auth = "bearer"
 vault_item = "myproxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("ha").unwrap();
         assert_eq!(svc.base_url, "http://192.0.2.1:8123");
@@ -1713,14 +1820,16 @@ vault_item = "myproxy - HA"
 
     #[test]
     fn test_query_param_service_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "tautulli"
 base_url = "http://192.0.2.1:8181"
 auth = "query_param"
 param_name = "apikey"
 vault_item = "myproxy - Tautulli"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         match &registry.get("tautulli").unwrap().auth {
             AuthPattern::QueryParam { param_name, .. } => assert_eq!(param_name, "apikey"),
@@ -1730,7 +1839,8 @@ vault_item = "myproxy - Tautulli"
 
     #[test]
     fn test_basic_service_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "opnsense"
 base_url = "https://192.0.2.4/api"
@@ -1739,12 +1849,17 @@ key_field = "key"
 secret_field = "secret"
 vault_item = "myproxy - OPNsense"
 insecure_tls = true
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("opnsense").unwrap();
         assert!(svc.insecure_tls);
         match &svc.auth {
-            AuthPattern::Basic { key_field, secret_field, .. } => {
+            AuthPattern::Basic {
+                key_field,
+                secret_field,
+                ..
+            } => {
                 assert_eq!(key_field, "key");
                 assert_eq!(secret_field, "secret");
             }
@@ -1754,7 +1869,8 @@ insecure_tls = true
 
     #[test]
     fn test_session_service_from_toml() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "npm"
 base_url = "http://192.0.2.1:81/api"
@@ -1762,10 +1878,15 @@ auth = "session"
 vault_item = "myproxy - NPM"
 login_path = "/tokens"
 token_field = "token"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         match &registry.get("npm").unwrap().auth {
-            AuthPattern::Session { login_path, token_field, .. } => {
+            AuthPattern::Session {
+                login_path,
+                token_field,
+                ..
+            } => {
                 assert_eq!(login_path, "/tokens");
                 assert_eq!(token_field, "token");
             }
@@ -1775,15 +1896,20 @@ token_field = "token"
 
     #[test]
     fn test_basic_missing_key_field_skips_service() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "bad_basic"
 base_url = "https://192.0.2.4/api"
 auth = "basic"
 vault_item = "myproxy - Bad"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.get("bad_basic").is_none(), "basic service missing key_field should be skipped");
+        assert!(
+            registry.get("bad_basic").is_none(),
+            "basic service missing key_field should be skipped"
+        );
     }
 
     /// iter-13: A base_url without an http/https scheme (e.g. "homeassistant.local:8123")
@@ -1791,13 +1917,15 @@ vault_item = "myproxy - Bad"
     /// or rejected with a confusing "link-local or cloud-metadata" error message.
     #[test]
     fn test_schemeless_base_url_skips_service() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha"
 base_url = "homeassistant.local:8123"
 auth = "bearer"
 vault_item = "myproxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.get("ha").is_none(),
@@ -1809,28 +1937,38 @@ vault_item = "myproxy - HA"
     fn test_ssrf_blocked_base_url_skips_service() {
         // A services.toml pointing at a cloud-metadata endpoint must be
         // rejected at registry load time to prevent SSRF via proxied requests.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "evil"
 base_url = "http://169.254.169.254/latest/meta-data"
 auth = "bearer"
 vault_item = "myproxy - Evil"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.get("evil").is_none(), "link-local/metadata base_url should be rejected");
+        assert!(
+            registry.get("evil").is_none(),
+            "link-local/metadata base_url should be rejected"
+        );
     }
 
     #[test]
     fn test_ssrf_link_local_ipv6_base_url_skips_service() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "evil6"
 base_url = "http://[fe80::1]/api"
 auth = "bearer"
 vault_item = "myproxy - Evil"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.get("evil6").is_none(), "fe80:: link-local base_url should be rejected");
+        assert!(
+            registry.get("evil6").is_none(),
+            "fe80:: link-local base_url should be rejected"
+        );
     }
 
     #[test]
@@ -1838,7 +1976,8 @@ vault_item = "myproxy - Evil"
         // A crafted login_path with .. segments must be rejected at registry
         // load time so it cannot be used to target an unintended endpoint on
         // the upstream service during the login step.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "evil_session"
 base_url = "http://192.0.2.1:81/api"
@@ -1846,7 +1985,8 @@ auth = "session"
 vault_item = "myproxy - Evil"
 login_path = "/../admin/delete"
 token_field = "token"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.get("evil_session").is_none(),
@@ -1856,14 +1996,16 @@ token_field = "token"
 
     #[test]
     fn test_login_path_traversal_rejects_unifi_dual_service() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "evil_unifi"
 base_url = "https://192.0.2.2/proxy/network"
 auth = "unifi_dual"
 vault_item = "myproxy - Evil"
 login_path = "/api/./../../secret"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.get("evil_unifi").is_none(),
@@ -1873,12 +2015,30 @@ login_path = "/api/./../../secret"
 
     #[test]
     fn test_login_path_traversal_helper() {
-        assert!(login_path_has_traversal("/../admin"), ".. segment must be detected");
-        assert!(login_path_has_traversal("/./tokens"), ". segment must be detected");
-        assert!(login_path_has_traversal("/api/../../secret"), "interior .. must be detected");
-        assert!(!login_path_has_traversal("/tokens"), "normal path must pass");
-        assert!(!login_path_has_traversal("/api/v1/login"), "deep normal path must pass");
-        assert!(!login_path_has_traversal("/auth/login"), "normal login path must pass");
+        assert!(
+            login_path_has_traversal("/../admin"),
+            ".. segment must be detected"
+        );
+        assert!(
+            login_path_has_traversal("/./tokens"),
+            ". segment must be detected"
+        );
+        assert!(
+            login_path_has_traversal("/api/../../secret"),
+            "interior .. must be detected"
+        );
+        assert!(
+            !login_path_has_traversal("/tokens"),
+            "normal path must pass"
+        );
+        assert!(
+            !login_path_has_traversal("/api/v1/login"),
+            "deep normal path must pass"
+        );
+        assert!(
+            !login_path_has_traversal("/auth/login"),
+            "normal login path must pass"
+        );
     }
 
     #[test]
@@ -1886,7 +2046,8 @@ login_path = "/api/./../../secret"
         // Two [[service]] entries with the same name — only the second survives.
         // `register()` now emits a tracing::warn for this, but we can only assert
         // the observable behaviour (last entry is kept) in a unit test.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha"
 base_url = "http://192.0.2.1:8123"
@@ -1898,19 +2059,27 @@ name = "ha"
 base_url = "http://192.0.2.2:8123"
 auth = "bearer"
 vault_item = "myproxy - HA v2"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("ha").expect("service should be registered");
         // Last-write-wins: the second entry should be present.
-        assert_eq!(svc.base_url, "http://192.0.2.2:8123",
-            "duplicate name: second entry should overwrite first");
+        assert_eq!(
+            svc.base_url, "http://192.0.2.2:8123",
+            "duplicate name: second entry should overwrite first"
+        );
         // Only one entry should exist (no phantom first entry).
-        assert_eq!(registry.list().len(), 1, "should have exactly one entry after dedup");
+        assert_eq!(
+            registry.list().len(),
+            1,
+            "should have exactly one entry after dedup"
+        );
     }
 
     #[test]
     fn test_session_login_include_username_false() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "duplicati"
 base_url = "http://192.0.2.1:8200/api/v1"
@@ -1919,12 +2088,19 @@ vault_item = "vault-proxy - Duplicati"
 login_path = "/auth/login"
 token_field = "AccessToken"
 login_include_username = false
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("duplicati").unwrap();
         match &svc.auth {
-            AuthPattern::Session { login_include_username, .. } => {
-                assert!(!login_include_username, "should exclude username from login body");
+            AuthPattern::Session {
+                login_include_username,
+                ..
+            } => {
+                assert!(
+                    !login_include_username,
+                    "should exclude username from login body"
+                );
             }
             other => panic!("expected Session, got {:?}", other),
         }
@@ -1932,7 +2108,8 @@ login_include_username = false
 
     #[test]
     fn test_session_login_include_username_defaults_true() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "npm"
 base_url = "http://192.0.2.1:81/api"
@@ -1940,11 +2117,15 @@ auth = "session"
 vault_item = "vault-proxy - NPM"
 login_path = "/tokens"
 token_field = "token"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("npm").unwrap();
         match &svc.auth {
-            AuthPattern::Session { login_include_username, .. } => {
+            AuthPattern::Session {
+                login_include_username,
+                ..
+            } => {
                 assert!(login_include_username, "should include username by default");
             }
             other => panic!("expected Session, got {:?}", other),
@@ -1958,28 +2139,35 @@ token_field = "token"
         // TOML requires a value for `name`, but an empty string is valid TOML.
         // A service with name="" would register under the "" key and be
         // reachable via `{"service": ""}` — reject it.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = ""
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "myproxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(registry.list().is_empty(), "empty name should be rejected");
     }
 
     #[test]
     fn test_all_whitespace_service_name_is_rejected() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "   "
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "myproxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.list().is_empty(), "all-whitespace name should be rejected");
+        assert!(
+            registry.list().is_empty(),
+            "all-whitespace name should be rejected"
+        );
     }
 
     #[test]
@@ -1988,20 +2176,25 @@ vault_item = "myproxy - HA"
         let toml = "[[service]]\nname = \"bad\x00name\"\nbase_url = \"http://192.0.2.1:8123\"\nauth = \"bearer\"\nvault_item = \"x\"\n";
         let f = write_toml(toml);
         let registry = ServiceRegistry::from_toml_file(f.path());
-        assert!(registry.list().is_empty(), "name with null byte should be rejected");
+        assert!(
+            registry.list().is_empty(),
+            "name with null byte should be rejected"
+        );
     }
 
     // Issue-7 (iter-5): vault_item name validation tests.
 
     #[test]
     fn test_empty_vault_item_is_rejected() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha"
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = ""
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.list().is_empty(),
@@ -2054,13 +2247,15 @@ vault_item = ""
     fn test_unicode_service_name_is_allowed() {
         // Multi-byte Unicode names (CJK, Arabic, emoji) have no security
         // impact and should not be blocked. Only ASCII control chars are banned.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "my_服务"
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "vault-proxy - CJK Service"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.list().contains(&"my_服务"),
@@ -2075,13 +2270,15 @@ vault_item = "vault-proxy - CJK Service"
         // A services.toml entry like name = "  ha_home  " should be reachable
         // via {"service": "ha_home"} — the spaces must be stripped at load time
         // so callers don't have to know about the config file's whitespace.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "  ha_home  "
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "vault-proxy - HA"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         // The trimmed name "ha_home" must be reachable.
         assert!(
@@ -2100,19 +2297,23 @@ vault_item = "vault-proxy - HA"
         // A vault_item with spaces ("  vault-proxy - HA  ") would never match
         // the actual Vaultwarden item name and cause every credential lookup
         // to return "not found". Trimming at load time silently fixes this.
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ha"
 base_url = "http://192.0.2.1:8123"
 auth = "bearer"
 vault_item = "  vault-proxy - HA  "
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         let svc = registry.get("ha").expect("service should be registered");
         match &svc.auth {
             AuthPattern::Bearer { vault_item } => {
-                assert_eq!(vault_item, "vault-proxy - HA",
-                    "vault_item should be trimmed of leading/trailing spaces");
+                assert_eq!(
+                    vault_item, "vault-proxy - HA",
+                    "vault_item should be trimmed of leading/trailing spaces"
+                );
             }
             other => panic!("expected Bearer, got {:?}", other),
         }
@@ -2149,14 +2350,16 @@ vault_item = "  vault-proxy - HA  "
     /// A missing ca_cert file must be rejected at load time.
     #[test]
     fn test_ca_cert_missing_file_is_rejected() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "ca_missing"
 base_url = "https://192.0.2.10:8443/api"
 auth = "bearer"
 vault_item = "test - CA Service"
 ca_cert = "/nonexistent/path/to/ca.pem"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.get("ca_missing").is_none(),
@@ -2169,16 +2372,20 @@ ca_cert = "/nonexistent/path/to/ca.pem"
     /// A valid timeout_secs is accepted and stored on the ServiceEntry.
     #[test]
     fn test_timeout_secs_accepted() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "slow_plex"
 base_url = "http://192.0.2.1:32400"
 auth = "bearer"
 vault_item = "vault-proxy - Plex"
 timeout_secs = 60
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        let svc = registry.get("slow_plex").expect("service should be registered");
+        let svc = registry
+            .get("slow_plex")
+            .expect("service should be registered");
         assert_eq!(
             svc.timeout_secs,
             Some(60),
@@ -2189,19 +2396,22 @@ timeout_secs = 60
     /// When timeout_secs is absent, it defaults to None (use global timeout).
     #[test]
     fn test_timeout_secs_absent_defaults_to_none() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "sonarr"
 base_url = "http://192.0.2.1:8989/api/v3"
 auth = "header"
 header_name = "X-Api-Key"
 vault_item = "vault-proxy - Sonarr"
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
-        let svc = registry.get("sonarr").expect("service should be registered");
+        let svc = registry
+            .get("sonarr")
+            .expect("service should be registered");
         assert_eq!(
-            svc.timeout_secs,
-            None,
+            svc.timeout_secs, None,
             "absent timeout_secs should default to None"
         );
     }
@@ -2209,14 +2419,16 @@ vault_item = "vault-proxy - Sonarr"
     /// timeout_secs = 0 is rejected: a zero timeout makes every request fail.
     #[test]
     fn test_timeout_secs_zero_is_rejected() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [[service]]
 name = "zero_timeout"
 base_url = "http://192.0.2.1:8080"
 auth = "bearer"
 vault_item = "vault-proxy - ZeroTimeout"
 timeout_secs = 0
-"#);
+"#,
+        );
         let registry = ServiceRegistry::from_toml_file(f.path());
         assert!(
             registry.get("zero_timeout").is_none(),

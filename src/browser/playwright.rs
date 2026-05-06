@@ -1,8 +1,8 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
+use serde_json::Value;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use serde_json::Value;
 
 pub struct PlaywrightProcess {
     #[allow(dead_code)] // held to keep the subprocess alive
@@ -27,14 +27,8 @@ impl PlaywrightProcess {
             .spawn()
             .with_context(|| format!("failed to spawn playwright agent: {}", script))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .context("failed to take child stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .context("failed to take child stdout")?;
+        let stdin = child.stdin.take().context("failed to take child stdin")?;
+        let stdout = child.stdout.take().context("failed to take child stdout")?;
 
         Ok(Self {
             child,
@@ -62,8 +56,8 @@ impl PlaywrightProcess {
             .await
             .context("failed to read from playwright agent stdout")?;
 
-        let value: Value =
-            serde_json::from_str(response.trim()).context("failed to parse playwright agent response")?;
+        let value: Value = serde_json::from_str(response.trim())
+            .context("failed to parse playwright agent response")?;
 
         if value.get("status").and_then(|s| s.as_str()) == Some("error") {
             let msg = value

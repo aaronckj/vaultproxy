@@ -80,16 +80,31 @@ pub fn router(state: DashboardState) -> Router {
         .route("/api/audit", get(api::audit))
         .route("/api/policies", get(api::list_policies))
         .route("/api/policies", post(api::save_policy))
-        .route("/api/policies/{id}", axum::routing::delete(api::delete_policy_handler))
+        .route(
+            "/api/policies/{id}",
+            axum::routing::delete(api::delete_policy_handler),
+        )
         .route("/api/approvals", get(api::list_approvals))
         .route("/api/approvals", post(api::respond_approval))
         .route("/api/settings/tpm", get(api::tpm_status))
-        .route("/api/settings/setup-vaultwarden", post(api::setup_vaultwarden))
-        .route("/api/settings/setup-cloud", post(api::setup_cloud_credentials))
-        .route("/api/settings/change-password", post(api::change_master_password))
+        .route(
+            "/api/settings/setup-vaultwarden",
+            post(api::setup_vaultwarden),
+        )
+        .route(
+            "/api/settings/setup-cloud",
+            post(api::setup_cloud_credentials),
+        )
+        .route(
+            "/api/settings/change-password",
+            post(api::change_master_password),
+        )
         .route("/api/settings/cloud", post(api::setup_cloud_via_dashboard))
         .route("/api/settings/notifications", get(api::notification_status))
-        .route("/api/settings/notifications/test", post(api::notification_test))
+        .route(
+            "/api/settings/notifications/test",
+            post(api::notification_test),
+        )
         .route("/api/browser/status", get(api::browser_status))
         .route("/api/browser/screenshot", get(api::browser_screenshot))
         .route("/api/browser/rotate", post(api::browser_rotate))
@@ -99,18 +114,42 @@ pub fn router(state: DashboardState) -> Router {
         .route("/api/permissions", get(api::get_permissions))
         .route("/api/permissions", post(api::save_permissions))
         .route("/api/audit-log", get(api::get_audit_log))
-        .route("/api/rotation/acknowledge-password", post(api::handle_acknowledge_password))
+        .route(
+            "/api/rotation/acknowledge-password",
+            post(api::handle_acknowledge_password),
+        )
         .route("/api/credentials", get(api::get_credentials))
-        .route("/api/credentials/vaultwarden", post(api::update_vaultwarden_password))
-        .route("/api/credentials/cloud", post(api::update_cloud_credentials))
-        .route("/api/credentials/cloud/remove", post(api::remove_cloud_credentials))
-        .route("/api/credentials/cloud/apikey", post(api::connect_cloud_apikey))
+        .route(
+            "/api/credentials/vaultwarden",
+            post(api::update_vaultwarden_password),
+        )
+        .route(
+            "/api/credentials/cloud",
+            post(api::update_cloud_credentials),
+        )
+        .route(
+            "/api/credentials/cloud/remove",
+            post(api::remove_cloud_credentials),
+        )
+        .route(
+            "/api/credentials/cloud/apikey",
+            post(api::connect_cloud_apikey),
+        )
         .route("/api/credaudit/runs", get(api::credaudit_runs_list))
-        .route("/api/credaudit/runs/{run_id}", get(api::credaudit_run_detail))
+        .route(
+            "/api/credaudit/runs/{run_id}",
+            get(api::credaudit_run_detail),
+        )
         .route("/api/credaudit/scan_start", post(api::credaudit_scan_start))
         .route("/api/credaudit/apply", post(api::credaudit_apply))
-        .route("/api/credaudit/telemetry/{run_id}", get(api::credaudit_telemetry))
-        .route("/api/credaudit/verify_start", post(api::credaudit_verify_start))
+        .route(
+            "/api/credaudit/telemetry/{run_id}",
+            get(api::credaudit_telemetry),
+        )
+        .route(
+            "/api/credaudit/verify_start",
+            post(api::credaudit_verify_start),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,
@@ -139,9 +178,7 @@ pub fn router(state: DashboardState) -> Router {
         .merge(page_routes)
         .layer(axum::middleware::from_fn(csrf_origin_check))
         .layer(axum::middleware::from_fn(security_headers))
-        .fallback(|| async {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "not found"})))
-        })
+        .fallback(|| async { (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))) })
         .with_state(state)
 }
 
@@ -193,7 +230,9 @@ fn read_page(name: &str) -> Result<String, StatusCode> {
         if meta.len() > MAX_STATIC_BYTES {
             tracing::warn!(
                 "serve_static refusing oversized file {} ({} bytes > {})",
-                candidate, meta.len(), MAX_STATIC_BYTES,
+                candidate,
+                meta.len(),
+                MAX_STATIC_BYTES,
             );
             return Err(StatusCode::PAYLOAD_TOO_LARGE);
         }
@@ -213,9 +252,7 @@ fn serve_page(name: &str) -> Response {
 }
 
 /// Serve static files with correct content types.
-async fn serve_static(
-    axum::extract::Path(path): axum::extract::Path<String>,
-) -> Response {
+async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
     let content = match read_page(&path) {
         Ok(c) => c,
         Err(code) => return code.into_response(),
@@ -257,17 +294,39 @@ async fn reset_page() -> Response {
 }
 
 // Page handlers — auth is enforced by the require_session_redirect middleware layer.
-async fn index_page() -> Response { serve_page("index.html") }
-async fn items_page() -> Response { serve_page("items.html") }
-async fn sync_page() -> Response { serve_page("sync.html") }
-async fn audit_page() -> Response { serve_page("audit.html") }
-async fn audit_runs_page() -> Response { serve_page("audit-runs.html") }
-async fn policies_page() -> Response { serve_page("policies.html") }
-async fn approvals_page() -> Response { serve_page("approvals.html") }
-async fn settings_page() -> Response { serve_page("settings.html") }
-async fn rotation_page() -> Response { serve_page("rotation.html") }
-async fn permissions_page() -> Response { serve_page("permissions.html") }
-async fn audit_log_page() -> Response { serve_page("audit-log.html") }
+async fn index_page() -> Response {
+    serve_page("index.html")
+}
+async fn items_page() -> Response {
+    serve_page("items.html")
+}
+async fn sync_page() -> Response {
+    serve_page("sync.html")
+}
+async fn audit_page() -> Response {
+    serve_page("audit.html")
+}
+async fn audit_runs_page() -> Response {
+    serve_page("audit-runs.html")
+}
+async fn policies_page() -> Response {
+    serve_page("policies.html")
+}
+async fn approvals_page() -> Response {
+    serve_page("approvals.html")
+}
+async fn settings_page() -> Response {
+    serve_page("settings.html")
+}
+async fn rotation_page() -> Response {
+    serve_page("rotation.html")
+}
+async fn permissions_page() -> Response {
+    serve_page("permissions.html")
+}
+async fn audit_log_page() -> Response {
+    serve_page("audit-log.html")
+}
 
 // -------------------------------------------------------------------------- //
 // Auth handlers                                                                //
@@ -284,7 +343,13 @@ async fn handle_login(
 ) -> Response {
     let Json(req) = match payload {
         Ok(j) => j,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid request"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid request"})),
+            )
+                .into_response()
+        }
     };
     match state.sessions.login(&req.password).await {
         Ok(session_id) => {
@@ -292,11 +357,7 @@ async fn handle_login(
                 "session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400",
                 session_id
             );
-            (
-                [(header::SET_COOKIE, cookie)],
-                Json(json!({ "ok": true })),
-            )
-                .into_response()
+            ([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response()
         }
         Err(e) => (
             StatusCode::UNAUTHORIZED,
@@ -312,7 +373,13 @@ async fn handle_setup(
 ) -> Response {
     let Json(req) = match payload {
         Ok(j) => j,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid request"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid request"})),
+            )
+                .into_response()
+        }
     };
 
     if state.sessions.is_configured().await {
@@ -342,11 +409,7 @@ async fn handle_setup(
                         "session={}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400",
                         session_id
                     );
-                    (
-                        [(header::SET_COOKIE, cookie)],
-                        Json(json!({ "ok": true })),
-                    )
-                        .into_response()
+                    ([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response()
                 }
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -398,11 +461,9 @@ async fn csrf_origin_check(req: Request, next: Next) -> Response {
             .map(|s| s.to_string())
             .or_else(|| {
                 req.uri().authority().map(|a| a.to_string()).or_else(|| {
-                    req.uri().host().map(|h| {
-                        match req.uri().port_u16() {
-                            Some(p) => format!("{}:{}", h, p),
-                            None => h.to_string(),
-                        }
+                    req.uri().host().map(|h| match req.uri().port_u16() {
+                        Some(p) => format!("{}:{}", h, p),
+                        None => h.to_string(),
                     })
                 })
             });
@@ -424,11 +485,7 @@ async fn csrf_origin_check(req: Request, next: Next) -> Response {
                 .as_ref()
                 .map(|o| {
                     // Origin is scheme://host[:port] — extract the host part.
-                    o.split("://")
-                        .nth(1)
-                        .unwrap_or(o)
-                        .trim_end_matches('/')
-                        == host
+                    o.split("://").nth(1).unwrap_or(o).trim_end_matches('/') == host
                 })
                 .unwrap_or(false);
 
@@ -438,12 +495,12 @@ async fn csrf_origin_check(req: Request, next: Next) -> Response {
                     // Referer is a full URL — extract the host.
                     url::Url::parse(r)
                         .ok()
-                        .and_then(|u| u.host_str().map(|h| {
-                            match u.port() {
+                        .and_then(|u| {
+                            u.host_str().map(|h| match u.port() {
                                 Some(p) => format!("{}:{}", h, p),
                                 None => h.to_string(),
-                            }
-                        }))
+                            })
+                        })
                         .map(|rh| rh == *host)
                         .unwrap_or(false)
                 })
@@ -452,7 +509,11 @@ async fn csrf_origin_check(req: Request, next: Next) -> Response {
             if !origin_ok && !referer_ok {
                 tracing::warn!(
                     "CSRF check failed: {} {} (origin={:?}, referer={:?}, host={:?})",
-                    method, path, origin, referer, host
+                    method,
+                    path,
+                    origin,
+                    referer,
+                    host
                 );
                 return (
                     StatusCode::FORBIDDEN,
@@ -465,7 +526,11 @@ async fn csrf_origin_check(req: Request, next: Next) -> Response {
             // /api/* is either a misconfigured client or a CSRF attack using a
             // raw HTTP/1.0 request to dodge the origin/referer comparison —
             // reject it rather than fall through.
-            tracing::warn!("CSRF check rejected {} {}: missing Host header", method, path);
+            tracing::warn!(
+                "CSRF check rejected {} {}: missing Host header",
+                method,
+                path
+            );
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({"error": "CSRF validation failed — missing Host header"})),
@@ -488,7 +553,9 @@ async fn security_headers(req: Request, next: Next) -> Response {
     // when cert changes on restart.
     headers.insert(
         "Permissions-Policy",
-        "camera=(), microphone=(), geolocation=(), payment=()".parse().unwrap(),
+        "camera=(), microphone=(), geolocation=(), payment=()"
+            .parse()
+            .unwrap(),
     );
     // Issue (iter-31): `unsafe-inline` is permitted for both script-src and
     // style-src because the dashboard HTML files contain inline <script> and
@@ -588,10 +655,5 @@ async fn check_session(state: &DashboardState, headers: &axum::http::HeaderMap) 
 }
 
 fn redirect_login() -> Response {
-    (
-        StatusCode::SEE_OTHER,
-        [(header::LOCATION, "/login")],
-        "",
-    )
-        .into_response()
+    (StatusCode::SEE_OTHER, [(header::LOCATION, "/login")], "").into_response()
 }

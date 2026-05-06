@@ -10,9 +10,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
-use rand::RngCore;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
+use rand::RngCore;
 use sha2::Sha256;
 use zeroize::Zeroize;
 
@@ -105,12 +105,13 @@ pub fn decrypt_cipher_string(
 
     let parts: Vec<&str> = rest.splitn(3, '|').collect();
     if parts.len() != 3 {
-        bail!("invalid cipher string format: expected 3 parts, got {}", parts.len());
+        bail!(
+            "invalid cipher string format: expected 3 parts, got {}",
+            parts.len()
+        );
     }
 
-    let iv = B64
-        .decode(parts[0])
-        .context("failed to base64-decode IV")?;
+    let iv = B64.decode(parts[0]).context("failed to base64-decode IV")?;
     let data = B64
         .decode(parts[1])
         .context("failed to base64-decode ciphertext")?;
@@ -119,8 +120,8 @@ pub fn decrypt_cipher_string(
         .context("failed to base64-decode MAC")?;
 
     // Verify HMAC-SHA256(mac_key, iv || data)
-    let mut mac = HmacSha256::new_from_slice(mac_key)
-        .map_err(|e| anyhow!("HMAC key error: {}", e))?;
+    let mut mac =
+        HmacSha256::new_from_slice(mac_key).map_err(|e| anyhow!("HMAC key error: {}", e))?;
     mac.update(&iv);
     mac.update(&data);
     mac.verify_slice(&expected_mac)
@@ -230,8 +231,8 @@ pub fn encrypt_cipher_string(plaintext: &[u8], enc_key: &[u8], mac_key: &[u8]) -
         .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     // HMAC-SHA256(mac_key, iv || ciphertext)
-    let mut mac = HmacSha256::new_from_slice(mac_key)
-        .map_err(|e| anyhow!("HMAC key error: {}", e))?;
+    let mut mac =
+        HmacSha256::new_from_slice(mac_key).map_err(|e| anyhow!("HMAC key error: {}", e))?;
     mac.update(&iv);
     mac.update(&ciphertext);
     let mac_bytes = mac.finalize().into_bytes();
@@ -285,7 +286,11 @@ mod tests {
     fn test_derive_master_key_deterministic() {
         let k1 = derive_master_key("hunter2", "user@example.com", 100_000);
         let k2 = derive_master_key("hunter2", "user@example.com", 100_000);
-        assert_eq!(k1.as_bytes(), k2.as_bytes(), "same inputs must produce same key");
+        assert_eq!(
+            k1.as_bytes(),
+            k2.as_bytes(),
+            "same inputs must produce same key"
+        );
         assert_eq!(k1.len(), 32);
     }
 
@@ -294,8 +299,16 @@ mod tests {
         let lower = derive_master_key("hunter2", "user@example.com", 100_000);
         let upper = derive_master_key("hunter2", "USER@EXAMPLE.COM", 100_000);
         let mixed = derive_master_key("hunter2", "User@Example.Com", 100_000);
-        assert_eq!(lower.as_bytes(), upper.as_bytes(), "email case must not affect key");
-        assert_eq!(lower.as_bytes(), mixed.as_bytes(), "email case must not affect key");
+        assert_eq!(
+            lower.as_bytes(),
+            upper.as_bytes(),
+            "email case must not affect key"
+        );
+        assert_eq!(
+            lower.as_bytes(),
+            mixed.as_bytes(),
+            "email case must not affect key"
+        );
     }
 
     #[test]
@@ -305,7 +318,11 @@ mod tests {
         assert!(!hash.is_empty(), "hash must not be empty");
         // Valid base64 — should decode without error.
         B64.decode(&hash).expect("hash must be valid base64");
-        assert_eq!(B64.decode(&hash).unwrap().len(), 32, "hash must decode to 32 bytes");
+        assert_eq!(
+            B64.decode(&hash).unwrap().len(),
+            32,
+            "hash must decode to 32 bytes"
+        );
     }
 
     #[test]
@@ -314,15 +331,19 @@ mod tests {
         let mac_key = [0x02u8; 32];
         let original = b"Hello, Bitwarden!";
 
-        let cipher_string = encrypt_cipher_string(original, &enc_key, &mac_key)
-            .expect("encryption must succeed");
+        let cipher_string =
+            encrypt_cipher_string(original, &enc_key, &mac_key).expect("encryption must succeed");
 
         println!("cipher_string: {}", cipher_string);
 
         let decrypted = decrypt_cipher_string(&cipher_string, &enc_key, &mac_key)
             .expect("decryption must succeed");
 
-        assert_eq!(decrypted.as_bytes(), original, "roundtrip must preserve plaintext");
+        assert_eq!(
+            decrypted.as_bytes(),
+            original,
+            "roundtrip must preserve plaintext"
+        );
     }
 
     #[test]
@@ -339,7 +360,11 @@ mod tests {
         let decrypted = decrypt_cipher_string(&cipher_string, &enc_key, &mac_key)
             .expect("decryption of empty string must succeed");
 
-        assert_eq!(decrypted.as_bytes(), original, "empty string roundtrip must work");
+        assert_eq!(
+            decrypted.as_bytes(),
+            original,
+            "empty string roundtrip must work"
+        );
     }
 
     #[test]
@@ -348,7 +373,10 @@ mod tests {
         let enc1 = hkdf_expand(key, "enc");
         let enc2 = hkdf_expand(key, "enc");
         assert_eq!(enc1, enc2);
-        assert_ne!(hkdf_expand(key, "enc"), hkdf_expand(key, "mac"),
-            "enc and mac expansions must differ");
+        assert_ne!(
+            hkdf_expand(key, "enc"),
+            hkdf_expand(key, "mac"),
+            "enc and mac expansions must differ"
+        );
     }
 }

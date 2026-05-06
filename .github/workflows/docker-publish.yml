@@ -47,6 +47,17 @@ jobs:
         # update that file when a specific minimum release becomes required.
         uses: dtolnay/rust-toolchain@master
 
+      - name: Check formatting
+        # iter-49: enforce cargo fmt before anything else so a misformatted PR
+        # fails fast with a clear message rather than a build/test failure.
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        # iter-49: CI must enforce the same clippy-clean requirement stated in
+        # CONTRIBUTING.md.  Without this step a PR that introduces a new
+        # warning would pass CI, contradicting the stated policy.
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Run tests
         # iter-43: --all-targets ensures tests in [[bench]], [[example]], and
         # integration test binaries are all exercised.  Without it, cargo test

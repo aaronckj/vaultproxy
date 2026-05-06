@@ -11,9 +11,9 @@
 //! never leave vault-proxy) but stronger than storing credentials in `.env` files
 //! (which persist on disk). See `SECURITY.md` for the full two-tier model.
 
+use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
-use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
 /// Validate a VAULT_PROXY_PUBLIC_URL value.
@@ -38,7 +38,9 @@ pub(crate) fn validate_public_url(url: &str) -> std::result::Result<(), String> 
         ));
     }
     // Strip scheme and check host is non-empty.
-    let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
+    let after_scheme = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let host = after_scheme.split('/').next().unwrap_or("");
     if host.is_empty() {
         return Err(format!(
@@ -101,14 +103,15 @@ pub async fn launch(
     listen_addr: std::net::SocketAddr,
 ) -> Result<()> {
     let path = Path::new(config_dir).join("mcp-servers.toml");
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!(
+    let content = std::fs::read_to_string(&path).with_context(|| {
+        format!(
             "could not read {:?} — create mcp-servers.toml in your config dir",
             path
-        ))?;
+        )
+    })?;
 
-    let parsed: McpServersFile = toml::from_str(&content)
-        .context("failed to parse mcp-servers.toml")?;
+    let parsed: McpServersFile =
+        toml::from_str(&content).context("failed to parse mcp-servers.toml")?;
 
     // Issue (iter-12): Warn on duplicate server names at load time, mirroring
     // the duplicate-service warning in proxy/registry.rs.  Two entries with the
@@ -130,10 +133,12 @@ pub async fn launch(
         .mcp_server
         .into_iter()
         .find(|s| s.name == server_name)
-        .with_context(|| format!(
-            "no mcp_server named '{}' found in mcp-servers.toml",
-            server_name
-        ))?;
+        .with_context(|| {
+            format!(
+                "no mcp_server named '{}' found in mcp-servers.toml",
+                server_name
+            )
+        })?;
 
     // Resolve env vars — static values pass through, vault refs are decrypted.
     let mut resolved: Vec<(String, Zeroizing<String>)> = Vec::new();
@@ -171,7 +176,8 @@ pub async fn launch(
             anyhow::bail!(
                 "mcp_server '{}': env var name '{}' contains a null byte — \
                  this would silently truncate the name and is never correct",
-                server_name, var_name
+                server_name,
+                var_name
             );
         }
         if var_name.contains('=') {
@@ -179,7 +185,8 @@ pub async fn launch(
                 "mcp_server '{}': env var name '{}' contains '=' — \
                  this is a common injection pattern that would corrupt the \
                  child's environment. Use a name without '='.",
-                server_name, var_name
+                server_name,
+                var_name
             );
         }
         // Warn (but allow) names that override well-known loader variables.
@@ -190,15 +197,19 @@ pub async fn launch(
             "LD_LIBRARY_PATH",
             "LD_AUDIT",
             "LD_DEBUG",
-            "DYLD_INSERT_LIBRARIES",  // macOS equivalent
+            "DYLD_INSERT_LIBRARIES", // macOS equivalent
             "DYLD_LIBRARY_PATH",
         ];
-        if SENSITIVE_ENV_VARS.iter().any(|s| s.eq_ignore_ascii_case(var_name)) {
+        if SENSITIVE_ENV_VARS
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(var_name))
+        {
             tracing::warn!(
                 "mcp_server '{}': env var '{}' is a dynamic-linker control variable — \
                  setting it can cause shared-library injection into the child process. \
                  Verify this is intentional.",
-                server_name, var_name
+                server_name,
+                var_name
             );
         }
 
@@ -209,10 +220,12 @@ pub async fn launch(
             let credential = vault
                 .get_field_by_item_name(&item_name, field)
                 .await
-                .with_context(|| format!(
-                    "failed to resolve vault item '{}' field '{}'",
-                    item_name, field
-                ))?;
+                .with_context(|| {
+                    format!(
+                        "failed to resolve vault item '{}' field '{}'",
+                        item_name, field
+                    )
+                })?;
             resolved.push((mapping.var, Zeroizing::new(credential)));
         } else {
             anyhow::bail!(
@@ -244,11 +257,27 @@ pub async fn launch(
     // launchable — a denylist is inherently incomplete.
     let program_lower = program.to_lowercase();
     let dangerous_programs: &[&str] = &[
-        "bash", "sh", "zsh", "fish", "ksh", "csh", "tcsh", "dash",
-        "python", "python2", "python3",
-        "perl", "ruby", "node", "nodejs", "php",
-        "lua", "tclsh", "wish",
-        "powershell", "pwsh",
+        "bash",
+        "sh",
+        "zsh",
+        "fish",
+        "ksh",
+        "csh",
+        "tcsh",
+        "dash",
+        "python",
+        "python2",
+        "python3",
+        "perl",
+        "ruby",
+        "node",
+        "nodejs",
+        "php",
+        "lua",
+        "tclsh",
+        "wish",
+        "powershell",
+        "pwsh",
     ];
     // Check both the bare name and absolute-path tail (e.g. "/usr/bin/bash" → "bash").
     let program_basename = std::path::Path::new(&program)
@@ -268,7 +297,8 @@ pub async fn launch(
         anyhow::bail!(
             "mcp_server '{}': refusing to launch dangerous binary '{}' — \
              use a purpose-built wrapper instead of a shell interpreter",
-            server_name, program
+            server_name,
+            program
         );
     }
 
@@ -345,14 +375,13 @@ pub async fn launch(
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let ret = unsafe {
-                libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
-            };
+            let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
             if ret != 0 {
                 anyhow::bail!(
                     "another vault-proxy --launch {} is already running (lock file {:?} is held). \
                      Wait for it to finish or kill the duplicate process.",
-                    server_name, lock_path
+                    server_name,
+                    lock_path
                 );
             }
         }
@@ -364,8 +393,10 @@ pub async fn launch(
     // which contains D-Bus, Wayland, and systemd session sockets. Passing it
     // to an untrusted MCP server child process would give it the same IPC
     // surface as the vault-proxy process, undermining the env_clear isolation.
-    let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
-                             "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
+    let safe_parent_vars = [
+        "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+        "TERM",
+    ];
 
     // Issue (iter-39): Smart MCP servers discover the proxy via VAULT_PROXY_URL.
     // When `--launch` uses env_clear() the child's environment is wiped, so
@@ -407,7 +438,7 @@ pub async fn launch(
     // `http://[::1]:3201`.  IPv4 addresses need no brackets.
     let derived_vault_proxy_url = match connect_ip {
         std::net::IpAddr::V6(v6) => format!("http://[{}]:{}", v6, listen_addr.port()),
-        std::net::IpAddr::V4(_)  => format!("http://{}:{}", connect_ip, listen_addr.port()),
+        std::net::IpAddr::V4(_) => format!("http://{}:{}", connect_ip, listen_addr.port()),
     };
 
     // Issue (iter-44): Operators who place vault-proxy behind a reverse proxy
@@ -439,26 +470,27 @@ pub async fn launch(
     // at startup for early warning without duplicating the validation logic.
     // Paths without trailing slashes (e.g. "https://host/subpath") are explicitly
     // allowed — operators behind a reverse proxy with a path prefix need them.
-    let vault_proxy_url = match std::env::var("VAULT_PROXY_PUBLIC_URL") {
-        Ok(public_url) if !public_url.is_empty() => {
-            // Validate before injecting so a misconfigured URL fails loudly here
-            // rather than silently producing broken VAULT_PROXY_URL in the child.
-            if let Err(e) = validate_public_url(&public_url) {
-                anyhow::bail!(
-                    "VAULT_PROXY_PUBLIC_URL is invalid: {} — \
+    let vault_proxy_url =
+        match std::env::var("VAULT_PROXY_PUBLIC_URL") {
+            Ok(public_url) if !public_url.is_empty() => {
+                // Validate before injecting so a misconfigured URL fails loudly here
+                // rather than silently producing broken VAULT_PROXY_URL in the child.
+                if let Err(e) = validate_public_url(&public_url) {
+                    anyhow::bail!(
+                        "VAULT_PROXY_PUBLIC_URL is invalid: {} — \
                      fix the value or unset the variable to use the derived loopback URL",
-                    e
-                );
-            }
-            tracing::info!(
+                        e
+                    );
+                }
+                tracing::info!(
                 "--launch '{}': VAULT_PROXY_PUBLIC_URL is set; injecting '{}' as VAULT_PROXY_URL \
                  (overrides derived loopback URL '{}')",
                 server_name, public_url, derived_vault_proxy_url
             );
-            public_url
-        }
-        _ => derived_vault_proxy_url,
-    };
+                public_url
+            }
+            _ => derived_vault_proxy_url,
+        };
 
     // stdout/stderr: the child process inherits vault-proxy's stdout and stderr
     // (Command::status() does not redirect them). This is intentional: MCP
@@ -489,9 +521,11 @@ pub async fn launch(
     let status = Command::new(&program)
         .args(&parts)
         .env_clear()
-        .envs(safe_parent_vars.iter().filter_map(|k| {
-            std::env::var(k).ok().map(|v| (k.to_string(), v))
-        }))
+        .envs(
+            safe_parent_vars
+                .iter()
+                .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))),
+        )
         // Issue (iter-39): Inject VAULT_PROXY_URL so smart MCP servers find the
         // proxy sidecar at the correct address.  Set it before the per-server
         // `env` mappings so an explicit `var = "VAULT_PROXY_URL"` in the config
@@ -618,14 +652,32 @@ command = "cmd-b"
     /// The real check lives in `launch()` which is async and needs a VaultManager.
     fn is_dangerous_program(command: &str) -> bool {
         let parts = shell_words::split(command).unwrap_or_default();
-        if parts.is_empty() { return false; }
+        if parts.is_empty() {
+            return false;
+        }
         let program = &parts[0];
         let dangerous: &[&str] = &[
-            "bash", "sh", "zsh", "fish", "ksh", "csh", "tcsh", "dash",
-            "python", "python2", "python3",
-            "perl", "ruby", "node", "nodejs", "php",
-            "lua", "tclsh", "wish",
-            "powershell", "pwsh",
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "ksh",
+            "csh",
+            "tcsh",
+            "dash",
+            "python",
+            "python2",
+            "python3",
+            "perl",
+            "ruby",
+            "node",
+            "nodejs",
+            "php",
+            "lua",
+            "tclsh",
+            "wish",
+            "powershell",
+            "pwsh",
         ];
         let lower = program.to_lowercase();
         let basename = std::path::Path::new(program)
@@ -633,10 +685,7 @@ command = "cmd-b"
             .and_then(|n| n.to_str())
             .unwrap_or(program)
             .to_lowercase();
-        let stem: &str = basename
-            .split(['-', '.'])
-            .next()
-            .unwrap_or(&basename);
+        let stem: &str = basename.split(['-', '.']).next().unwrap_or(&basename);
         dangerous.contains(&lower.as_str())
             || dangerous.contains(&basename.as_str())
             || dangerous.contains(&stem)
@@ -645,10 +694,19 @@ command = "cmd-b"
     #[test]
     fn test_dangerous_programs_blocked() {
         assert!(is_dangerous_program("bash"), "bare 'bash' must be blocked");
-        assert!(is_dangerous_program("/usr/bin/bash"), "absolute path bash must be blocked");
-        assert!(is_dangerous_program("/bin/sh"), "absolute path sh must be blocked");
+        assert!(
+            is_dangerous_program("/usr/bin/bash"),
+            "absolute path bash must be blocked"
+        );
+        assert!(
+            is_dangerous_program("/bin/sh"),
+            "absolute path sh must be blocked"
+        );
         assert!(is_dangerous_program("python3"), "python3 must be blocked");
-        assert!(is_dangerous_program("/usr/bin/python3.11"), "versioned python must be blocked");
+        assert!(
+            is_dangerous_program("/usr/bin/python3.11"),
+            "versioned python must be blocked"
+        );
         assert!(is_dangerous_program("node"), "node must be blocked");
         assert!(is_dangerous_program("perl"), "perl must be blocked");
     }
@@ -656,7 +714,10 @@ command = "cmd-b"
     #[test]
     fn test_safe_programs_allowed() {
         assert!(!is_dangerous_program("uvx"), "'uvx' must be allowed");
-        assert!(!is_dangerous_program("/usr/local/bin/my-mcp-server"), "custom binary must be allowed");
+        assert!(
+            !is_dangerous_program("/usr/local/bin/my-mcp-server"),
+            "custom binary must be allowed"
+        );
         assert!(!is_dangerous_program("npx"), "'npx' must be allowed");
         assert!(!is_dangerous_program("docker"), "'docker' must be allowed");
     }
@@ -671,14 +732,20 @@ command = "cmd-b"
             return Err(format!("null byte in var name '{}'", name));
         }
         if name.contains('=') {
-            return Err(format!("'=' in var name '{}' is an injection pattern", name));
+            return Err(format!(
+                "'=' in var name '{}' is an injection pattern",
+                name
+            ));
         }
         Ok(())
     }
 
     #[test]
     fn test_empty_env_var_name_rejected() {
-        assert!(validate_env_var_name("").is_err(), "empty var name must be rejected");
+        assert!(
+            validate_env_var_name("").is_err(),
+            "empty var name must be rejected"
+        );
     }
 
     #[test]
@@ -705,10 +772,22 @@ command = "cmd-b"
 
     #[test]
     fn test_normal_env_var_names_pass() {
-        assert!(validate_env_var_name("PATH").is_ok(), "PATH must be allowed");
-        assert!(validate_env_var_name("MY_SECRET").is_ok(), "MY_SECRET must be allowed");
-        assert!(validate_env_var_name("UNIFI_API_KEY").is_ok(), "UNIFI_API_KEY must be allowed");
-        assert!(validate_env_var_name("LD_PRELOAD").is_ok(), "LD_PRELOAD allowed (but logs a warning)");
+        assert!(
+            validate_env_var_name("PATH").is_ok(),
+            "PATH must be allowed"
+        );
+        assert!(
+            validate_env_var_name("MY_SECRET").is_ok(),
+            "MY_SECRET must be allowed"
+        );
+        assert!(
+            validate_env_var_name("UNIFI_API_KEY").is_ok(),
+            "UNIFI_API_KEY must be allowed"
+        );
+        assert!(
+            validate_env_var_name("LD_PRELOAD").is_ok(),
+            "LD_PRELOAD allowed (but logs a warning)"
+        );
     }
 
     // Issue (iter-18): Validate the path-separator check on server names used in
@@ -742,9 +821,18 @@ command = "cmd-b"
 
     #[test]
     fn test_normal_server_names_pass() {
-        assert!(!server_name_has_path_separator("my-mcp-server"), "hyphenated name must pass");
-        assert!(!server_name_has_path_separator("server_a"), "underscored name must pass");
-        assert!(!server_name_has_path_separator("unifi"), "simple name must pass");
+        assert!(
+            !server_name_has_path_separator("my-mcp-server"),
+            "hyphenated name must pass"
+        );
+        assert!(
+            !server_name_has_path_separator("server_a"),
+            "underscored name must pass"
+        );
+        assert!(
+            !server_name_has_path_separator("unifi"),
+            "simple name must pass"
+        );
     }
 
     // Issue (iter-40): Wildcard listen-address normalisation for VAULT_PROXY_URL.
@@ -769,7 +857,7 @@ command = "cmd-b"
     fn build_vault_proxy_url(ip: std::net::IpAddr, port: u16) -> String {
         match ip {
             std::net::IpAddr::V6(v6) => format!("http://[{}]:{}", v6, port),
-            std::net::IpAddr::V4(_)  => format!("http://{}:{}", ip, port),
+            std::net::IpAddr::V4(_) => format!("http://{}:{}", ip, port),
         }
     }
 
@@ -777,17 +865,26 @@ command = "cmd-b"
     fn test_vault_proxy_url_ipv4_wildcard_normalised() {
         let addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
         let ip = normalise_listen_ip(addr);
-        assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            "0.0.0.0 must be normalised to 127.0.0.1 for VAULT_PROXY_URL");
-        assert_eq!(build_vault_proxy_url(ip, addr.port()), "http://127.0.0.1:3201");
+        assert_eq!(
+            ip,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            "0.0.0.0 must be normalised to 127.0.0.1 for VAULT_PROXY_URL"
+        );
+        assert_eq!(
+            build_vault_proxy_url(ip, addr.port()),
+            "http://127.0.0.1:3201"
+        );
     }
 
     #[test]
     fn test_vault_proxy_url_ipv6_wildcard_normalised() {
         let addr: std::net::SocketAddr = "[::]:3201".parse().unwrap();
         let ip = normalise_listen_ip(addr);
-        assert_eq!(ip, std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-            ":: must be normalised to ::1 for VAULT_PROXY_URL");
+        assert_eq!(
+            ip,
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            ":: must be normalised to ::1 for VAULT_PROXY_URL"
+        );
         // iter-43: IPv6 addresses MUST be bracketed in URLs — http://[::1]:3201
         // (NOT the invalid http://::1:3201 that the unbracketed format produces).
         assert_eq!(build_vault_proxy_url(ip, addr.port()), "http://[::1]:3201");
@@ -798,8 +895,11 @@ command = "cmd-b"
         // A specific LAN address should pass through unmodified.
         let addr: std::net::SocketAddr = "192.168.1.50:3201".parse().unwrap();
         let ip = normalise_listen_ip(addr);
-        assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)),
-            "explicit LAN IP must not be rewritten");
+        assert_eq!(
+            ip,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 50)),
+            "explicit LAN IP must not be rewritten"
+        );
     }
 
     #[test]
@@ -851,10 +951,7 @@ command = "cmd-b"
 
         // IPv6 listen address with public URL override.
         assert_eq!(
-            resolve_vault_proxy_url(
-                "http://[::1]:3201",
-                Some("https://vault-proxy.example.com"),
-            ),
+            resolve_vault_proxy_url("http://[::1]:3201", Some("https://vault-proxy.example.com"),),
             "https://vault-proxy.example.com",
             "public URL override must work for IPv6 listen addresses too"
         );
@@ -880,18 +977,24 @@ command = "cmd-b"
         let listen_addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
         let connect_ip = normalise_listen_ip(listen_addr);
         let vault_proxy_url = build_vault_proxy_url(connect_ip, listen_addr.port());
-        assert_eq!(vault_proxy_url, "http://127.0.0.1:3201",
-            "VAULT_PROXY_URL should be normalised from 0.0.0.0 to 127.0.0.1");
+        assert_eq!(
+            vault_proxy_url, "http://127.0.0.1:3201",
+            "VAULT_PROXY_URL should be normalised from 0.0.0.0 to 127.0.0.1"
+        );
 
         // Safe env vars to inherit (mirrors the launcher's safe_parent_vars list).
-        let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
-                                 "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
+        let safe_parent_vars = [
+            "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL",
+            "LC_CTYPE", "TERM",
+        ];
 
         let output = Command::new("env")
             .env_clear()
-            .envs(safe_parent_vars.iter().filter_map(|k| {
-                std::env::var(k).ok().map(|v| (k.to_string(), v))
-            }))
+            .envs(
+                safe_parent_vars
+                    .iter()
+                    .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))),
+            )
             .env("VAULT_PROXY_URL", &vault_proxy_url)
             .output()
             .expect("`env` command must be available on POSIX systems");
@@ -915,7 +1018,9 @@ command = "cmd-b"
                 url
             ));
         }
-        let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
+        let after_scheme = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
         let host = after_scheme.split('/').next().unwrap_or("");
         if host.is_empty() {
             return Err(format!(
@@ -934,44 +1039,67 @@ command = "cmd-b"
 
     #[test]
     fn test_vault_proxy_public_url_valid() {
-        assert!(validate_public_url_test("https://vault-proxy.example.com").is_ok(),
-            "HTTPS URL without trailing slash must be valid");
-        assert!(validate_public_url_test("http://127.0.0.1:3201").is_ok(),
-            "HTTP loopback URL must be valid");
-        assert!(validate_public_url_test("https://vault-proxy.example.com:8443").is_ok(),
-            "HTTPS URL with non-standard port must be valid");
+        assert!(
+            validate_public_url_test("https://vault-proxy.example.com").is_ok(),
+            "HTTPS URL without trailing slash must be valid"
+        );
+        assert!(
+            validate_public_url_test("http://127.0.0.1:3201").is_ok(),
+            "HTTP loopback URL must be valid"
+        );
+        assert!(
+            validate_public_url_test("https://vault-proxy.example.com:8443").is_ok(),
+            "HTTPS URL with non-standard port must be valid"
+        );
     }
 
     #[test]
     fn test_vault_proxy_public_url_invalid_scheme() {
         let e = validate_public_url_test("not-a-url");
         assert!(e.is_err(), "bare string without scheme must be rejected");
-        assert!(e.unwrap_err().contains("must start with"), "error message must name the requirement");
+        assert!(
+            e.unwrap_err().contains("must start with"),
+            "error message must name the requirement"
+        );
 
-        assert!(validate_public_url_test("ftp://example.com").is_err(),
-            "ftp:// scheme must be rejected");
-        assert!(validate_public_url_test("").is_err(),
-            "empty string must be rejected (no scheme)");
+        assert!(
+            validate_public_url_test("ftp://example.com").is_err(),
+            "ftp:// scheme must be rejected"
+        );
+        assert!(
+            validate_public_url_test("").is_err(),
+            "empty string must be rejected (no scheme)"
+        );
     }
 
     #[test]
     fn test_vault_proxy_public_url_empty_host() {
         let e = validate_public_url_test("http://");
         assert!(e.is_err(), "'http://' with no host must be rejected");
-        assert!(e.unwrap_err().contains("empty host"), "error message must name empty host");
+        assert!(
+            e.unwrap_err().contains("empty host"),
+            "error message must name empty host"
+        );
 
-        assert!(validate_public_url_test("https://").is_err(),
-            "'https://' with no host must be rejected");
+        assert!(
+            validate_public_url_test("https://").is_err(),
+            "'https://' with no host must be rejected"
+        );
     }
 
     #[test]
     fn test_vault_proxy_public_url_trailing_slash() {
         let e = validate_public_url_test("https://vault-proxy.example.com/");
         assert!(e.is_err(), "trailing slash must be rejected");
-        assert!(e.unwrap_err().contains("trailing slash"), "error message must name trailing slash");
+        assert!(
+            e.unwrap_err().contains("trailing slash"),
+            "error message must name trailing slash"
+        );
 
-        assert!(validate_public_url_test("http://127.0.0.1:3201/").is_err(),
-            "trailing slash on loopback URL must also be rejected");
+        assert!(
+            validate_public_url_test("http://127.0.0.1:3201/").is_err(),
+            "trailing slash on loopback URL must also be rejected"
+        );
     }
 
     // Issue (iter-47): path-with-trailing-slash was not covered.
@@ -981,17 +1109,25 @@ command = "cmd-b"
     // "/proxy": `https://host/subpath//proxy`).
     #[test]
     fn test_vault_proxy_public_url_subpath() {
-        assert!(validate_public_url_test("https://vault-proxy.example.com/vaultproxy").is_ok(),
-            "path without trailing slash must be valid (reverse-proxy subpath)");
-        assert!(validate_public_url_test("https://vault-proxy.example.com/sub/path").is_ok(),
-            "multi-segment path without trailing slash must be valid");
+        assert!(
+            validate_public_url_test("https://vault-proxy.example.com/vaultproxy").is_ok(),
+            "path without trailing slash must be valid (reverse-proxy subpath)"
+        );
+        assert!(
+            validate_public_url_test("https://vault-proxy.example.com/sub/path").is_ok(),
+            "multi-segment path without trailing slash must be valid"
+        );
 
         let e = validate_public_url_test("https://vault-proxy.example.com/subpath/");
         assert!(e.is_err(), "path WITH trailing slash must be rejected");
-        assert!(e.unwrap_err().contains("trailing slash"),
-            "error message must name trailing slash for subpath case");
+        assert!(
+            e.unwrap_err().contains("trailing slash"),
+            "error message must name trailing slash for subpath case"
+        );
 
-        assert!(validate_public_url_test("https://vault-proxy.example.com/a/b/c/").is_err(),
-            "deep path with trailing slash must be rejected");
+        assert!(
+            validate_public_url_test("https://vault-proxy.example.com/a/b/c/").is_err(),
+            "deep path with trailing slash must be rejected"
+        );
     }
 }

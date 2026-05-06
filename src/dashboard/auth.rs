@@ -45,8 +45,7 @@ impl SessionStore {
     pub fn new(config_path: &str) -> Self {
         let hash = match std::fs::read_to_string(config_path) {
             Ok(data) => {
-                let cfg: DashboardConfig =
-                    serde_json::from_str(&data).unwrap_or_default();
+                let cfg: DashboardConfig = serde_json::from_str(&data).unwrap_or_default();
                 cfg.password_hash
             }
             Err(_) => None,
@@ -79,7 +78,10 @@ impl SessionStore {
     }
 
     pub async fn record_unlock_failure(&self) {
-        self.unlock_failed_attempts.write().await.push(Instant::now());
+        self.unlock_failed_attempts
+            .write()
+            .await
+            .push(Instant::now());
     }
 
     pub async fn reset_unlock_failures(&self) {
@@ -98,7 +100,11 @@ impl SessionStore {
         let mut attempts = self.config_write_attempts.write().await;
         attempts.retain(|t| t.elapsed() < window);
         if attempts.len() >= 30 {
-            tracing::warn!("config-write rate limit exceeded ({} in {}s)", attempts.len(), window.as_secs());
+            tracing::warn!(
+                "config-write rate limit exceeded ({} in {}s)",
+                attempts.len(),
+                window.as_secs()
+            );
             return Err("config write rate limit exceeded — try again later".into());
         }
         attempts.push(Instant::now());
@@ -119,8 +125,8 @@ impl SessionStore {
         let cfg = DashboardConfig {
             password_hash: Some(hashed.clone()),
         };
-        let json = serde_json::to_string_pretty(&cfg)
-            .map_err(|e| format!("serialise config: {}", e))?;
+        let json =
+            serde_json::to_string_pretty(&cfg).map_err(|e| format!("serialise config: {}", e))?;
 
         // Ensure parent directory exists.
         if let Some(parent) = std::path::Path::new(&self.config_path).parent() {
@@ -172,8 +178,7 @@ impl SessionStore {
             .as_deref()
             .ok_or_else(|| "no password configured".to_string())?;
 
-        let valid = bcrypt::verify(password, hash)
-            .map_err(|e| format!("bcrypt verify: {}", e))?;
+        let valid = bcrypt::verify(password, hash).map_err(|e| format!("bcrypt verify: {}", e))?;
         if !valid {
             // Record the failed attempt.
             self.failed_attempts.write().await.push(Instant::now());

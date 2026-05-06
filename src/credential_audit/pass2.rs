@@ -11,10 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::credential_audit::{
-    engine_client::EngineClient,
-    types::Pass2Verdict,
-};
+use crate::credential_audit::{engine_client::EngineClient, types::Pass2Verdict};
 
 const RATE_LIMIT_PER_HOST: Duration = Duration::from_secs(5 * 60);
 const HOST_BLACKLIST_THRESHOLD: u32 = 2;

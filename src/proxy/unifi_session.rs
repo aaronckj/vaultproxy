@@ -124,8 +124,12 @@ pub(crate) fn is_auth_failure(status: StatusCode, headers: &HeaderMap, body: &Va
 
     // 4. JSON `meta.rc != "ok"` with an auth-flavoured `meta.msg`.
     if let (Some(rc), Some(msg)) = (
-        body.get("meta").and_then(|m| m.get("rc")).and_then(|v| v.as_str()),
-        body.get("meta").and_then(|m| m.get("msg")).and_then(|v| v.as_str()),
+        body.get("meta")
+            .and_then(|m| m.get("rc"))
+            .and_then(|v| v.as_str()),
+        body.get("meta")
+            .and_then(|m| m.get("msg"))
+            .and_then(|v| v.as_str()),
     ) {
         if rc != "ok" {
             let lower = msg.to_ascii_lowercase();
@@ -225,7 +229,10 @@ pub async fn handle_request(
     .await?;
 
     if !is_auth_failure(resp.status, &resp.headers, &resp.json) {
-        return Ok(UnifiResponse { status: resp.status.as_u16(), body: resp.json });
+        return Ok(UnifiResponse {
+            status: resp.status.as_u16(),
+            body: resp.json,
+        });
     }
 
     tracing::warn!(service, status = %resp.status, "UniFi API-key auth failed, falling back to session");
@@ -242,7 +249,10 @@ pub async fn handle_request(
     let current_fp = fingerprint_creds(&auth_ctx.username, &auth_ctx.password);
     if let Some(ref state) = *guard {
         if state.cred_fingerprint != current_fp {
-            tracing::info!(service, "UniFi credentials rotated — invalidating cached session");
+            tracing::info!(
+                service,
+                "UniFi credentials rotated — invalidating cached session"
+            );
             *guard = None;
         }
     }
@@ -301,7 +311,10 @@ pub async fn handle_request(
         });
     }
 
-    Ok(UnifiResponse { status: retry.status.as_u16(), body: retry.json })
+    Ok(UnifiResponse {
+        status: retry.status.as_u16(),
+        body: retry.json,
+    })
 }
 
 /// A fully-consumed HTTP response broken into the pieces we actually need.
@@ -348,7 +361,11 @@ async fn send_once(
         Err(_) => Value::Null,
     };
 
-    Ok(SentResponse { status, headers, json })
+    Ok(SentResponse {
+        status,
+        headers,
+        json,
+    })
 }
 
 async fn login(base_url: &str, ctx: &UnifiDualAuthCtx, timeout_secs: u64) -> Result<SessionState> {
@@ -404,7 +421,11 @@ async fn login(base_url: &str, ctx: &UnifiDualAuthCtx, timeout_secs: u64) -> Res
     // Start with a placeholder fingerprint; callers set it to the real
     // value after login so the session can be compared against future
     // vault credentials.
-    Ok(SessionState { client, csrf_token: csrf, cred_fingerprint: Vec::new() })
+    Ok(SessionState {
+        client,
+        csrf_token: csrf,
+        cred_fingerprint: Vec::new(),
+    })
 }
 
 fn build_url(base: &str, path: &str) -> String {
@@ -492,13 +513,21 @@ mod tests {
     #[test]
     fn auth_failure_on_401() {
         let headers = mk_headers(&[("content-type", "application/json")]);
-        assert!(is_auth_failure(StatusCode::UNAUTHORIZED, &headers, &Value::Null));
+        assert!(is_auth_failure(
+            StatusCode::UNAUTHORIZED,
+            &headers,
+            &Value::Null
+        ));
     }
 
     #[test]
     fn auth_failure_on_403() {
         let headers = mk_headers(&[("content-type", "application/json")]);
-        assert!(is_auth_failure(StatusCode::FORBIDDEN, &headers, &Value::Null));
+        assert!(is_auth_failure(
+            StatusCode::FORBIDDEN,
+            &headers,
+            &Value::Null
+        ));
     }
 
     #[test]
@@ -563,6 +592,7 @@ mod tests {
 
     /// Helper: call `handle_request` using the new `UnifiRequestCtx` wrapper.
     /// Reduces test boilerplate from 9-arg positional calls to a compact helper.
+    #[allow(clippy::too_many_arguments)]
     async fn call(
         cache: &UnifiSessionCache,
         service: &str,

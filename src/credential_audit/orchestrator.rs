@@ -1,6 +1,4 @@
-use crate::credential_audit::engine_client::{
-    EngineClient, EngineDedupKey, EngineRunRequest,
-};
+use crate::credential_audit::engine_client::{EngineClient, EngineDedupKey, EngineRunRequest};
 use crate::credential_audit::marker::{MarkRequest, Marker};
 use crate::credential_audit::pass2::Pass2Engine;
 use crate::credential_audit::types::{ItemResult, Pass2Verdict};
@@ -76,7 +74,8 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(
-                    "credaudit: engine health check failed (engine likely not running): {:#}", e
+                    "credaudit: engine health check failed (engine likely not running): {:#}",
+                    e
                 );
                 false
             }
@@ -93,11 +92,8 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         //    so the per-item decrypt latency parallelizes; per-item Errs are
         //    logged and skipped rather than bailing the whole scan.
         let vault = self.vault.clone();
-        let dedup_inputs: Vec<crate::credential_audit::engine_client::EngineInputItem> = items
-            .iter()
-            .filter(|it| it.has_password)
-            .cloned()
-            .collect();
+        let dedup_inputs: Vec<crate::credential_audit::engine_client::EngineInputItem> =
+            items.iter().filter(|it| it.has_password).cloned().collect();
         let dedup_keys: Vec<EngineDedupKey> = futures_util::stream::iter(dedup_inputs)
         .map(|it| {
             let vault = vault.clone();
@@ -280,7 +276,10 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     ) -> Result<ApplyOutcome> {
         let pending = self.list_pending(run_id)?;
         let target: Vec<_> = match &item_ids {
-            Some(ids) => pending.into_iter().filter(|p| ids.contains(&p.item_id)).collect(),
+            Some(ids) => pending
+                .into_iter()
+                .filter(|p| ids.contains(&p.item_id))
+                .collect(),
             None => pending,
         };
         if target.len() > 50 && item_ids.is_none() && !confirm_bulk {
@@ -384,7 +383,10 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         let run_id_owned = run_id.to_string();
         let orch = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = orch.pass2_run_worker(run_id_owned.clone(), needs_items).await {
+            if let Err(e) = orch
+                .pass2_run_worker(run_id_owned.clone(), needs_items)
+                .await
+            {
                 tracing::error!(run_id = %run_id_owned, "pass2 worker failed: {e:#}");
             }
         });
@@ -456,7 +458,11 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
                 )?;
                 continue;
             }
-            let username = self.vault.item_username(&item_id).await?.unwrap_or_default();
+            let username = self
+                .vault
+                .item_username(&item_id)
+                .await?
+                .unwrap_or_default();
             let secrets = self.vault.item_secrets(&item_id).await?;
             let password = match secrets.password {
                 Some(p) => p,
@@ -486,7 +492,8 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
                         &run_id,
                         &item_id,
                         &Pass2Verdict::BrowserCrash,
-                        &serde_json::json!({"reason": "judge_one error", "detail": e.to_string()}).to_string(),
+                        &serde_json::json!({"reason": "judge_one error", "detail": e.to_string()})
+                            .to_string(),
                         "untestable",
                         false,
                     )?;

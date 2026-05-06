@@ -93,7 +93,8 @@ pub async fn handle_rotate(
         if let Err(e) = state.vault.sync().await {
             tracing::warn!(
                 "vault sync after rotate('{}') failed: {} — next scheduled sync will catch up",
-                req.service, e
+                req.service,
+                e
             );
         }
     }

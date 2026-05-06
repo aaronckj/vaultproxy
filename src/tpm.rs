@@ -11,8 +11,8 @@ use std::process::Command;
 
 use anyhow::Context;
 use rcgen::{
-    Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-    KeyUsagePurpose, SanType,
+    Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
+    SanType,
 };
 
 // -------------------------------------------------------------------------- //
@@ -92,10 +92,7 @@ fn seal_to_tpm_inner(data: &[u8], sealed_path: &str, tmp_dir: &str) -> anyhow::R
     // Seal the data
     let output = Command::new("tpm2_create")
         .args([
-            "-C", &ctx_file,
-            "-i", &data_file,
-            "-u", &pub_file,
-            "-r", &priv_file,
+            "-C", &ctx_file, "-i", &data_file, "-u", &pub_file, "-r", &priv_file,
         ])
         .output()
         .context("tpm2_create failed to execute")?;
@@ -151,10 +148,9 @@ fn unseal_from_tpm_inner(sealed_path: &str, tmp_dir: &str) -> anyhow::Result<Vec
         anyhow::bail!("TPM device /dev/tpm0 not available");
     }
 
-    let bundle_bytes = std::fs::read(sealed_path)
-        .context("failed to read sealed bundle")?;
-    let bundle: SealedBundle = serde_json::from_slice(&bundle_bytes)
-        .context("failed to parse sealed bundle")?;
+    let bundle_bytes = std::fs::read(sealed_path).context("failed to read sealed bundle")?;
+    let bundle: SealedBundle =
+        serde_json::from_slice(&bundle_bytes).context("failed to parse sealed bundle")?;
 
     std::fs::create_dir_all(tmp_dir)?;
     restrict_tmp_dir(tmp_dir)?;
@@ -180,10 +176,14 @@ fn unseal_from_tpm_inner(sealed_path: &str, tmp_dir: &str) -> anyhow::Result<Vec
     // Load the sealed object under the recreated primary
     let output = Command::new("tpm2_load")
         .args([
-            "-C", &ctx_file,
-            "-u", &pub_file,
-            "-r", &priv_file,
-            "-c", &loaded_ctx,
+            "-C",
+            &ctx_file,
+            "-u",
+            &pub_file,
+            "-r",
+            &priv_file,
+            "-c",
+            &loaded_ctx,
         ])
         .output()
         .context("tpm2_load failed to execute")?;
@@ -256,10 +256,7 @@ pub fn generate_mtls_certs() -> anyhow::Result<CertMaterial> {
     ca_dn.push(DnType::CommonName, "vault-proxy-ca");
     ca_params.distinguished_name = ca_dn;
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
     let ca_cert: Certificate = ca_params
         .self_signed(&ca_key)
@@ -295,7 +292,7 @@ pub fn generate_mtls_certs() -> anyhow::Result<CertMaterial> {
     // effective MITM defence is the mTLS client-cert requirement — an attacker
     // would need the client cert in addition to intercepting the connection.
     server_params.not_before = rcgen::date_time_ymd(1975, 1, 1);
-    server_params.not_after  = rcgen::date_time_ymd(2099, 12, 31);
+    server_params.not_after = rcgen::date_time_ymd(2099, 12, 31);
     server_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
 
     let server_cert = server_params

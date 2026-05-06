@@ -1,10 +1,10 @@
 //! Security audit — analyzes credential health without exposing passwords.
 
-use std::collections::HashMap;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-use serde::Serialize;
 use crate::vault::VaultManager;
+use hmac::{Hmac, Mac};
+use serde::Serialize;
+use sha2::Sha256;
+use std::collections::HashMap;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -35,9 +35,9 @@ fn password_strength(pw: &[u8]) -> &'static str {
         return "weak";
     }
     if len >= 16 {
-        let has_lower  = pw.iter().any(|b| b.is_ascii_lowercase());
-        let has_upper  = pw.iter().any(|b| b.is_ascii_uppercase());
-        let has_digit  = pw.iter().any(|b| b.is_ascii_digit());
+        let has_lower = pw.iter().any(|b| b.is_ascii_lowercase());
+        let has_upper = pw.iter().any(|b| b.is_ascii_uppercase());
+        let has_digit = pw.iter().any(|b| b.is_ascii_digit());
         let has_symbol = pw.iter().any(|b| b.is_ascii_punctuation());
         let classes = [has_lower, has_upper, has_digit, has_symbol]
             .iter()
@@ -52,8 +52,7 @@ fn password_strength(pw: &[u8]) -> &'static str {
 
 /// Compute HMAC-SHA256(key, data) and return the hex-encoded digest.
 fn hmac_hex(key: &[u8], data: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(data);
     let result = mac.finalize().into_bytes();
     result.iter().map(|b| format!("{:02x}", b)).collect()

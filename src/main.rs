@@ -1,18 +1,28 @@
+// iter-49: Several modules are scaffolded / partially wired (credential_audit,
+// audit.rs, browser profiles, TPM sealing, etc.) and expose functions/types
+// that are not yet reachable from production code paths. Suppressing dead_code
+// here lets `cargo clippy -- -D warnings` catch real Clippy diagnostics without
+// failing on incomplete scaffold modules. Each module will remove this
+// suppression as it becomes fully wired.
+//
+// TODO (v1.0): resolve each dead_code site and remove this crate-level allow.
+#![allow(dead_code)]
+
 mod audit;
-mod internal_token;
-mod keystore;
-mod launcher;
-mod setup;
 mod browser;
 mod credential_audit;
 #[cfg(feature = "dashboard")]
 mod dashboard;
+mod internal_token;
+mod keystore;
+mod launcher;
 mod notify;
 mod policy;
 mod proxy;
 mod rotate;
 mod secure;
 mod security;
+mod setup;
 mod sync;
 mod tls;
 mod totp;
@@ -22,13 +32,18 @@ mod vault;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{extract::State as AxumState, Json as AxumJson, response::IntoResponse, routing::{get, post}, Router};
+use axum::{
+    extract::State as AxumState,
+    response::IntoResponse,
+    routing::{get, post},
+    Json as AxumJson, Router,
+};
 use clap::Parser;
 
-use proxy::{AppState, handle_proxy, registry::ServiceRegistry};
-use sync::{SyncManager, cloud::CloudClient, websocket};
-use vault::VaultManager;
+use proxy::{handle_proxy, registry::ServiceRegistry, AppState};
+use sync::{cloud::CloudClient, websocket, SyncManager};
 use vault::handlers;
+use vault::VaultManager;
 
 // -------------------------------------------------------------------------- //
 // CLI args                                                                    //
@@ -241,7 +256,8 @@ async fn main() -> anyhow::Result<()> {
                 "vaultproxy check: services.toml not found at {}. \
                  This is normal on first run. \
                  Copy services.example.toml to {} and add [[service]] blocks.",
-                services_path.display(), services_path.display()
+                services_path.display(),
+                services_path.display()
             );
             std::process::exit(0);
         }
@@ -360,11 +376,13 @@ async fn main() -> anyhow::Result<()> {
     // with a clear log message) allows operators to mount a new volume or specify
     // a fresh path without pre-creating it manually.
     if !std::path::Path::new(&config_dir).exists() {
-        std::fs::create_dir_all(&config_dir)
-            .map_err(|e| anyhow::anyhow!(
+        std::fs::create_dir_all(&config_dir).map_err(|e| {
+            anyhow::anyhow!(
                 "--config-dir '{}' does not exist and could not be created: {}",
-                config_dir, e
-            ))?;
+                config_dir,
+                e
+            )
+        })?;
         tracing::info!("created config directory '{}'", config_dir);
     }
 
@@ -573,12 +591,13 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(feature = "dashboard")]
 async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()> {
     // Generate ephemeral mTLS certificates for HTTPS
-    let certs = tpm::generate_mtls_certs()
-        .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    let certs =
+        tpm::generate_mtls_certs().map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
 
     // Shared channel: dashboard writes the setup password here after setup/unlock,
     // the polling loop reads it to decrypt credentials.
-    let unlock_password: Arc<tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>> = Arc::new(tokio::sync::RwLock::new(None));
+    let unlock_password: Arc<tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
 
     let dash_state = dashboard::DashboardState {
         app: None,
@@ -606,7 +625,10 @@ async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()
 
     // Spawn dashboard
     tokio::spawn(async move {
-        tracing::info!("dashboard listening on {} (HTTPS) — waiting for setup/unlock", dash_addr);
+        tracing::info!(
+            "dashboard listening on {} (HTTPS) — waiting for setup/unlock",
+            dash_addr
+        );
         if let Err(e) = axum_server::bind_rustls(dash_addr, dash_tls_config)
             .serve(dash_router.into_make_service())
             .await
@@ -629,8 +651,17 @@ async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()
         if !tpm_tried {
             tpm_tried = true;
             if let Ok(creds) = keystore::unlock_keystore(&config_dir_poll, None) {
-                tracing::info!("credentials unlocked via TPM — connecting to Vaultwarden at {}", creds.vaultwarden.url);
-                match VaultManager::new(&creds.vaultwarden.url, &creds.vaultwarden.email, &creds.vaultwarden.master_password).await {
+                tracing::info!(
+                    "credentials unlocked via TPM — connecting to Vaultwarden at {}",
+                    creds.vaultwarden.url
+                );
+                match VaultManager::new(
+                    &creds.vaultwarden.url,
+                    &creds.vaultwarden.email,
+                    &creds.vaultwarden.master_password,
+                )
+                .await
+                {
                     Ok(vault) => {
                         tracing::info!("vault initialized — starting full server");
                         return start_server(args_poll, vault, &config_dir_poll, creds.cloud).await;
@@ -649,22 +680,39 @@ async fn start_dashboard_only(args: Args, config_dir: &str) -> anyhow::Result<()
             let pw_str: &str = password.as_str();
             match keystore::unlock_keystore(&config_dir_poll, Some(pw_str)) {
                 Ok(creds) => {
-                    tracing::info!("credentials unlocked via dashboard — connecting to Vaultwarden at {}", creds.vaultwarden.url);
-                    match VaultManager::new(&creds.vaultwarden.url, &creds.vaultwarden.email, &creds.vaultwarden.master_password).await {
+                    tracing::info!(
+                        "credentials unlocked via dashboard — connecting to Vaultwarden at {}",
+                        creds.vaultwarden.url
+                    );
+                    match VaultManager::new(
+                        &creds.vaultwarden.url,
+                        &creds.vaultwarden.email,
+                        &creds.vaultwarden.master_password,
+                    )
+                    .await
+                    {
                         Ok(vault) => {
                             // Clear the password from memory. Setting `None`
                             // drops the `Zeroizing<String>`, which zeroes the
                             // underlying bytes before freeing.
                             *unlock_password_poll.write().await = None;
                             // Seal to TPM if not already sealed (enables auto-unlock on next boot)
-                            if !keystore::has_tpm_key(&config_dir_poll) && crate::tpm::tpm_available() {
+                            if !keystore::has_tpm_key(&config_dir_poll)
+                                && crate::tpm::tpm_available()
+                            {
                                 tracing::info!("sealing keystore to TPM for auto-unlock");
-                                if let Err(e) = keystore::seal_after_unlock(&config_dir_poll, pw_str) {
-                                    tracing::warn!("TPM sealing failed (software fallback still works): {}", e);
+                                if let Err(e) =
+                                    keystore::seal_after_unlock(&config_dir_poll, pw_str)
+                                {
+                                    tracing::warn!(
+                                        "TPM sealing failed (software fallback still works): {}",
+                                        e
+                                    );
                                 }
                             }
                             tracing::info!("vault initialized — starting full server");
-                            return start_server(args_poll, vault, &config_dir_poll, creds.cloud).await;
+                            return start_server(args_poll, vault, &config_dir_poll, creds.cloud)
+                                .await;
                         }
                         Err(e) => {
                             tracing::error!("vault init failed after unlock: {}", e);
@@ -724,7 +772,15 @@ async fn start_server(
             {
                 tracing::info!("authenticating to Bitwarden cloud via API key");
                 let kdf_override = cloud.kdf_iterations.or(args.cloud_kdf_iterations);
-                match CloudClient::from_api_key(cloud_email, cloud_password, cid, csec, kdf_override).await {
+                match CloudClient::from_api_key(
+                    cloud_email,
+                    cloud_password,
+                    cid,
+                    csec,
+                    kdf_override,
+                )
+                .await
+                {
                     Ok((client, _refresh)) => Some(client),
                     Err(e) => {
                         tracing::warn!("API key auth failed: {:#}", e);
@@ -736,7 +792,9 @@ async fn start_server(
             else if let Some(ref rt) = saved_refresh_token {
                 tracing::info!("authenticating to Bitwarden cloud via refresh token");
                 let kdf_override = cloud.kdf_iterations.or(args.cloud_kdf_iterations);
-                match CloudClient::from_refresh_token(cloud_email, cloud_password, rt, kdf_override).await {
+                match CloudClient::from_refresh_token(cloud_email, cloud_password, rt, kdf_override)
+                    .await
+                {
                     Ok((client, _new_refresh)) => Some(client),
                     Err(e) => {
                         tracing::warn!("refresh token auth failed: {:#}", e);
@@ -753,8 +811,10 @@ async fn start_server(
             } else {
                 tracing::info!("attempting cloud auth via password");
                 let kdf_iters = args.cloud_kdf_iterations.unwrap_or(600_000);
-                let master_key = vault::crypto::derive_master_key(cloud_password, cloud_email, kdf_iters);
-                let pw_hash = vault::crypto::hash_master_password(master_key.as_bytes(), cloud_password);
+                let master_key =
+                    vault::crypto::derive_master_key(cloud_password, cloud_email, kdf_iters);
+                let pw_hash =
+                    vault::crypto::hash_master_password(master_key.as_bytes(), cloud_password);
 
                 // Explicit 30s timeout — startup cloud auth against
                 // identity.bitwarden.com without a deadline would stall
@@ -781,23 +841,33 @@ async fn start_server(
                 match token_resp {
                     Ok(resp) if resp.status().is_success() => {
                         #[derive(serde::Deserialize)]
-                        struct TokenResp { refresh_token: Option<String> }
+                        struct TokenResp {
+                            refresh_token: Option<String>,
+                        }
                         if let Ok(data) = resp.json::<TokenResp>().await {
                             if let Some(rt) = data.refresh_token {
                                 tracing::info!("got fresh refresh token via password auth");
                                 match CloudClient::from_refresh_token(
-                                    cloud_email, cloud_password, &rt, args.cloud_kdf_iterations,
-                                ).await {
-                                    Ok((client, _new_rt)) => {
-                                        Some(client)
-                                    }
+                                    cloud_email,
+                                    cloud_password,
+                                    &rt,
+                                    args.cloud_kdf_iterations,
+                                )
+                                .await
+                                {
+                                    Ok((client, _new_rt)) => Some(client),
                                     Err(e) => {
-                                        tracing::error!("from_refresh_token with fresh token failed: {:#}", e);
+                                        tracing::error!(
+                                            "from_refresh_token with fresh token failed: {:#}",
+                                            e
+                                        );
                                         None
                                     }
                                 }
                             } else {
-                                tracing::error!("password auth succeeded but no refresh token returned");
+                                tracing::error!(
+                                    "password auth succeeded but no refresh token returned"
+                                );
                                 None
                             }
                         } else {
@@ -855,7 +925,9 @@ async fn start_server(
             "registered {} services from {:?}: {:?} \
              (services.toml is loaded at startup; send SIGHUP to reload without restart; \
              POST /vault/resync reloads vault credentials only)",
-            svc_count, services_path, registry.list()
+            svc_count,
+            services_path,
+            registry.list()
         );
     }
 
@@ -892,7 +964,9 @@ async fn start_server(
     // until they notice wrong behavior. Check once here and emit a SECURITY
     // warning so the misconfiguration surfaces immediately in startup logs.
     {
-        let resolved = vault_arc.find_folder_id_by_name_async(&args.vault_folder).await;
+        let resolved = vault_arc
+            .find_folder_id_by_name_async(&args.vault_folder)
+            .await;
         if resolved.is_none() {
             tracing::warn!(
                 vault_folder = %args.vault_folder,
@@ -938,8 +1012,8 @@ async fn start_server(
     // `--persist-dashboard-cert` flag for operators who use the dashboard
     // frequently and don't want the warning on every container restart.
     tracing::info!("generating ephemeral mTLS certificates");
-    let certs = tpm::generate_mtls_certs()
-        .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    let certs =
+        tpm::generate_mtls_certs().map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
     #[cfg(feature = "dashboard")]
     let dashboard_certs = certs.clone();
 
@@ -1029,7 +1103,8 @@ async fn start_server(
                                     tracing::info!(
                                         "service '{}': CA-cert client loaded from '{}' \
                                          (restart required to pick up cert rotation)",
-                                        svc_name, ca_path
+                                        svc_name,
+                                        ca_path
                                     );
                                     map.insert(svc_name.to_string(), client);
                                 }
@@ -1065,13 +1140,15 @@ async fn start_server(
 
     // Initialize tool permissions and audit log.
     let permissions = Arc::new(tokio::sync::RwLock::new(
-        security::permissions::ToolPermissions::load(
-            &format!("{}/tool-permissions.json", config_dir),
-        ),
+        security::permissions::ToolPermissions::load(&format!(
+            "{}/tool-permissions.json",
+            config_dir
+        )),
     ));
-    let audit_log = Arc::new(security::audit_log::AuditLog::new(
-        &format!("{}/audit-log.json", config_dir),
-    ));
+    let audit_log = Arc::new(security::audit_log::AuditLog::new(&format!(
+        "{}/audit-log.json",
+        config_dir
+    )));
 
     // Initialize notifier (supports ntfy, email queue, or disabled).
     //
@@ -1086,11 +1163,9 @@ async fn start_server(
     // This mirrors the pattern used by PROXY_TIMEOUT=0 (iter-9) and ensures
     // misconfigured notification channels surface in startup logs.
     let notifier = Arc::new(match args.notify_channel.as_str() {
-        "ntfy" if !args.ntfy_url.is_empty() => {
-            notify::Notifier::new(notify::NotifyChannel::Ntfy {
-                url: args.ntfy_url.clone(),
-            })
-        }
+        "ntfy" if !args.ntfy_url.is_empty() => notify::Notifier::new(notify::NotifyChannel::Ntfy {
+            url: args.ntfy_url.clone(),
+        }),
         "ntfy" => {
             // NOTIFY_CHANNEL=ntfy but NTFY_URL is empty — notifications will
             // be silently dropped. Warn so the operator can fix the config.
@@ -1221,20 +1296,23 @@ async fn start_server(
     // keys, recovery codes). See TODO(public-release) in handlers.rs.
     let internal_router = Router::new()
         .route("/handshake", get(handlers::handshake))
-        .route("/vault/connecterr-secrets", get(handlers::connecterr_secrets))
+        .route(
+            "/vault/connecterr-secrets",
+            get(handlers::connecterr_secrets),
+        )
         .route(
             "/vault/connecterr-secrets/upsert",
             axum::routing::post(crate::vault::handlers::upsert_connecterr_secrets)
                 .layer(DefaultBodyLimit::max(512 * 1024)),
         )
-        .route("/rotate",             post(rotate::handle_rotate))
-        .route("/browser/rotate",     post(browser_rotate))
-        .route("/browser/status",     get(browser_status))
+        .route("/rotate", post(rotate::handle_rotate))
+        .route("/browser/rotate", post(browser_rotate))
+        .route("/browser/status", get(browser_status))
         .route("/browser/screenshot", get(browser_screenshot))
-        .route("/browser/abort",      post(browser_abort))
+        .route("/browser/abort", post(browser_abort))
         // iter-23: decrypt_notes returns full plaintext notes (API tokens, SSH
         // keys, recovery codes). Gate it behind the internal bearer token.
-        .route("/vault/notes",        post(handlers::decrypt_notes))
+        .route("/vault/notes", post(handlers::decrypt_notes))
         // iter-34: reload-services performs a hot-reload of services.toml and
         // returns a synchronous JSON confirmation. Gated behind the internal
         // bearer token because it modifies live routing state (the registry and
@@ -1248,35 +1326,38 @@ async fn start_server(
         .with_state(state.clone());
 
     let app = Router::new()
-        .route("/vault/health",       get(handlers::health))
+        .route("/vault/health", get(handlers::health))
         // Issue (iter-26): New debugging endpoint — returns service names, auth types,
         // and base URLs without exposing vault_item names or credential details.
         // Helps MCP server developers verify that services.toml loaded correctly.
-        .route("/vault/services",     get(handlers::list_services))
-        .route("/vault/items",        get(handlers::list_items))
-        .route("/vault/duplicates",   get(handlers::list_duplicates))
-        .route("/vault/folders",      get(handlers::list_folders))
+        .route("/vault/services", get(handlers::list_services))
+        .route("/vault/items", get(handlers::list_items))
+        .route("/vault/duplicates", get(handlers::list_duplicates))
+        .route("/vault/folders", get(handlers::list_folders))
         .route("/vault/folders/delete", post(handlers::delete_folder))
         .route("/vault/test-credential", post(handlers::test_credential))
-        .route("/vault/items/clone",   post(handlers::clone_item))
-        .route("/vault/write-env",    post(handlers::write_env))
-        .route("/vault/items/untracked", get(handlers::list_untracked_items))
-        .route("/vault/totp",         post(handlers::generate_totp))
+        .route("/vault/items/clone", post(handlers::clone_item))
+        .route("/vault/write-env", post(handlers::write_env))
+        .route(
+            "/vault/items/untracked",
+            get(handlers::list_untracked_items),
+        )
+        .route("/vault/totp", post(handlers::generate_totp))
         // NOTE: POST /vault/notes is on the internal_router (bearer token required).
         // Moved to internal_router in iter-23 — returns raw decrypted notes.
-        .route("/vault/items",        post(handlers::create_item))
+        .route("/vault/items", post(handlers::create_item))
         .route("/vault/items/delete", post(handlers::delete_item))
         .route("/vault/items/update", post(handlers::update_item))
-        .route("/vault/items/move",   post(handlers::move_item))
-        .route("/vault/inject-creds",  post(handlers::inject_creds))
+        .route("/vault/items/move", post(handlers::move_item))
+        .route("/vault/inject-creds", post(handlers::inject_creds))
         .route("/vault/check-permission", get(handlers::check_permission))
-        .route("/vault/resync",        post(handlers::vault_resync))
-        .route("/sync/status",        get(handlers::sync_status))
-        .route("/sync/trigger",       post(handlers::sync_trigger))
-        .route("/sync/init",           post(handlers::sync_init))
-        .route("/sync/setup-cloud",   post(handlers::setup_cloud))
-        .route("/sync/totp",          post(handlers::provide_totp))
-        .route("/proxy",              post(handle_proxy))
+        .route("/vault/resync", post(handlers::vault_resync))
+        .route("/sync/status", get(handlers::sync_status))
+        .route("/sync/trigger", post(handlers::sync_trigger))
+        .route("/sync/init", post(handlers::sync_init))
+        .route("/sync/setup-cloud", post(handlers::setup_cloud))
+        .route("/sync/totp", post(handlers::provide_totp))
+        .route("/proxy", post(handle_proxy))
         .merge(internal_router)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(
@@ -1300,8 +1381,8 @@ async fn start_server(
 
     // Construct credential_audit orchestrator + router and merge into app.
     let cred_audit_db_path = format!("{}/credential_audit.sqlite", config_dir);
-    let cred_audit_conn = credential_audit::db::open_db(&cred_audit_db_path)
-        .expect("open credential_audit db");
+    let cred_audit_conn =
+        credential_audit::db::open_db(&cred_audit_db_path).expect("open credential_audit db");
     credential_audit::db::run_migrations(&cred_audit_conn)
         .expect("run credential_audit migrations");
     // Sweep any audit_runs that were `running` when the previous orchestrator
@@ -1427,12 +1508,15 @@ async fn start_server(
                     Ok(_) => {
                         // The inner loop never returns normally; if it does,
                         // restart it after a brief delay.
-                        tracing::warn!("policy scheduler task exited unexpectedly — restarting in 5s");
+                        tracing::warn!(
+                            "policy scheduler task exited unexpectedly — restarting in 5s"
+                        );
                     }
                     Err(e) if e.is_panic() => {
                         tracing::error!(
                             "policy scheduler panicked — restarting in 5s. \
-                             This should not happen; please file a bug report. {:?}", e
+                             This should not happen; please file a bug report. {:?}",
+                            e
                         );
                     }
                     Err(e) => {
@@ -1467,9 +1551,8 @@ async fn start_server(
                 // Spawn the websocket listener.
                 let ws_url = notifications_url.clone();
                 let ws_token = access_token.clone();
-                let ws_handle = tokio::spawn(async move {
-                    websocket::listen(&ws_url, &ws_token, tx).await
-                });
+                let ws_handle =
+                    tokio::spawn(async move { websocket::listen(&ws_url, &ws_token, tx).await });
 
                 // Process notifications.
                 while let Some(notif) = rx.recv().await {
@@ -1484,9 +1567,8 @@ async fn start_server(
                             match cloud.get_cipher(&id).await {
                                 Ok(cipher) => {
                                     let mut map = sync_ws.map.write().await;
-                                    if let Err(e) = sync_ws
-                                        .sync_cipher_to_vw(&cloud, &cipher, &mut map)
-                                        .await
+                                    if let Err(e) =
+                                        sync_ws.sync_cipher_to_vw(&cloud, &cipher, &mut map).await
                                     {
                                         tracing::error!(
                                             cipher_id = %id,
@@ -1550,7 +1632,9 @@ async fn start_server(
                 let sleep_secs = ws_backoff_secs.saturating_add(jitter);
                 tracing::info!(
                     "websocket disconnected, reconnecting in {}s (backoff={}s, jitter={}s)",
-                    sleep_secs, ws_backoff_secs, jitter,
+                    sleep_secs,
+                    ws_backoff_secs,
+                    jitter,
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
                 ws_backoff_secs = (ws_backoff_secs.saturating_mul(2)).min(300);
@@ -1737,15 +1821,17 @@ async fn start_server(
         let sighup_vault = vault_arc.clone();
         let sighup_vault_folder = args.vault_folder.clone();
         tokio::spawn(async move {
-            let mut sighup = match tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::hangup(),
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("SIGHUP: failed to register signal handler: {} — hot-reload disabled", e);
-                    return;
-                }
-            };
+            let mut sighup =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(
+                            "SIGHUP: failed to register signal handler: {} — hot-reload disabled",
+                            e
+                        );
+                        return;
+                    }
+                };
             loop {
                 sighup.recv().await;
                 tracing::info!("SIGHUP received — reloading services.toml");
@@ -1767,7 +1853,9 @@ async fn start_server(
                                 Some(cert) => {
                                     match reqwest::Client::builder()
                                         .add_root_certificate(cert)
-                                        .timeout(std::time::Duration::from_secs(sighup_proxy_timeout))
+                                        .timeout(std::time::Duration::from_secs(
+                                            sighup_proxy_timeout,
+                                        ))
                                         .redirect(reqwest::redirect::Policy::none())
                                         .build()
                                     {
@@ -1840,7 +1928,8 @@ async fn start_server(
 
                     tracing::info!(
                         "SIGHUP: reload complete — {} service(s) now registered (was {})",
-                        svc_count, prev_svc_count
+                        svc_count,
+                        prev_svc_count
                     );
 
                     // iter-33: Re-run the vault_folder existence check so
@@ -1848,7 +1937,9 @@ async fn start_server(
                     // see an explicit confirmation rather than silence. This
                     // mirrors the startup check in main() and uses the same
                     // log format so log-scrapers can match either event.
-                    let resolved = sighup_vault.find_folder_id_by_name_async(&sighup_vault_folder).await;
+                    let resolved = sighup_vault
+                        .find_folder_id_by_name_async(&sighup_vault_folder)
+                        .await;
                     if resolved.is_none() {
                         tracing::warn!(
                             vault_folder = %sighup_vault_folder,
@@ -1889,8 +1980,7 @@ async fn start_server(
                 "vault background refresh task started — interval {} s",
                 interval_secs
             );
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             // The first tick fires immediately; skip it so we don't double-sync
             // right after startup (the initial sync ran in `VaultManager::new`).
             interval.tick().await;
@@ -1933,9 +2023,9 @@ async fn start_server(
             #[cfg(unix)]
             {
                 Box::pin(async {
-                    if let Ok(mut sig) = tokio::signal::unix::signal(
-                        tokio::signal::unix::SignalKind::terminate(),
-                    ) {
+                    if let Ok(mut sig) =
+                        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    {
                         sig.recv().await;
                     } else {
                         std::future::pending::<()>().await;
@@ -1990,8 +2080,16 @@ async fn browser_rotate(
         None => return AxumJson(serde_json::json!({"error": "browser agent not configured"})),
     };
 
-    let item_name = req.get("item_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let login_url = req.get("login_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let item_name = req
+        .get("item_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let login_url = req
+        .get("login_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     if item_name.is_empty() {
         return AxumJson(serde_json::json!({"error": "item_name required"}));
@@ -2050,9 +2148,9 @@ async fn browser_rotate(
         };
 
         let vision = crate::browser::vision::VisionModel::new(&litellm_url, &api_key, &model_name);
-        let mut workflow = crate::browser::workflow::RotationWorkflow::new(
-            &item_name, &login_url, pw, vision,
-        ).await;
+        let mut workflow =
+            crate::browser::workflow::RotationWorkflow::new(&item_name, &login_url, pw, vision)
+                .await;
 
         *browser_ref.current_job.write().await = Some(workflow.state.clone());
 
@@ -2085,9 +2183,7 @@ async fn browser_rotate(
     AxumJson(serde_json::json!({"status": "started", "item_name": item_name_response}))
 }
 
-async fn browser_status(
-    AxumState(state): AxumState<Arc<AppState>>,
-) -> AxumJson<serde_json::Value> {
+async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
     let browser = match &state.browser {
         Some(b) => b,
         None => return AxumJson(serde_json::json!({"status": "not_configured"})),
@@ -2113,9 +2209,7 @@ async fn browser_screenshot(
     }
 }
 
-async fn browser_abort(
-    AxumState(state): AxumState<Arc<AppState>>,
-) -> AxumJson<serde_json::Value> {
+async fn browser_abort(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
     let browser = match &state.browser {
         Some(b) => b,
         None => return AxumJson(serde_json::json!({"error": "not configured"})),
@@ -2190,7 +2284,11 @@ pub(crate) async fn require_internal_token(
         });
     // Also flag length mismatches — done in a branchless way by treating
     // any length difference as at least one differing "bit".
-    let len_diff: u8 = if provided_bytes.len() == expected_bytes.len() { 0 } else { 1 };
+    let len_diff: u8 = if provided_bytes.len() == expected_bytes.len() {
+        0
+    } else {
+        1
+    };
     let valid = (byte_diff | len_diff) == 0;
 
     if !valid {
@@ -2324,8 +2422,7 @@ mod check_flag_tests {
         // Guarantee it really is absent.
         let _ = std::fs::remove_file(path);
 
-        let (registry, attempted) =
-            ServiceRegistry::from_toml_file_with_counts(path);
+        let (registry, attempted) = ServiceRegistry::from_toml_file_with_counts(path);
         let accepted = registry.list().len();
 
         assert_eq!(attempted, 0, "missing file: attempted must be 0");
@@ -2360,8 +2457,7 @@ header_name = "X-Api-Key"
         let mut tmp = tempfile::NamedTempFile::new().expect("tmpfile");
         tmp.write_all(content.as_bytes()).unwrap();
 
-        let (registry, attempted) =
-            ServiceRegistry::from_toml_file_with_counts(tmp.path());
+        let (registry, attempted) = ServiceRegistry::from_toml_file_with_counts(tmp.path());
         let accepted = registry.list().len();
 
         assert_eq!(attempted, 2, "two [[service]] blocks must be attempted");
@@ -2401,18 +2497,26 @@ header_name = "X-Api-Key"
         let mut tmp = tempfile::NamedTempFile::new().expect("tmpfile");
         tmp.write_all(content.as_bytes()).unwrap();
 
-        let (registry, attempted) =
-            ServiceRegistry::from_toml_file_with_counts(tmp.path());
+        let (registry, attempted) = ServiceRegistry::from_toml_file_with_counts(tmp.path());
         let accepted = registry.list().len();
         let rejected = attempted.saturating_sub(accepted);
 
         assert_eq!(attempted, 2, "two [[service]] blocks must be attempted");
         assert_eq!(accepted, 1, "only the SSRF-clean service must be accepted");
-        assert_eq!(rejected, 1, "SSRF-blocked service must be counted as rejected");
+        assert_eq!(
+            rejected, 1,
+            "SSRF-blocked service must be counted as rejected"
+        );
 
         let names = registry.list();
-        assert!(names.contains(&"good-service"), "clean service must be in registry");
-        assert!(!names.contains(&"ssrf-service"), "SSRF service must NOT be in registry");
+        assert!(
+            names.contains(&"good-service"),
+            "clean service must be in registry"
+        );
+        assert!(
+            !names.contains(&"ssrf-service"),
+            "SSRF service must NOT be in registry"
+        );
     }
 }
 
@@ -2435,8 +2539,8 @@ header_name = "X-Api-Key"
 
 #[cfg(test)]
 mod bg_refresh_tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// The background refresh task skips the first tick (to avoid a double-sync
     /// immediately after startup) and then fires on each subsequent interval.
@@ -2453,15 +2557,12 @@ mod bg_refresh_tests {
     /// the freeze is scoped to this test only.
     #[tokio::test(start_paused = true)]
     async fn background_refresh_skips_first_tick_and_fires_on_interval() {
-
         let fire_count = Arc::new(AtomicUsize::new(0));
         let counter = fire_count.clone();
         let interval_secs: u64 = 10;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(interval_secs),
-            );
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             // Mirror production: skip the immediate first tick.
             interval.tick().await;
             for _ in 0..3 {
@@ -2500,15 +2601,12 @@ mod bg_refresh_tests {
     // Issue (iter-39): same `start_paused = true` rationale as above.
     #[tokio::test(start_paused = true)]
     async fn background_refresh_continues_after_failure() {
-
         let fire_count = Arc::new(AtomicUsize::new(0));
         let counter = fire_count.clone();
         let interval_secs: u64 = 5;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(interval_secs),
-            );
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             interval.tick().await; // skip first
             for tick in 0u32..4 {
                 interval.tick().await;
@@ -2534,6 +2632,154 @@ mod bg_refresh_tests {
             fire_count.load(Ordering::SeqCst),
             2,
             "two successful syncs out of four ticks — task must not exit on failure"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// browser_rotate guard tests (iter-49)                                       //
+// -------------------------------------------------------------------------- //
+//
+// These tests verify the two early-return guards added in iter-8 and iter-48:
+//
+//   (a) litellm_url is empty → actionable 400 error before spawning the task.
+//   (b) model_name is empty  → actionable 400 error before spawning the task.
+//   (c) item_name is empty   → existing guard still fires (regression check).
+//
+// Each test builds a minimal `AppState` with `BrowserAgent` set to a
+// deliberately incomplete configuration and calls `browser_rotate` directly
+// (no HTTP stack needed — the handler is a plain async fn).
+
+#[cfg(test)]
+mod browser_rotate_guard_tests {
+    use super::{browser_rotate, AppState};
+    use crate::browser::BrowserAgent;
+    use crate::notify::Notifier;
+    use crate::proxy::registry::ServiceRegistry;
+    use crate::proxy::unifi_session::UnifiSessionCache;
+    use crate::security::audit_log::AuditLog;
+    use crate::security::permissions::ToolPermissions;
+    use crate::vault::VaultManager;
+    use axum::extract::State as AxumState;
+    use axum::Json as AxumJson;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    /// Build the minimal `AppState` needed to exercise `browser_rotate`.
+    /// `browser_agent` is injected so each test can customise the field under
+    /// test while keeping the rest of the state identical.
+    fn make_state_with_browser(browser_agent: Option<Arc<BrowserAgent>>) -> Arc<AppState> {
+        use std::sync::atomic::{AtomicU64 as AuU64, Ordering};
+        static CTR: AuU64 = AuU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        Arc::new(AppState {
+            vault: Arc::new(VaultManager::new_stub()),
+            registry: Arc::new(tokio::sync::RwLock::new(ServiceRegistry::new())),
+            http: reqwest::Client::new(),
+            http_permissive: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap(),
+            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            unifi_sessions: Arc::new(UnifiSessionCache::new()),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            client_certs: None,
+            cloud_sync: None,
+            approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
+            browser: browser_agent,
+            permissions: Arc::new(tokio::sync::RwLock::new(ToolPermissions::load(
+                "/nonexistent/tool-permissions.json",
+            ))),
+            audit_log: Arc::new(AuditLog::new(&format!(
+                "/tmp/vp-test-browser-rotate-{n}.json"
+            ))),
+            notifier: Arc::new(Notifier::disabled()),
+            handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            vault_folder: "vault-proxy".to_string(),
+            last_resync_unix: Arc::new(AtomicU64::new(0)),
+            internal_token: Arc::new("test-token".to_string()),
+            cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
+            env_write_root: String::new(),
+            config_dir: "/config".to_string(),
+            proxy_timeout: 120,
+            reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// Guard (iter-8): when `BrowserAgent.litellm_url` is empty, `browser_rotate`
+    /// must return an error JSON with a message directing the operator to set
+    /// `LITELLM_URL`, rather than spawning a workflow that fails deep inside
+    /// `VisionModel::analyze` with a cryptic "relative URL without a base" error.
+    #[tokio::test]
+    async fn browser_rotate_empty_litellm_url_returns_error() {
+        let agent = Arc::new(BrowserAgent::new(
+            "",       // empty litellm_url — the path under test
+            "",       // api_key
+            "gpt-4o", // model_name is set; only litellm_url is absent
+        ));
+        let state = make_state_with_browser(Some(agent));
+
+        let req = serde_json::json!({ "item_name": "my-vault-item" });
+        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+
+        let error_msg = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("response must contain an 'error' field");
+
+        assert!(
+            error_msg.contains("LITELLM_URL"),
+            "error should mention LITELLM_URL; got: {error_msg}"
+        );
+    }
+
+    /// Guard (iter-48): when `BrowserAgent.model_name` is empty, `browser_rotate`
+    /// must return an error JSON directing the operator to set `VISION_MODEL`,
+    /// rather than sending `"model": ""` to LiteLLM (which routes to an
+    /// unexpected model or returns a cryptic 422).
+    #[tokio::test]
+    async fn browser_rotate_empty_model_name_returns_error() {
+        let agent = Arc::new(BrowserAgent::new(
+            "http://mlbox.local:4000", // litellm_url is set
+            "",                        // api_key
+            "",                        // empty model_name — the path under test
+        ));
+        let state = make_state_with_browser(Some(agent));
+
+        let req = serde_json::json!({ "item_name": "my-vault-item" });
+        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+
+        let error_msg = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("response must contain an 'error' field");
+
+        assert!(
+            error_msg.contains("VISION_MODEL"),
+            "error should mention VISION_MODEL; got: {error_msg}"
+        );
+    }
+
+    /// Regression guard: `item_name` missing from the request body should still
+    /// return an error (the pre-existing guard from the initial implementation).
+    #[tokio::test]
+    async fn browser_rotate_missing_item_name_returns_error() {
+        let agent = Arc::new(BrowserAgent::new("http://mlbox.local:4000", "", "gpt-4o"));
+        let state = make_state_with_browser(Some(agent));
+
+        // No `item_name` key — handler must catch this before the vision guards.
+        let req = serde_json::json!({});
+        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+
+        let error_msg = resp
+            .get("error")
+            .and_then(|v| v.as_str())
+            .expect("response must contain an 'error' field");
+
+        assert!(
+            error_msg.contains("item_name"),
+            "error should mention item_name; got: {error_msg}"
         );
     }
 }

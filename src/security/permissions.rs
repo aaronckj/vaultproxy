@@ -49,12 +49,10 @@ impl ToolPermissions {
     /// unparseable.
     pub fn load(path: &str) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                serde_json::from_str(&contents).unwrap_or_else(|e| {
-                    tracing::warn!("failed to parse permissions file: {} — using defaults", e);
-                    Self::default()
-                })
-            }
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
+                tracing::warn!("failed to parse permissions file: {} — using defaults", e);
+                Self::default()
+            }),
             Err(_) => {
                 tracing::info!("no permissions file at {} — using defaults", path);
                 Self::default()
@@ -134,18 +132,29 @@ mod tests {
     #[test]
     fn test_defaults() {
         let perms = ToolPermissions::default();
-        assert_eq!(perms.get_permission("net__list_interfaces"), Permission::Allow);
+        assert_eq!(
+            perms.get_permission("net__list_interfaces"),
+            Permission::Allow
+        );
         assert_eq!(perms.get_permission("media__get_movies"), Permission::Allow);
-        assert_eq!(perms.get_permission("docker__create_container"), Permission::Log);
+        assert_eq!(
+            perms.get_permission("docker__create_container"),
+            Permission::Log
+        );
         assert_eq!(perms.get_permission("ha__delete_entity"), Permission::Ask);
         assert_eq!(perms.get_permission("ssh__exec"), Permission::Ask);
-        assert_eq!(perms.get_permission("vaultwarden__rotate_password"), Permission::Ask);
+        assert_eq!(
+            perms.get_permission("vaultwarden__rotate_password"),
+            Permission::Ask
+        );
     }
 
     #[test]
     fn test_override() {
         let mut perms = ToolPermissions::default();
-        perms.overrides.insert("ssh__exec".to_string(), Permission::Block);
+        perms
+            .overrides
+            .insert("ssh__exec".to_string(), Permission::Block);
         assert_eq!(perms.get_permission("ssh__exec"), Permission::Block);
     }
 }

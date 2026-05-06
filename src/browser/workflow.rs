@@ -4,16 +4,16 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use tokio::sync::RwLock;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 use crate::browser::playwright::PlaywrightProcess;
-use crate::browser::profiles::{SiteProfile, match_profile};
+use crate::browser::profiles::{match_profile, SiteProfile};
 use crate::browser::vision::{VisionAction, VisionModel};
 use crate::proxy::ApprovalRequest;
-use crate::secure::{SecureBuffer, secure_random};
+use crate::secure::{secure_random, SecureBuffer};
 use crate::vault::VaultManager;
 
 // -------------------------------------------------------------------------- //
@@ -62,7 +62,8 @@ pub struct WorkflowState {
 /// Uses `secure_random` as the entropy source and maps each byte into a
 /// 72-character alphabet (upper, lower, digits, symbols).
 fn generate_password(len: usize) -> SecureBuffer {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*-_";
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*-_";
     let raw = secure_random(len);
     let mut password = Vec::with_capacity(len);
     for &b in raw.as_bytes() {
@@ -181,8 +182,10 @@ impl RotationWorkflow {
                     ));
 
                     if self.state.step_attempts >= max_step_attempts {
-                        self.state.error =
-                            Some(format!("step {} failed after {} attempts: {}", step_name, max_step_attempts, e));
+                        self.state.error = Some(format!(
+                            "step {} failed after {} attempts: {}",
+                            step_name, max_step_attempts, e
+                        ));
                         self.state.current_step = WorkflowStep::Failed;
                     }
                 }
@@ -195,8 +198,10 @@ impl RotationWorkflow {
                     ));
 
                     if self.state.step_attempts >= max_step_attempts {
-                        self.state.error =
-                            Some(format!("step {} timed out after {} attempts", step_name, max_step_attempts));
+                        self.state.error = Some(format!(
+                            "step {} timed out after {} attempts",
+                            step_name, max_step_attempts
+                        ));
                         self.state.current_step = WorkflowStep::Failed;
                     }
                 }
@@ -244,7 +249,10 @@ impl RotationWorkflow {
 
     async fn step_navigate_to_login(&mut self) -> Result<WorkflowStep> {
         let url = match match_profile(&self.profiles, &self.login_url) {
-            Some(profile) => profile.login_url.clone().unwrap_or_else(|| self.login_url.clone()),
+            Some(profile) => profile
+                .login_url
+                .clone()
+                .unwrap_or_else(|| self.login_url.clone()),
             None => self.login_url.clone(),
         };
 
@@ -269,7 +277,8 @@ impl RotationWorkflow {
     async fn step_identify_login_form(&mut self) -> Result<WorkflowStep> {
         // If a profile has selectors, skip vision analysis.
         if let Some(profile) = match_profile(&self.profiles, &self.login_url) {
-            if profile.login_username_selector.is_some() && profile.login_password_selector.is_some()
+            if profile.login_username_selector.is_some()
+                && profile.login_password_selector.is_some()
             {
                 self.log("using profile selectors for login form");
                 return Ok(WorkflowStep::FillUsername);
@@ -400,7 +409,10 @@ impl RotationWorkflow {
                         }
                     }
                     Err(e) => {
-                        self.log(&format!("TOTP auto-generation failed: {}, falling back to manual approval", e));
+                        self.log(&format!(
+                            "TOTP auto-generation failed: {}, falling back to manual approval",
+                            e
+                        ));
                     }
                 }
             }
@@ -408,7 +420,10 @@ impl RotationWorkflow {
                 self.log("no TOTP seed in vault for this item, requesting manual approval");
             }
             Err(e) => {
-                self.log(&format!("failed to decrypt TOTP seed: {}, requesting manual approval", e));
+                self.log(&format!(
+                    "failed to decrypt TOTP seed: {}, requesting manual approval",
+                    e
+                ));
             }
         }
 
@@ -672,14 +687,20 @@ impl RotationWorkflow {
             .context("vision verification failed")?;
 
         match action {
-            VisionAction::Done { success: true, reason } => {
+            VisionAction::Done {
+                success: true,
+                reason,
+            } => {
                 self.log(&format!(
                     "password change verified: {}",
                     reason.as_deref().unwrap_or("success")
                 ));
                 Ok(WorkflowStep::UpdateVault)
             }
-            VisionAction::Done { success: false, reason } => {
+            VisionAction::Done {
+                success: false,
+                reason,
+            } => {
                 self.log(&format!(
                     "password change failed: {}",
                     reason.as_deref().unwrap_or("unknown")
@@ -687,7 +708,10 @@ impl RotationWorkflow {
                 Ok(WorkflowStep::Failed)
             }
             other => {
-                self.log(&format!("unexpected vision response during verification: {:?}", other));
+                self.log(&format!(
+                    "unexpected vision response during verification: {:?}",
+                    other
+                ));
                 bail!("could not verify password change result");
             }
         }
@@ -711,7 +735,9 @@ impl RotationWorkflow {
         vault
             .update_password_for_item(&self.state.item_name, &pw_plaintext)
             .await
-            .map_err(|e| anyhow::anyhow!("vault update for '{}' failed: {}", self.state.item_name, e))?;
+            .map_err(|e| {
+                anyhow::anyhow!("vault update for '{}' failed: {}", self.state.item_name, e)
+            })?;
 
         // Refresh the in-memory cipher map so subsequent decrypt_password
         // calls see the new value. Sync failure is logged but not fatal —
@@ -862,18 +888,18 @@ impl RotationWorkflow {
     }
 
     /// Use vision to identify a CSS selector for an element.
-    async fn resolve_selector_via_vision(
-        &mut self,
-        task: &str,
-        step: &str,
-    ) -> Result<String> {
+    async fn resolve_selector_via_vision(&mut self, task: &str, step: &str) -> Result<String> {
         let screenshot = self.take_screenshot().await?;
         let action = self.vision.analyze(&screenshot, task, step).await?;
 
         match action {
             VisionAction::Fill { selector, .. } => Ok(selector),
             VisionAction::Click { selector, .. } => Ok(selector),
-            other => bail!("vision could not identify element for '{}': {:?}", step, other),
+            other => bail!(
+                "vision could not identify element for '{}': {:?}",
+                step,
+                other
+            ),
         }
     }
 }

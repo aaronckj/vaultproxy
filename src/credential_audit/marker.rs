@@ -72,9 +72,9 @@ impl Marker {
             .vault
             .decrypt_notes_by_id(req.item_id)
             .context("decrypt existing notes during mark")?;
-        let existing_str = existing.as_ref().map(|b| {
-            std::str::from_utf8(b.as_bytes()).unwrap_or("")
-        });
+        let existing_str = existing
+            .as_ref()
+            .map(|b| std::str::from_utf8(b.as_bytes()).unwrap_or(""));
         let now = chrono::Utc::now().to_rfc3339();
         if let Some(new_notes) = build_marker_note(existing_str, req, &now) {
             self.vault
@@ -130,9 +130,14 @@ mod tests {
 
     #[test]
     fn build_marker_note_idempotent_when_marker_already_present() {
-        let already = "# claude-credential-audit\nmarked: T\nreason: dead\ndetail: x\npass: 1\nrun_id: r\n";
+        let already =
+            "# claude-credential-audit\nmarked: T\nreason: dead\ndetail: x\npass: 1\nrun_id: r\n";
         let req = MarkRequest {
-            item_id: "abc", reason: "dead", detail: "x", pass: 1, run_id: "r",
+            item_id: "abc",
+            reason: "dead",
+            detail: "x",
+            pass: 1,
+            run_id: "r",
         };
         let out = build_marker_note(Some(already), &req, "T");
         assert!(out.is_none());

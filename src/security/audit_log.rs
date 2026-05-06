@@ -17,10 +17,27 @@ const MAX_SUMMARY_LEN: usize = 200;
 /// cover session cookies (UniFi), bearer tokens (HA), TOTP/2FA codes, and
 /// passphrase spellings that the pre-iter-15 list missed.
 const SENSITIVE_FIELDS: &[&str] = &[
-    "password", "secret", "token", "api_key", "apikey", "api-key",
-    "master_password", "credential", "cred", "auth", "auth_key",
-    "bearer", "cookie", "session", "otp", "tfa", "2fa",
-    "passphrase", "pass_phrase", "access_key", "private_key",
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "api-key",
+    "master_password",
+    "credential",
+    "cred",
+    "auth",
+    "auth_key",
+    "bearer",
+    "cookie",
+    "session",
+    "otp",
+    "tfa",
+    "2fa",
+    "passphrase",
+    "pass_phrase",
+    "access_key",
+    "private_key",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,8 +70,7 @@ impl AuditLog {
     pub fn new(path: &str) -> Self {
         let mut entries = match std::fs::read_to_string(path) {
             Ok(contents) => {
-                serde_json::from_str::<VecDeque<AuditEntry>>(&contents)
-                    .unwrap_or_default()
+                serde_json::from_str::<VecDeque<AuditEntry>>(&contents).unwrap_or_default()
             }
             Err(_) => VecDeque::new(),
         };
@@ -66,7 +82,10 @@ impl AuditLog {
         }
 
         Self {
-            state: Mutex::new(AuditState { entries, write_count: 0 }),
+            state: Mutex::new(AuditState {
+                entries,
+                write_count: 0,
+            }),
             path: path.to_string(),
         }
     }
@@ -138,7 +157,10 @@ impl AuditLog {
         let mut summary = if let Some(obj) = args.as_object() {
             let mut parts = Vec::new();
             for (k, v) in obj {
-                let val = if SENSITIVE_FIELDS.iter().any(|f| k.to_lowercase().contains(f)) {
+                let val = if SENSITIVE_FIELDS
+                    .iter()
+                    .any(|f| k.to_lowercase().contains(f))
+                {
                     "***".to_string()
                 } else {
                     truncate_str(&v.to_string(), 50)
@@ -175,7 +197,10 @@ impl AuditLog {
         let summary = if let Some(obj) = result.as_object() {
             let mut parts = Vec::new();
             for (k, v) in obj {
-                let val = if SENSITIVE_FIELDS.iter().any(|f| k.to_lowercase().contains(f)) {
+                let val = if SENSITIVE_FIELDS
+                    .iter()
+                    .any(|f| k.to_lowercase().contains(f))
+                {
                     "***".to_string()
                 } else {
                     truncate_str(&v.to_string(), 50)
@@ -228,13 +253,28 @@ mod tests {
             !summary.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
             "token value must be masked: {summary}"
         );
-        assert!(!summary.contains("hunter2"), "password must be masked: {summary}");
-        assert!(!summary.contains("sk-1234567890"), "api_key must be masked: {summary}");
+        assert!(
+            !summary.contains("hunter2"),
+            "password must be masked: {summary}"
+        );
+        assert!(
+            !summary.contains("sk-1234567890"),
+            "api_key must be masked: {summary}"
+        );
         // Non-sensitive fields must still appear.
-        assert!(summary.contains("status"), "status key must appear: {summary}");
-        assert!(summary.contains("items_count"), "items_count key must appear: {summary}");
+        assert!(
+            summary.contains("status"),
+            "status key must appear: {summary}"
+        );
+        assert!(
+            summary.contains("items_count"),
+            "items_count key must appear: {summary}"
+        );
         // Masked fields show ***.
-        assert!(summary.contains("***"), "masked value must be *** in: {summary}");
+        assert!(
+            summary.contains("***"),
+            "masked value must be *** in: {summary}"
+        );
     }
 
     /// summarize_args (pre-existing) should still mask sensitive fields.
@@ -242,8 +282,14 @@ mod tests {
     fn summarize_args_masks_sensitive_fields() {
         let args = json!({ "service": "plex", "password": "s3cr3t", "url": "http://x" });
         let summary = AuditLog::summarize_args(&args);
-        assert!(!summary.contains("s3cr3t"), "password must be masked: {summary}");
-        assert!(summary.contains("service"), "service key must appear: {summary}");
+        assert!(
+            !summary.contains("s3cr3t"),
+            "password must be masked: {summary}"
+        );
+        assert!(
+            summary.contains("service"),
+            "service key must appear: {summary}"
+        );
     }
 
     /// Non-object result (e.g. array) is still serialised without crashing.

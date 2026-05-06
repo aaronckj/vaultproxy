@@ -115,8 +115,7 @@ fn write_token_file(path: &PathBuf, token: &str) -> Result<()> {
 
     #[cfg(not(unix))]
     {
-        std::fs::write(path, &content)
-            .with_context(|| format!("write to '{}'", path.display()))?;
+        std::fs::write(path, &content).with_context(|| format!("write to '{}'", path.display()))?;
         // On non-Unix platforms we cannot set 0o600; log a warning so operators
         // know the file does not have restrictive permissions.
         tracing::warn!(

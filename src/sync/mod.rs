@@ -18,11 +18,7 @@ use crate::vault::VaultManager;
 /// Sanitize a vault item/collection name for safe use in logs.
 /// Strips control characters and truncates to prevent log injection.
 fn sanitize_name_for_log(name: &str) -> String {
-    let sanitized: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(128)
-        .collect();
+    let sanitized: String = name.chars().filter(|c| !c.is_control()).take(128).collect();
     sanitized
 }
 
@@ -125,7 +121,11 @@ impl SyncManager {
                 } else {
                     st.state = "idle_with_errors".into();
                 }
-                tracing::info!(items = count, errors = st.errors.len(), "full sync complete");
+                tracing::info!(
+                    items = count,
+                    errors = st.errors.len(),
+                    "full sync complete"
+                );
                 Ok(())
             }
             Err(e) => {
@@ -155,13 +155,13 @@ impl SyncManager {
             }
 
             // Decrypt collection name using org keys, then re-encrypt with VW keys.
-            match self.sync_collection_to_vw(&cloud, collection, &mut map).await {
+            match self
+                .sync_collection_to_vw(&cloud, collection, &mut map)
+                .await
+            {
                 Ok(()) => {}
                 Err(e) => {
-                    let msg = format!(
-                        "failed to sync collection '{}': {:#}",
-                        collection.id, e
-                    );
+                    let msg = format!("failed to sync collection '{}': {:#}", collection.id, e);
                     tracing::warn!("{}", msg);
                     self.status.write().await.errors.push(msg);
                 }
@@ -174,10 +174,7 @@ impl SyncManager {
             match self.sync_cipher_to_vw(&cloud, cipher, &mut map).await {
                 Ok(()) => synced += 1,
                 Err(e) => {
-                    let msg = format!(
-                        "failed to sync cipher '{}': {:#}",
-                        cipher.id, e
-                    );
+                    let msg = format!("failed to sync cipher '{}': {:#}", cipher.id, e);
                     tracing::warn!("{}", msg);
                     self.status.write().await.errors.push(msg);
                 }
@@ -185,8 +182,7 @@ impl SyncManager {
         }
 
         // Step 4: Save mapping.
-        map.save(SYNC_MAP_PATH)
-            .context("failed to save sync map")?;
+        map.save(SYNC_MAP_PATH).context("failed to save sync map")?;
 
         // Drop locks before calling vw.sync().
         drop(map);
@@ -404,8 +400,8 @@ pub fn re_encrypt_cipher(
     // Helper: re-encrypt a required field.
     let reencrypt = |cs: &str| -> Result<String> {
         let plain: SecureBuffer = decrypt_cipher_string(cs, src_enc, src_mac)?;
-        let plain_str = std::str::from_utf8(plain.as_bytes())
-            .context("decrypted field is not valid UTF-8")?;
+        let plain_str =
+            std::str::from_utf8(plain.as_bytes()).context("decrypted field is not valid UTF-8")?;
         let result = encrypt_to_cipher_string(plain_str, dst_enc, dst_mac)?;
         // `plain` (SecureBuffer) is dropped and zeroized here.
         Ok(result)
@@ -477,18 +473,24 @@ pub fn re_encrypt_cipher(
 
     // Re-encrypt card, identity, and secure_note JSON blobs.
     let card = match &cipher.card {
-        Some(v) => Some(re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
-            .context("failed to re-encrypt card")?),
+        Some(v) => Some(
+            re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
+                .context("failed to re-encrypt card")?,
+        ),
         None => None,
     };
     let identity = match &cipher.identity {
-        Some(v) => Some(re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
-            .context("failed to re-encrypt identity")?),
+        Some(v) => Some(
+            re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
+                .context("failed to re-encrypt identity")?,
+        ),
         None => None,
     };
     let secure_note = match &cipher.secure_note {
-        Some(v) => Some(re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
-            .context("failed to re-encrypt secure_note")?),
+        Some(v) => Some(
+            re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)
+                .context("failed to re-encrypt secure_note")?,
+        ),
         None => None,
     };
 
@@ -525,12 +527,11 @@ fn re_encrypt_json_value(
             if s.starts_with("2.") || s.starts_with("0.") || s.starts_with("1.") {
                 match decrypt_cipher_string(s, src_enc, src_mac) {
                     Ok(plain) => {
-                        let plain_str = std::str::from_utf8(plain.as_bytes())
-                            .unwrap_or("");
+                        let plain_str = std::str::from_utf8(plain.as_bytes()).unwrap_or("");
                         let encrypted = encrypt_to_cipher_string(plain_str, dst_enc, dst_mac)?;
                         Ok(Value::String(encrypted))
                     }
-                    Err(_) => Ok(Value::String(s.clone())) // Can't decrypt, pass through
+                    Err(_) => Ok(Value::String(s.clone())), // Can't decrypt, pass through
                 }
             } else {
                 Ok(Value::String(s.clone()))
@@ -539,12 +540,16 @@ fn re_encrypt_json_value(
         Value::Object(map) => {
             let mut new_map = serde_json::Map::new();
             for (k, v) in map {
-                new_map.insert(k.clone(), re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)?);
+                new_map.insert(
+                    k.clone(),
+                    re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac)?,
+                );
             }
             Ok(Value::Object(new_map))
         }
         Value::Array(arr) => {
-            let new_arr: Result<Vec<Value>> = arr.iter()
+            let new_arr: Result<Vec<Value>> = arr
+                .iter()
                 .map(|v| re_encrypt_json_value(v, src_enc, src_mac, dst_enc, dst_mac))
                 .collect();
             Ok(Value::Array(new_arr?))

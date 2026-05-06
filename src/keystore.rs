@@ -4,8 +4,10 @@ use anyhow::{Context, Result};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::rngs::OsRng;
-use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
-use rsa::pkcs8::{LineEnding};
+use rsa::pkcs1::{
+    DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey,
+};
+use rsa::pkcs8::LineEnding;
 use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -90,8 +92,8 @@ pub const PRIVATE_KEY_TPM_ENC_FILE: &str = "private_key.tpm_enc";
 
 /// Generate an RSA-2048 keypair.
 pub fn generate_keypair() -> Result<(RsaPrivateKey, RsaPublicKey)> {
-    let private_key = RsaPrivateKey::new(&mut OsRng, 2048)
-        .context("failed to generate RSA-2048 keypair")?;
+    let private_key =
+        RsaPrivateKey::new(&mut OsRng, 2048).context("failed to generate RSA-2048 keypair")?;
     let public_key = RsaPublicKey::from(&private_key);
     Ok((private_key, public_key))
 }
@@ -114,16 +116,15 @@ pub fn encrypt_credentials(
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 
     // Serialize credentials to JSON.
-    let mut plaintext = serde_json::to_vec(creds)
-        .context("failed to serialize credentials")?;
+    let mut plaintext = serde_json::to_vec(creds).context("failed to serialize credentials")?;
 
     // Generate random AES-256 key (32 bytes).
     let mut aes_key = [0u8; 32];
     rand::RngCore::fill_bytes(&mut OsRng, &mut aes_key);
 
     // Encrypt plaintext with AES-256-GCM.
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).context("failed to create AES-256-GCM cipher")?;
     let mut nonce_bytes = [0u8; 12];
     rand::RngCore::fill_bytes(&mut OsRng, &mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -177,8 +178,8 @@ pub fn decrypt_credentials(
         .context("RSA-OAEP decryption of AES key failed")?;
 
     // Decrypt ciphertext with AES-256-GCM.
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let mut plaintext = cipher
@@ -230,8 +231,8 @@ pub fn wrap_private_key(private_key_der: &[u8], password: &str) -> Result<Wrappe
         .map_err(|e| anyhow::anyhow!("Argon2id key derivation failed: {}", e))?;
 
     // AES-256-GCM encrypt the private key DER.
-    let cipher = Aes256Gcm::new_from_slice(&derived_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&derived_key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, private_key_der)
@@ -276,8 +277,8 @@ pub fn unwrap_private_key(wrapped: &WrappedPrivateKey, password: &str) -> Result
         .map_err(|e| anyhow::anyhow!("Argon2id key derivation failed: {}", e))?;
 
     // AES-256-GCM decrypt.
-    let cipher = Aes256Gcm::new_from_slice(&derived_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&derived_key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let plaintext = cipher
         .decrypt(nonce, ciphertext.as_ref())
@@ -301,8 +302,7 @@ pub fn public_key_to_pem(key: &RsaPublicKey) -> Result<String> {
 
 /// Deserialize an RSA public key from PEM (PKCS#1).
 pub fn public_key_from_pem(pem: &str) -> Result<RsaPublicKey> {
-    RsaPublicKey::from_pkcs1_pem(pem)
-        .context("failed to decode public key from PEM")
+    RsaPublicKey::from_pkcs1_pem(pem).context("failed to decode public key from PEM")
 }
 
 /// Serialize an RSA private key to DER (PKCS#1).
@@ -315,8 +315,7 @@ pub fn private_key_to_der(key: &RsaPrivateKey) -> Result<Vec<u8>> {
 
 /// Deserialize an RSA private key from DER (PKCS#1).
 pub fn private_key_from_der(der: &[u8]) -> Result<RsaPrivateKey> {
-    RsaPrivateKey::from_pkcs1_der(der)
-        .context("failed to decode private key from DER")
+    RsaPrivateKey::from_pkcs1_der(der).context("failed to decode private key from DER")
 }
 
 // -------------------------------------------------------------------------- //
@@ -350,8 +349,8 @@ pub fn setup_keystore(config_dir: &str, creds: Credentials, setup_password: &str
 
     // Encrypt credentials with public key.
     let encrypted = encrypt_credentials(&public_key, &creds)?;
-    let encrypted_json = serde_json::to_vec(&encrypted)
-        .context("failed to serialize encrypted credentials")?;
+    let encrypted_json =
+        serde_json::to_vec(&encrypted).context("failed to serialize encrypted credentials")?;
     crate::secure::safe_write_config(
         &format!("{}/{}", config_dir, CREDENTIALS_FILE),
         &encrypted_json,
@@ -377,8 +376,8 @@ pub fn setup_keystore(config_dir: &str, creds: Credentials, setup_password: &str
 
     // Always write password-wrapped key (software fallback).
     let wrapped = wrap_private_key(&der, setup_password)?;
-    let wrapped_json = serde_json::to_vec(&wrapped)
-        .context("failed to serialize wrapped private key")?;
+    let wrapped_json =
+        serde_json::to_vec(&wrapped).context("failed to serialize wrapped private key")?;
     crate::secure::safe_write_config(
         &format!("{}/{}", config_dir, PRIVATE_KEY_ENC_FILE),
         &wrapped_json,
@@ -397,8 +396,8 @@ pub fn unlock_keystore(config_dir: &str, setup_password: Option<&str>) -> Result
     // Read encrypted credentials.
     let enc_bytes = std::fs::read(format!("{}/{}", config_dir, CREDENTIALS_FILE))
         .context("failed to read credentials.enc")?;
-    let encrypted: EncryptedCredentials = serde_json::from_slice(&enc_bytes)
-        .context("failed to parse credentials.enc")?;
+    let encrypted: EncryptedCredentials =
+        serde_json::from_slice(&enc_bytes).context("failed to parse credentials.enc")?;
 
     // Try TPM unseal first: unseal the AES key, then decrypt the private key from disk.
     let sealed_path = format!("{}/{}", config_dir, TPM_AES_KEY_SEALED_FILE);
@@ -432,21 +431,25 @@ fn unlock_with_tpm(config_dir: &str) -> Result<Vec<u8>> {
 
     // Unseal AES key from TPM.
     let sealed_path = format!("{}/{}", config_dir, TPM_AES_KEY_SEALED_FILE);
-    let mut aes_key = crate::tpm::unseal_from_tpm(&sealed_path)
-        .context("failed to unseal AES key from TPM")?;
+    let mut aes_key =
+        crate::tpm::unseal_from_tpm(&sealed_path).context("failed to unseal AES key from TPM")?;
 
     // Read AES-encrypted private key from disk.
     let enc_bytes = std::fs::read(format!("{}/{}", config_dir, PRIVATE_KEY_TPM_ENC_FILE))
         .context("failed to read private_key.tpm_enc")?;
-    let wrapped: WrappedPrivateKey = serde_json::from_slice(&enc_bytes)
-        .context("failed to parse private_key.tpm_enc")?;
+    let wrapped: WrappedPrivateKey =
+        serde_json::from_slice(&enc_bytes).context("failed to parse private_key.tpm_enc")?;
 
-    let nonce_bytes = STANDARD.decode(&wrapped.nonce).context("invalid base64 in nonce")?;
-    let ciphertext = STANDARD.decode(&wrapped.ciphertext).context("invalid base64 in ciphertext")?;
+    let nonce_bytes = STANDARD
+        .decode(&wrapped.nonce)
+        .context("invalid base64 in nonce")?;
+    let ciphertext = STANDARD
+        .decode(&wrapped.ciphertext)
+        .context("invalid base64 in ciphertext")?;
 
     // Decrypt with AES-256-GCM.
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let der = cipher
         .decrypt(nonce, ciphertext.as_ref())
@@ -463,8 +466,8 @@ fn unlock_with_password(config_dir: &str, setup_password: Option<&str>) -> Resul
 
     let wrapped_bytes = std::fs::read(format!("{}/{}", config_dir, PRIVATE_KEY_ENC_FILE))
         .context("failed to read private_key.enc")?;
-    let wrapped: WrappedPrivateKey = serde_json::from_slice(&wrapped_bytes)
-        .context("failed to parse private_key.enc")?;
+    let wrapped: WrappedPrivateKey =
+        serde_json::from_slice(&wrapped_bytes).context("failed to parse private_key.enc")?;
 
     unwrap_private_key(&wrapped, password)
 }
@@ -478,8 +481,8 @@ pub fn reencrypt_credentials(config_dir: &str, creds: &Credentials) -> Result<()
     let public_key = public_key_from_pem(&pem)?;
 
     let encrypted = encrypt_credentials(&public_key, creds)?;
-    let encrypted_json = serde_json::to_vec(&encrypted)
-        .context("failed to serialize encrypted credentials")?;
+    let encrypted_json =
+        serde_json::to_vec(&encrypted).context("failed to serialize encrypted credentials")?;
     crate::secure::safe_write_config(
         &format!("{}/{}", config_dir, CREDENTIALS_FILE),
         &encrypted_json,
@@ -508,8 +511,8 @@ pub fn seal_after_unlock(config_dir: &str, setup_password: &str) -> Result<()> {
     rand::RngCore::fill_bytes(&mut OsRng, &mut nonce_bytes);
 
     // Encrypt private key DER with AES-256-GCM.
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .context("failed to create AES-256-GCM cipher")?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).context("failed to create AES-256-GCM cipher")?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, der.as_ref())
@@ -520,8 +523,7 @@ pub fn seal_after_unlock(config_dir: &str, setup_password: &str) -> Result<()> {
 
     // Seal the 32-byte AES key to TPM.
     let sealed_path = format!("{}/{}", config_dir, TPM_AES_KEY_SEALED_FILE);
-    crate::tpm::seal_to_tpm(&aes_key, &sealed_path)
-        .context("failed to seal AES key to TPM")?;
+    crate::tpm::seal_to_tpm(&aes_key, &sealed_path).context("failed to seal AES key to TPM")?;
     aes_key.zeroize();
 
     // Write AES-encrypted private key + nonce to disk.
@@ -530,8 +532,8 @@ pub fn seal_after_unlock(config_dir: &str, setup_password: &str) -> Result<()> {
         nonce: STANDARD.encode(nonce_bytes),
         ciphertext: STANDARD.encode(&ciphertext),
     };
-    let tpm_enc_json = serde_json::to_vec(&tpm_enc)
-        .context("failed to serialize TPM-encrypted private key")?;
+    let tpm_enc_json =
+        serde_json::to_vec(&tpm_enc).context("failed to serialize TPM-encrypted private key")?;
     crate::secure::safe_write_config(
         &format!("{}/{}", config_dir, PRIVATE_KEY_TPM_ENC_FILE),
         &tpm_enc_json,
@@ -565,8 +567,7 @@ pub fn reset_keystore(config_dir: &str) -> Result<()> {
     ] {
         let path = format!("{}/{}", config_dir, filename);
         if std::path::Path::new(&path).exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path))?;
+            std::fs::remove_file(&path).with_context(|| format!("failed to remove {}", path))?;
         }
     }
     Ok(())
@@ -642,10 +643,7 @@ mod tests {
         assert_eq!(cloud.email, "cloud@example.com");
         assert_eq!(cloud.master_password, "cloud-pass");
         assert_eq!(cloud.refresh_token.as_deref(), Some("rt_abc123"));
-        assert_eq!(
-            parsed.setup_password_hash.as_deref(),
-            Some("$2b$12$hash")
-        );
+        assert_eq!(parsed.setup_password_hash.as_deref(), Some("$2b$12$hash"));
     }
 
     #[test]
@@ -769,7 +767,10 @@ mod tests {
 
         let decrypted = unlock_keystore(config_dir, Some("my-setup-password")).unwrap();
         assert_eq!(decrypted.vaultwarden.url, "https://vault.example.com");
-        assert_eq!(decrypted.vaultwarden.master_password, "test-master-password-123");
+        assert_eq!(
+            decrypted.vaultwarden.master_password,
+            "test-master-password-123"
+        );
 
         let result = unlock_keystore(config_dir, Some("wrong-password"));
         assert!(result.is_err());

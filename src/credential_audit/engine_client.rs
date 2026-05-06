@@ -97,9 +97,10 @@ impl EngineClient {
             .get("verdict")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let v = serde_json::from_str::<crate::credential_audit::types::Pass2Verdict>(
-            &format!("\"{}\"", verdict_str),
-        )
+        let v = serde_json::from_str::<crate::credential_audit::types::Pass2Verdict>(&format!(
+            "\"{}\"",
+            verdict_str
+        ))
         .unwrap_or(crate::credential_audit::types::Pass2Verdict::Unknown);
         Ok(v)
     }
@@ -166,7 +167,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/health"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":"ok"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":"ok"})),
+            )
             .mount(&server)
             .await;
         let client = EngineClient::new(server.uri());

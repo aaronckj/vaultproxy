@@ -30,7 +30,8 @@ impl RateLimiter {
     /// Returns `true` if the send is allowed, `false` if rate-limited.
     fn check_and_record(&mut self) -> bool {
         let now = Instant::now();
-        self.timestamps.retain(|t| now.duration_since(*t) < self.window);
+        self.timestamps
+            .retain(|t| now.duration_since(*t) < self.window);
         if self.timestamps.len() >= self.max_count {
             return false;
         }
@@ -121,8 +122,10 @@ impl Notifier {
                     tracing::debug!(
                         "notification truncated to fit ntfy.sh limits \
                          (title: {} → {} bytes, body: {} → {} bytes)",
-                        title.len(), title_safe.len(),
-                        message.len(), body_safe.len(),
+                        title.len(),
+                        title_safe.len(),
+                        message.len(),
+                        body_safe.len(),
                     );
                 }
                 self.http
