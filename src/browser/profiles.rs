@@ -24,6 +24,7 @@ pub fn load_profiles(path: &str) -> HashMap<String, SiteProfile> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)] // iter-82: used by future browser profile management UI; not yet wired to an HTTP route
 pub fn save_profiles(path: &str, profiles: &HashMap<String, SiteProfile>) -> Result<()> {
     let data = serde_json::to_string_pretty(profiles)?;
     crate::secure::safe_write_config(path, data.as_bytes())

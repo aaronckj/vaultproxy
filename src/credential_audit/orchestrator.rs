@@ -16,6 +16,7 @@ use uuid::Uuid;
 /// (serial) to ~25s without saturating CPU or starving the cloud-sync worker.
 const PREP_CONCURRENCY: usize = 64;
 
+#[allow(dead_code)] // iter-82: pass2 is constructed and held but only dispatched via verify_start (scaffold)
 pub struct Orchestrator<V: VaultAdapter + 'static> {
     pub vault: Arc<V>,
     pub engine: EngineClient,
@@ -342,12 +343,14 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         })
     }
 
+    #[allow(dead_code)] // iter-82: scaffold — future dashboard telemetry tab will call this
     pub async fn get_telemetry(&self, run_id: &str) -> Result<serde_json::Value> {
         self.engine.telemetry(run_id).await
     }
 
     /// List items that classified as `needs_pass_2` after Pass 1 — these are
     /// the input to the Pass-2 dispatch worker.
+    #[allow(dead_code)] // iter-82: called by verify_start internally; expose directly when Pass-2 UI is wired
     pub fn list_needs_pass_2(&self, run_id: &str) -> Result<Vec<ItemResult>> {
         let conn = self.conn.lock().expect("DB mutex poisoned");
         let mut stmt = conn.prepare(
@@ -380,6 +383,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     /// through `Pass2Engine.judge_one` and persists the verdict. Returns
     /// the number of items dispatched (caller can poll the run detail to
     /// see verdicts as they land).
+    #[allow(dead_code)] // iter-82: scaffold — POST /audit/credaudit/:run_id/verify_start will call this
     pub async fn verify_start(self: Arc<Self>, run_id: &str) -> Result<usize> {
         let needs_items = self.list_needs_pass_2(run_id)?;
         if needs_items.is_empty() {
@@ -546,6 +550,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         Ok(())
     }
 
+    #[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffolded, not yet HTTP-wired)
     fn update_pass2_result(
         &self,
         run_id: &str,
@@ -581,6 +586,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         Ok(())
     }
 
+    #[allow(dead_code)] // iter-82: scaffold — GET /audit/credaudit/runs will call this
     pub fn list_runs(&self) -> Result<Vec<crate::credential_audit::types::Run>> {
         let conn = self.conn.lock().expect("lock conn");
         let mut stmt = conn.prepare(
@@ -609,6 +615,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
         Ok(out)
     }
 
+    #[allow(dead_code)] // iter-82: scaffold — GET /audit/credaudit/:run_id will call this
     pub fn get_run_detail(&self, run_id: &str) -> Result<RunDetail> {
         let conn = self.conn.lock().expect("lock conn");
 
@@ -660,6 +667,7 @@ impl<V: VaultAdapter + 'static> Orchestrator<V> {
     }
 }
 
+#[allow(dead_code)] // iter-82: returned by get_run_detail (scaffold); serialized by future dashboard route
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RunDetail {
     pub run: crate::credential_audit::types::Run,
@@ -669,6 +677,7 @@ pub struct RunDetail {
 /// Map a Pass-2 verdict to (new audit_run_items.status, marked_for_delete).
 /// Used by the Pass-2 worker to translate the LLM verdict into the same
 /// status vocabulary Pass-1 uses.
+#[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffold path, not yet HTTP-wired)
 fn map_verdict_to_status(v: &Pass2Verdict) -> (&'static str, bool) {
     match v {
         Pass2Verdict::Success => ("alive", false),

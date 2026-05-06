@@ -50,6 +50,7 @@ impl EngineClient {
         Ok(parsed)
     }
 
+    #[allow(dead_code)] // iter-82: called by Orchestrator::get_telemetry which is itself a scaffold method
     pub async fn telemetry(&self, run_id: &str) -> Result<serde_json::Value> {
         // Issue (iter-14): Telemetry is a lightweight metadata fetch — no LLM
         // inference involved. Override the 300s client default with a 10s
@@ -68,6 +69,7 @@ impl EngineClient {
         Ok(parsed)
     }
 
+    #[allow(dead_code)] // iter-82: called by Pass2Engine::judge_one (scaffold, not yet wired to HTTP route)
     pub async fn judge_login(
         &self,
         run_id: &str,

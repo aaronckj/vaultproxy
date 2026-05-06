@@ -13,9 +13,12 @@ use std::time::{Duration, Instant};
 
 use crate::credential_audit::{engine_client::EngineClient, types::Pass2Verdict};
 
+#[allow(dead_code)] // iter-82: used by rate_limit_remaining and is_blacklisted (scaffold)
 const RATE_LIMIT_PER_HOST: Duration = Duration::from_secs(5 * 60);
+#[allow(dead_code)] // iter-82: used by is_blacklisted / record_strike (scaffold)
 const HOST_BLACKLIST_THRESHOLD: u32 = 2;
 
+#[allow(dead_code)] // iter-82: all fields read by scaffold methods; wired when Pass-2 HTTP route lands
 pub struct Pass2Engine {
     pub engine: Arc<EngineClient>,
     pub agent_path: String,
@@ -42,6 +45,7 @@ impl Pass2Engine {
     /// Verdict severity classifier — captcha/lockout/no_login_form increment a
     /// host's strike counter. Hitting `HOST_BLACKLIST_THRESHOLD` marks the
     /// host as blacklisted for the rest of the run.
+    #[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffold); wired when Pass-2 route lands
     pub fn is_strike(verdict: &Pass2Verdict) -> bool {
         matches!(
             verdict,
@@ -49,12 +53,14 @@ impl Pass2Engine {
         )
     }
 
+    #[allow(dead_code)] // iter-82: gating logic in pass2_run_worker (scaffold)
     pub async fn is_blacklisted(&self, host: &str) -> bool {
         let map = self.host_strike_count.lock().await;
         map.get(host).copied().unwrap_or(0) >= HOST_BLACKLIST_THRESHOLD
     }
 
     /// Returns `Some(remaining_wait)` if rate limited, `None` if free to proceed.
+    #[allow(dead_code)] // iter-82: gating logic in pass2_run_worker (scaffold)
     pub async fn rate_limit_remaining(&self, host: &str) -> Option<Duration> {
         let map = self.host_last_attempt.lock().await;
         let last = match map.get(host) {
@@ -69,11 +75,13 @@ impl Pass2Engine {
         }
     }
 
+    #[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffold)
     pub async fn record_attempt(&self, host: &str) {
         let mut map = self.host_last_attempt.lock().await;
         map.insert(host.to_string(), Instant::now());
     }
 
+    #[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffold)
     pub async fn record_strike(&self, host: &str) {
         let mut map = self.host_strike_count.lock().await;
         *map.entry(host.to_string()).or_insert(0) += 1;
@@ -85,6 +93,7 @@ impl Pass2Engine {
     ///
     /// Caller is responsible for rate-limiting (see `record_attempt`),
     /// blacklist gating (see `is_blacklisted`), and persisting the result.
+    #[allow(dead_code)] // iter-82: called from pass2_run_worker (scaffold); wired when Pass-2 HTTP route lands
     pub async fn judge_one(
         &self,
         run_id: &str,

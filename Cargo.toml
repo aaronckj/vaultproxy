@@ -1,12 +1,15 @@
 [package]
 name = "vaultproxy"
-version = "0.2.24"
+version = "0.2.25"
 edition = "2021"
-# MSRV: 1.87 — inferred from the highest minimum version declared by direct
-# dependencies (tokio-util 0.7 requires 1.70+; axum 0.8 requires 1.75+;
-# rustls 0.23 requires 1.75+; the `let-chains` usage in this crate requires
-# 1.87 which is the effective floor).  Verified with `cargo check` on 1.87.
-rust-version = "1.87"
+# MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
+# this crate's own syntax.  `let-chains` usage requires 1.87, but three
+# transitive deps (time 0.3.47, time-core 0.1.8, cookie_store 0.22.1) declare
+# `rust-version = "1.88"`, which `rustup run 1.87 cargo check` reports as an
+# error.  Bumped from 1.87 → 1.88 in iter-82 after `rustup run 1.87 cargo
+# check` failed on the current lockfile.  Update this field whenever a
+# transitive dep raises its own MSRV.
+rust-version = "1.88"
 description = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents"
 license = "MIT"
 repository = "https://github.com/aaronckj/vaultproxy"

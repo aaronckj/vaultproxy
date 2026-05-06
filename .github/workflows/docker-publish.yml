@@ -69,6 +69,16 @@ jobs:
         # test functions inside bench or example targets.
         run: cargo test --all-targets
 
+      - name: Run tests (full feature matrix)
+        # iter-82: the browser and engine modules are feature-gated and not
+        # compiled in the default build above.  Running with all three opt-in
+        # features exercises the 28 gated tests (browser_rotate_guard_tests +
+        # engine_client + orchestrator tests) and catches regressions in any
+        # feature combination before merge.  The dashboard feature adds no
+        # tests of its own but is included so the feature-combination compile
+        # path (browser + engine + dashboard together) is validated in CI.
+        run: cargo test --all-targets --features browser,engine,dashboard
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

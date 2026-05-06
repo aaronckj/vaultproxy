@@ -3,6 +3,49 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.25] — iteration 82: CI feature matrix, dead-code hygiene for browser/engine, MSRV 1.88
+
+### Bug fixes (iter-82)
+
+- **`cargo clippy --features browser -- -D warnings` failed (HIGH)** —
+  `save_profiles` in `src/browser/profiles.rs` was a dead-code error when
+  compiled with `--features browser` alone (not combined with `dashboard`).
+  Added `#[allow(dead_code)]` with a comment noting the function is intended
+  for a future browser profile management UI. `src/browser/profiles.rs:27`.
+
+- **`cargo clippy --features engine -- -D warnings` failed with 13 errors (HIGH)** —
+  The entire engine scaffold (`engine_client`, `orchestrator`, `pass2`, `types`,
+  `vault_adapter`) produces dead-code errors when compiled with `--features engine`
+  alone because the HTTP routes are wired but the sub-methods are not yet called
+  from handlers. All scaffold items annotated with targeted `#[allow(dead_code)]`
+  plus a comment stating the iter and the future wiring path.
+  `src/credential_audit/{engine_client,orchestrator,pass2,types,vault_adapter}.rs`.
+
+- **`rust-version = "1.87"` was wrong (MEDIUM)** — `rustup run 1.87 cargo check`
+  failed: `time 0.3.47`, `time-core 0.1.8`, and `cookie_store 0.22.1` all
+  declare `rust-version = "1.88"`. The effective MSRV is therefore 1.88, not
+  1.87. Bumped `rust-version` in `Cargo.toml` from `"1.87"` → `"1.88"`.
+  `Cargo.toml:9`.
+
+### CI improvements (iter-82)
+
+- **Feature-matrix test step added to CI (MEDIUM)** — `.github/workflows/docker-publish.yml`
+  previously ran `cargo test --all-targets` (default features only), which silently
+  skipped the 28 tests gated behind `browser` and `engine` features. A second step
+  `cargo test --all-targets --features browser,engine,dashboard` was added immediately
+  after, exercising the full feature combination.
+  `.github/workflows/docker-publish.yml`.
+
+### Verification (iter-82)
+
+- `cargo test --all-targets`: 230 passed (228 lib + 2 integration), 0 failed.
+- `cargo test --all-targets --features browser,engine,dashboard`: 258 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors (default features).
+- `cargo clippy --features browser -- -D warnings`: 0 errors.
+- `cargo clippy --features engine -- -D warnings`: 0 errors.
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+- `rustup run 1.87 cargo check`: fails (expected — MSRV is now correctly 1.88).
+
 ## [0.2.24] — iteration 81: browser + engine feature gates, MSRV 1.87, dead-code hygiene
 
 ### Architecture (iter-81)

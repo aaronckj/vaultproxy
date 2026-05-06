@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)] // iter-82: scaffold — consumed by list_runs/get_run_detail routes when wired
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
@@ -40,6 +41,7 @@ pub struct Pass2Result {
     pub attempted_at: String,
 }
 
+#[allow(dead_code)] // iter-82: scaffold — constructed by list_runs/get_run_detail (not yet HTTP-wired)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
     pub run_id: String,
