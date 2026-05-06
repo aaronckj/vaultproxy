@@ -210,8 +210,12 @@ pub async fn audit(State(state): State<DashboardState>) -> Json<Value> {
 }
 
 pub async fn list_policies(State(_state): State<DashboardState>) -> Json<Value> {
+    // Issue (iter-112): Response was a bare `serde_json::to_value(policies)` array
+    // with no `"ok": true` sentinel, inconsistent with all other collection endpoints
+    // in the dashboard API. Wrapped in `{"ok": true, "policies": [...]}`.
+    // policies.html updated in iter-112 to read `data.policies ?? []`.
     let policies = crate::policy::load_policies("/config/policies.json");
-    Json(serde_json::to_value(policies).unwrap_or_default())
+    Json(serde_json::json!({"ok": true, "policies": policies}))
 }
 
 pub async fn save_policy(
@@ -1013,8 +1017,13 @@ pub async fn get_audit_log(
         .unwrap_or(100)
         .min(1000);
 
+    // Issue (iter-112): Response was `Json(serde_json::to_value(entries))` — a bare
+    // JSON array with no `"ok": true` sentinel. All other collection success paths
+    // in the dashboard API wrap in `{"ok": true, ...}`. The bare array worked for the
+    // audit-log.html frontend which iterated the response directly; audit-log.html has
+    // been updated in iter-112 to read `data.entries` instead.
     let entries: Vec<_> = filtered.into_iter().take(limit).collect();
-    Json(serde_json::to_value(entries).unwrap_or_default())
+    Json(serde_json::json!({"ok": true, "entries": entries}))
 }
 
 /// Return a static list of known MCP tool names for the permissions UI.

@@ -115,7 +115,11 @@
         }
 
         function loadLog() {
-            api('/api/audit-log?limit=200').then(renderLog).catch(function() {});
+            // iter-112: /api/audit-log now returns {"ok": true, "entries": [...]}
+            // instead of a bare array. Extract body.entries before rendering.
+            api('/api/audit-log?limit=200').then(function(data) {
+                renderLog(Array.isArray(data) ? data : (data.entries || []));
+            }).catch(function() {});
         }
 
         loadLog();

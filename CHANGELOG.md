@@ -3,6 +3,64 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+---
+
+> **BREAKING CHANGES — response format migration (iter-109 through iter-112)**
+>
+> All collection endpoints have been migrated from bare JSON arrays to
+> `{"ok": true, "<key>": [...]}` envelopes. Callers that iterate the response
+> body directly must be updated to unwrap the named key:
+>
+> | Endpoint | Old shape | New shape | Key | Since |
+> |---|---|---|---|---|
+> | `GET /vault/items` | `[...]` | `{"ok":true,"items":[...]}` | `items` | iter-109 |
+> | `GET /vault/folders` | `[...]` | `{"ok":true,"folders":[...]}` | `folders` | iter-110 |
+> | `GET /vault/duplicates` | `[...]` | `{"ok":true,"groups":[...]}` | `groups` | iter-110 |
+> | `GET /audit/credaudit/review_pending/:id` | `[...]` | `{"ok":true,"items":[...]}` | `items` | iter-112 |
+>
+> The Connecterr TypeScript sidecar client has been updated for all four.
+> Raw `curl` scripts or other consumers that iterate the body directly must
+> unwrap the named key shown above.
+
+---
+
+## [1.0.0-beta.6] — iteration 112: final format pass, v1.0.0 readiness assessment
+
+### Bugs (iter-112) — remaining bare-array JSON responses
+
+- **`review_pending` success missing `"ok": true` (iter-112)** — `src/credential_audit/handlers.rs:88`. HIGH.
+  `GET /audit/credaudit/review_pending/:run_id` returned `Json<Vec<ItemResult>>` — a bare JSON
+  array with no `"ok": true` sentinel, inconsistent with every other collection success path
+  in the codebase. Fixed: return type changed to `Json<Value>`;
+  response is now `{"ok": true, "items": [...]}`. Connecterr TS client
+  `credentialAuditReviewPending` in `sidecar-client.ts` updated to unwrap `body.items`.
+
+- **`get_audit_log` missing `"ok": true` (iter-112)** — `src/dashboard/api.rs:1017`. MEDIUM.
+  `GET /api/audit-log` returned `Json(serde_json::to_value(entries))` — a bare array.
+  Fixed: wrapped in `{"ok": true, "entries": [...]}`. `dashboard/audit-log.html` updated
+  to read `data.entries ?? []`.
+
+- **`list_policies` missing `"ok": true` (iter-112)** — `src/dashboard/api.rs:214`. MEDIUM.
+  `GET /api/policies` returned `Json(serde_json::to_value(policies))` — a bare array.
+  Fixed: wrapped in `{"ok": true, "policies": [...]}`. `dashboard/policies.html` updated
+  to read `data.policies ?? []`.
+
+### Documentation (iter-112) — CHANGELOG breaking-change prominence
+
+- **BREAKING CHANGE banner promoted to top of CHANGELOG** — `CHANGELOG.md`. MEDIUM.
+  The `GET /vault/items` and related breaking changes (iter-109 through iter-112) were buried
+  inside their respective version sections. A consolidated breaking-change table has been added
+  at the very top of the file (before any version sections) so it is impossible to miss.
+
+### Quality gates (iter-112)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **292 passed**; 0 failed
+- `cargo clippy --features browser,dashboard --all-targets -- -D warnings` — 0 errors, 0 warnings
+- `tsc` in Connecterr — 0 errors
+
+---
+
 ## [1.0.0-beta.5] — iteration 111: Connecterr TS list_folders/list_duplicates format fix + integration tests
 
 ### Bugs (iter-111) — Connecterr TS client uses pre-iter-110 bare-array shape

@@ -212,10 +212,15 @@
         }
 
         // Fetch and render
+        // iter-112: /api/policies now returns {"ok": true, "policies": [...]}
+        // instead of a bare array. Extract body.policies before rendering.
         function loadPolicies() {
             fetch('/api/policies')
                 .then(function (r) { return r.json(); })
-                .then(function (data) { renderTable(Array.isArray(data) ? data : []); })
+                .then(function (data) {
+                    var list = Array.isArray(data) ? data : (data.policies || []);
+                    renderTable(list);
+                })
                 .catch(function () { renderTable([]); });
         }
 

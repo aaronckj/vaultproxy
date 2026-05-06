@@ -1,5 +1,4 @@
 use crate::credential_audit::orchestrator::{ApplyOutcome, Orchestrator};
-use crate::credential_audit::types::ItemResult;
 use crate::credential_audit::vw_adapter::VwAdapter;
 use axum::{
     extract::{Path, State},
@@ -7,6 +6,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use serde_json::Value;
 use std::sync::Arc;
 
 pub type SharedOrch = Arc<Orchestrator<VwAdapter>>;
@@ -85,27 +85,36 @@ pub async fn scan_start(State(orch): State<SharedOrch>) -> axum::response::Respo
 pub async fn review_pending(
     State(orch): State<SharedOrch>,
     Path(run_id): Path<String>,
-) -> Result<Json<Vec<ItemResult>>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Value>, (StatusCode, Json<serde_json::Value>)> {
     // Issue (iter-103): Error bodies were missing `"ok": false`. Every other
     // non-200 response in the codebase includes `"ok": false`; callers that
     // check `body["ok"] == false` would not detect these errors.
-    orch.list_pending(&run_id).map(Json).map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "ok": false,
-                    "error": format!("run_id '{}' not found — no scan has been started with this ID", run_id)
-                })),
-            )
-        } else {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"ok": false, "error": msg})),
-            )
-        }
-    })
+    //
+    // Issue (iter-112): Success body was `Json<Vec<ItemResult>>` — a bare JSON
+    // array with no `"ok": true` sentinel. All other collection success paths
+    // wrap in an object with `"ok": true`. Changed to `{"ok": true, "items": [...]}`
+    // to match the convention established by `list_items` (iter-109) and
+    // `list_folders` / `list_duplicates` (iter-110).
+    // Connecterr TS client `credentialAuditReviewPending` updated in iter-112.
+    orch.list_pending(&run_id)
+        .map(|items| Json(serde_json::json!({"ok": true, "items": items})))
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!("run_id '{}' not found — no scan has been started with this ID", run_id)
+                    })),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"ok": false, "error": msg})),
+                )
+            }
+        })
 }
 
 pub async fn apply(
