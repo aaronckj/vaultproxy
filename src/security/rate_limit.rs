@@ -29,6 +29,28 @@
 //! its own independent rate-limit budget. The header value is truncated to
 //! 64 bytes and ASCII-sanitized before use as a map key. An empty or
 //! non-ASCII-printable value falls back to the IP.
+//!
+//! # Trust model — X-Caller-Id spoofing
+//!
+//! `X-Caller-Id` is **not authenticated**. Any local process can set it to any
+//! value, including the name of another MCP server. The intentional trust model
+//! is: vault-proxy is a loopback-only sidecar (`127.0.0.1`). All callers are
+//! local processes that already passed OS-level access control (same user, or
+//! explicit permission). In this threat model there is no meaningful difference
+//! between an unauthenticated header claim and an IP address — both are equally
+//! controllable by any local process.
+//!
+//! The `X-Caller-Id` header is a **cooperative declaration**, not an
+//! authentication credential. Its purpose is to let well-behaved MCP servers
+//! opt in to isolated budgets. A malicious local process that spoofs another
+//! server's `X-Caller-Id` to exhaust its rate-limit bucket is a local process
+//! with full control over localhost connections — it already has the ability to
+//! interfere with the target server in far more direct ways.
+//!
+//! If vault-proxy is ever exposed beyond `127.0.0.1` (strongly discouraged),
+//! `X-Caller-Id` would need to be derived from the authenticated bearer token
+//! rather than a user-supplied header. Track this under the non-loopback
+//! security hardening work item.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

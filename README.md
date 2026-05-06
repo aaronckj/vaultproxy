@@ -40,7 +40,8 @@ The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the a
 
 - The proxy listens on `127.0.0.1:3201` by default — network isolation is the primary guarantee. **Warning:** if you override `--listen` to bind a non-loopback address (e.g. `0.0.0.0:3201`), all proxy and vault endpoints become accessible to any host on that network. There is no authentication middleware — the only access control is the loopback bind. A startup warning is logged whenever a non-loopback address is used. Never expose this port beyond the local machine without a reverse proxy with mTLS or network-layer ACLs.
 - DNS rebinding guard on all `/proxy` requests
-- Rate limit: 60 req/60s on all endpoints
+- Rate limit: 60 req/60s on sensitive endpoints per caller (see below)
+- **Per-caller rate limiting (`X-Caller-Id`):** When multiple MCP servers run on the same host they all share `127.0.0.1`, so the rate limiter would give them a single shared budget. Set `X-Caller-Id: <unique-name>` on every request from an MCP server to receive an independent budget. Example: `X-Caller-Id: connecterr-vault` (vault operations), `X-Caller-Id: connecterr-unifi` (UniFi operations). The header value is truncated to 64 characters and validated as printable ASCII; invalid or absent values fall back to the client IP. The header is a cooperative declaration — it is not authenticated (see trust model in `src/security/rate_limit.rs`).
 - Credentials are decrypted in-process from an encrypted keystore; plaintext values never appear in logs
 - Optional TPM sealing: keystore is hardware-bound to the host machine (`--features tpm`)
 - Dashboard (optional, `--features dashboard`) listens on `127.0.0.1:3202` by default; same `--listen` non-loopback warning applies
