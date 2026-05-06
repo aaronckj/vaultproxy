@@ -45,7 +45,7 @@ pub struct AuditResult {
     ///
     /// iter-64: added to surface the no-dictionary-check limitation directly
     /// in the API response rather than requiring callers to read the source.
-    pub scoring_note: &'static str,
+    pub scoring_note: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,10 +88,9 @@ pub struct AuditItem {
 /// with an external tool (zxcvbn, `cracklib`, HIBP k-anonymity) or run the
 /// credential-audit sidecar (`src/credential_audit/`) against a live wordlist.
 ///
-/// The `GET /vault/audit/run` response includes `weak_threshold_len` so
-/// callers can display the scoring rules alongside results.  A future version
-/// may add a `scoring_notes` field that surfaces this limitation directly in
-/// the API response.
+/// The `GET /vault/audit/run` response includes `weak_threshold_len` and
+/// `scoring_note` (added iter-64) so callers can display the scoring rules and
+/// algorithm limitations alongside results without consulting the source.
 ///
 /// Rules:
 ///  - len < 8                                  → "weak"   (reported in `weak_passwords`)
@@ -230,9 +229,17 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         reused_passwords,
         weak_threshold_len: WEAK_THRESHOLD,
         // iter-64: surface the no-dictionary-check limitation in the API response.
-        scoring_note: "rule-based heuristic: length + character classes only; \
-                       no dictionary check — common passwords like 'password123' \
-                       may score 'fair' if they meet the length threshold",
+        // iter-65: use format!() so the actual WEAK_THRESHOLD value is embedded
+        // in the note.  Previously a &'static str with no reference to the
+        // constant — if WEAK_THRESHOLD changed from 8 to 12, the note would
+        // still say "shorter than 8 characters" until someone noticed the drift.
+        scoring_note: format!(
+            "rule-based heuristic: length + character classes only; \
+             no dictionary check — common passwords like 'password123' \
+             may score 'fair' if they meet the length threshold \
+             (weak = fewer than {} characters)",
+            WEAK_THRESHOLD
+        ),
     }
 }
 
@@ -280,17 +287,23 @@ pub async fn handle_audit_run(
                  mutex acquisition timed out after 5 s — returning 503 to caller"
                 );
                 let mut headers = axum::http::HeaderMap::new();
+                // iter-65: Retry-After reduced from 10 s to 5 s.  The mutex
+                // acquisition timeout above is 5 s, meaning the background audit
+                // will complete within that window (typical audit: 1-2 s on 200
+                // items).  Telling callers to wait 10 s was twice the worst-case
+                // duration; 5 s matches the mutex timeout and keeps retries
+                // responsive without hammering the endpoint.
                 headers.insert(
                     axum::http::header::RETRY_AFTER,
-                    axum::http::HeaderValue::from_static("10"),
+                    axum::http::HeaderValue::from_static("5"),
                 );
                 return (
                     axum::http::StatusCode::SERVICE_UNAVAILABLE,
                     headers,
                     axum::Json(serde_json::json!({
                         "ok": false,
-                        "error": "background audit is in progress — retry after 10 s",
-                        "retry_after_s": 10,
+                        "error": "background audit is in progress — retry after 5 s",
+                        "retry_after_s": 5,
                     })),
                 )
                     .into_response();

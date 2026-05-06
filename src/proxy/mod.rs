@@ -2648,6 +2648,21 @@ vault_item  = "vault-proxy - Beta"
             body.get("reused_passwords").is_some(),
             "audit/run response must include 'reused_passwords' field; got: {body}"
         );
+        // iter-65: assert iter-57 and iter-64 fields so a future change that
+        // removes them triggers a test failure rather than a silent regression.
+        assert!(
+            body.get("weak_threshold_len").is_some(),
+            "audit/run response must include 'weak_threshold_len' field (iter-57); got: {body}"
+        );
+        assert!(
+            body.get("scoring_note").is_some(),
+            "audit/run response must include 'scoring_note' field (iter-64); got: {body}"
+        );
+        // scoring_note must be a non-empty string.
+        assert!(
+            body["scoring_note"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+            "audit/run 'scoring_note' must be a non-empty string; got: {body}"
+        );
     }
 
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires
