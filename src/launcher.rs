@@ -371,6 +371,54 @@ pub async fn launch(
         );
     }
 
+    // Issue (iter-88): Reject server names that contain characters that would
+    // corrupt the child's environment when injected as VAULT_PROXY_CALLER_ID.
+    //
+    // POSIX env var *values* are arbitrary byte strings, but three characters
+    // cause real problems in practice:
+    //
+    //   '\0' — null bytes terminate the C-string representation; the value is
+    //           silently truncated at the first null.  A name "foo\0bar" would
+    //           inject VAULT_PROXY_CALLER_ID=foo — wrong value, no error.
+    //
+    //   '\n' / '\r' — many shells and tools parse env files line-by-line; an
+    //           embedded newline could inject a second KEY=VALUE line into any
+    //           file written from the child's environment.  The OS allows it,
+    //           but it is never intentional in a server name.
+    //
+    //   '='   — on POSIX the first '=' in an env entry separates the key from
+    //           the value; a value containing '=' is fine structurally, but a
+    //           server name with '=' is almost certainly a misconfiguration that
+    //           would make the CALLER_ID header value contain '=', confusing
+    //           any consumer that uses '=' as a delimiter.
+    //
+    // The path-separator check above already rejects '/' and '\'. This check
+    // adds the env-value safety layer that the path check does not cover.
+    if server_name.contains('\0') {
+        anyhow::bail!(
+            "mcp_server name '{}' contains a null byte — \
+             server names must not contain null bytes (they are injected as \
+             VAULT_PROXY_CALLER_ID and null bytes corrupt the env var value)",
+            server_name
+        );
+    }
+    if server_name.contains('\n') || server_name.contains('\r') {
+        anyhow::bail!(
+            "mcp_server name contains a newline character — \
+             server names must not contain newlines (they are injected as \
+             VAULT_PROXY_CALLER_ID and newlines can corrupt environment file parsing)"
+        );
+    }
+    if server_name.contains('=') {
+        anyhow::bail!(
+            "mcp_server name '{}' contains '=' — \
+             server names must not contain '=' (they are injected as \
+             VAULT_PROXY_CALLER_ID; '=' in the value confuses consumers that \
+             use '=' as a delimiter). Use a name without '='.",
+            server_name
+        );
+    }
+
     // Issue (iter-17): Prevent duplicate launches of the same MCP server.
     //
     // Two processes running `vault-proxy --launch <name>` simultaneously would
@@ -883,6 +931,60 @@ command = "cmd-b"
         assert!(
             !server_name_has_path_separator("unifi"),
             "simple name must pass"
+        );
+    }
+
+    // Issue (iter-88): Server name env-var value sanitization — characters that
+    // corrupt VAULT_PROXY_CALLER_ID when injected into the child's environment.
+    fn server_name_env_value_is_safe(name: &str) -> bool {
+        !name.contains('\0') && !name.contains('\n') && !name.contains('\r') && !name.contains('=')
+    }
+
+    #[test]
+    fn test_server_name_null_byte_rejected_for_env_value() {
+        assert!(
+            !server_name_env_value_is_safe("foo\x00bar"),
+            "server name with null byte must be rejected (corrupts env var value)"
+        );
+    }
+
+    #[test]
+    fn test_server_name_newline_rejected_for_env_value() {
+        assert!(
+            !server_name_env_value_is_safe("foo\nINJECTED=1"),
+            "server name with newline must be rejected (env file injection)"
+        );
+        assert!(
+            !server_name_env_value_is_safe("foo\rbar"),
+            "server name with CR must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_server_name_eq_sign_rejected_for_env_value() {
+        assert!(
+            !server_name_env_value_is_safe("name=bad"),
+            "server name with '=' must be rejected (VAULT_PROXY_CALLER_ID value confusion)"
+        );
+    }
+
+    #[test]
+    fn test_server_name_safe_values_pass_env_check() {
+        assert!(
+            server_name_env_value_is_safe("my-mcp-server"),
+            "hyphenated name must pass env-value check"
+        );
+        assert!(
+            server_name_env_value_is_safe("server_a"),
+            "underscored name must pass env-value check"
+        );
+        assert!(
+            server_name_env_value_is_safe("unifi"),
+            "simple name must pass env-value check"
+        );
+        assert!(
+            server_name_env_value_is_safe("server with spaces"),
+            "name with spaces is allowed (spaces are valid in env var values)"
         );
     }
 

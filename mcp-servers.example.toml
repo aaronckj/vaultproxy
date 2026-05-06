@@ -63,12 +63,20 @@ command = "uvx homeassistant-mcp@latest"
 # POST $VAULT_PROXY_URL/proxy to make authenticated requests.
 # Credentials never appear in its environment.
 #
-# IMPORTANT: VAULT_PROXY_URL is automatically injected by vaultproxy into
-# every --launch child process.  You do NOT need to add a
-#   [[mcp_server.env]]
-#   var = "VAULT_PROXY_URL"
-# entry — doing so would override the auto-injected value and could break
-# the server if the proxy port ever changes.
+# AUTO-INJECTED VARIABLES: vaultproxy injects two env vars into every --launch
+# child automatically.  Do NOT add manual [[mcp_server.env]] entries for them
+# unless you want to override the auto-injected value:
+#
+#   VAULT_PROXY_URL        — URL of the vault-proxy sidecar.  Derived from
+#                            --listen (or VAULT_PROXY_PUBLIC_URL if set).
+#                            Smart servers call POST $VAULT_PROXY_URL/proxy.
+#
+#   VAULT_PROXY_CALLER_ID  — Server name from this file (e.g. "my-smart-mcp").
+#                            Smart servers MUST forward this as the
+#                            X-Caller-Id header on every /proxy request:
+#                              X-Caller-Id: <value of VAULT_PROXY_CALLER_ID>
+#                            This gives each launched server its own isolated
+#                            per-caller rate-limit bucket automatically.
 #
 # This pattern provides stronger isolation than the "dumb" launcher examples
 # above: vault-proxy injects auth headers into the outbound request internally,

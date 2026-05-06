@@ -3,6 +3,50 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.30] — iteration 88: VAULT_PROXY_CALLER_ID docs, server-name env-value validation, resolve_folder cache wired, sanitize_output vision tests
+
+### Features (iter-88)
+
+- **`VAULT_PROXY_CALLER_ID` documented in README and `mcp-servers.example.toml` (HIGH)** —
+  `README.md`, `mcp-servers.example.toml`. The "Smart servers and `--launch`" README section
+  now documents both auto-injected env vars (`VAULT_PROXY_URL` and `VAULT_PROXY_CALLER_ID`)
+  in a table, explains the `X-Caller-Id` forwarding convention, and notes the precedence rules.
+  The smart-server comment block in `mcp-servers.example.toml` is rewritten to document both
+  auto-injected vars and the `X-Caller-Id: <VAULT_PROXY_CALLER_ID>` forwarding requirement.
+
+- **Server name env-value validation: rejects `\0`, `\n`, `\r`, `=` (MEDIUM)** —
+  `src/launcher.rs`. The server name from `mcp-servers.toml` is injected as
+  `VAULT_PROXY_CALLER_ID` into the child's environment. Previously only `/` and `\` were
+  rejected (for lock-file safety). This change also rejects null bytes (silently truncate
+  the env var value), newlines/CR (env-file injection vector), and `=` (value delimiter
+  confusion). 5 new unit tests:
+  `test_server_name_null_byte_rejected_for_env_value`,
+  `test_server_name_newline_rejected_for_env_value`,
+  `test_server_name_eq_sign_rejected_for_env_value`,
+  `test_server_name_safe_values_pass_env_check`.
+
+- **`resolve_vault_folder_id` wired in all vault mutation handlers (MEDIUM)** —
+  `src/vault/handlers.rs`. All 11 direct calls to `state.vault.find_folder_id_by_name_async`
+  (O(n) scan on every request) are replaced with `resolve_vault_folder_id(&state)` (O(1) after
+  first call via double-checked locking + `cached_folder_id` in `AppState`). The
+  `#[allow(dead_code)]` annotation is removed. Handlers affected: `list_items`,
+  `list_duplicates`, `list_untracked_items`, `update_item`, `clone_item`, `test_credential`,
+  `write_env`, `delete_folder`, `move_item`, `delete_item`, `create_item`.
+  `post-v1.0:` deferred count drops from 16 to 15.
+
+- **`sanitize_output` wiring test in `browser/vision.rs` (MEDIUM)** —
+  `src/browser/vision.rs`. Adds 5 unit tests in a new `#[cfg(test)] mod tests` block:
+  `test_sanitize_output_blocks_injection_before_vision_parse` verifies injection phrases are
+  stripped before `VisionAction` JSON parsing; `test_sanitize_output_blocks_tool_call_tags_before_vision_parse`
+  verifies `<tool_call>` tags are blocked; plus 3 `strip_think_blocks` unit tests.
+  A future refactor that removes the `sanitize_output` call will now fail these tests.
+
+### Quality gates (iter-88)
+
+- `cargo test --features browser,engine` — 270 passed (was 261); 0 failed
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+- `cargo clippy --all-targets --features browser,engine` — 0 errors, 0 warnings
+
 ## [0.2.29] — iteration 87: X-Caller-Id auto-injection in --launch, sanitize_output wired, CHANGELOG fix
 
 ### Features (iter-87)

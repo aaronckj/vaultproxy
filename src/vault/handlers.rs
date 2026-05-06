@@ -20,7 +20,6 @@ use crate::proxy::AppState;
 
 /// Resolve the `vault_folder` name to its Vaultwarden folder ID, using the
 /// cached value in `state.cached_folder_id` when available.
-#[allow(dead_code)] // post-v1.0: will be called by scoped vault handlers once folder-scoping is wired
 ///
 /// Issue (iter-22): Every scoped handler previously called
 /// `find_folder_id_by_name_async` on every request — a read lock + linear scan
@@ -604,11 +603,8 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
 pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedItem>> {
     let items = state.vault.list_items().await;
 
-    // Find the folder_id that corresponds to vault_folder.
-    let vault_folder_id = state
-        .vault
-        .find_folder_id_by_name_async(&state.vault_folder)
-        .await;
+    // Find the folder_id that corresponds to vault_folder (cached after first call).
+    let vault_folder_id = resolve_vault_folder_id(&state).await;
 
     let filtered = match vault_folder_id {
         Some(ref folder_id) => items
@@ -638,11 +634,8 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
 /// vault_folder) to any local caller. We now filter to vault_folder items
 /// before duplicate detection so personal entries are never exposed.
 pub async fn list_duplicates(State(state): State<Arc<AppState>>) -> Json<Vec<DuplicateGroup>> {
-    // Resolve vault_folder → folder_id for filtering.
-    let vault_folder_id = state
-        .vault
-        .find_folder_id_by_name_async(&state.vault_folder)
-        .await;
+    // Resolve vault_folder → folder_id for filtering (cached after first call).
+    let vault_folder_id = resolve_vault_folder_id(&state).await;
     let groups = state
         .vault
         .list_duplicates_in_folder(vault_folder_id.as_deref())
@@ -768,10 +761,7 @@ pub async fn list_untracked_items(State(state): State<Arc<AppState>>) -> Json<se
     // returns ALL items not in the sync map — including personal items from other
     // folders. Filter to vault_folder before returning so callers cannot enumerate
     // names/usernames/URIs of personal vault entries.
-    let vault_folder_id = state
-        .vault
-        .find_folder_id_by_name_async(&state.vault_folder)
-        .await;
+    let vault_folder_id = resolve_vault_folder_id(&state).await;
 
     let all_untracked = state.vault.list_untracked_item_ids(&tracked).await;
 
@@ -925,15 +915,11 @@ pub async fn create_item(
     };
 
     // Resolve effective_folder_name → folder_id.
-    // effective_folder_name is always vault_folder (validated above), so this
-    // places the new item inside the owned folder. Returns None only when the
-    // folder doesn't exist yet (fresh vault) — the item will be created without
-    // a folder, which is acceptable for first-run tooling.
-    let folder_id = match state
-        .vault
-        .find_folder_id_by_name_async(&effective_folder_name)
-        .await
-    {
+    // effective_folder_name is always vault_folder (validated above), so we use
+    // the cached resolve_vault_folder_id path (O(1) after first call). Returns
+    // None only when the folder doesn't exist yet (fresh vault) — the item will
+    // be created without a folder, which is acceptable for first-run tooling.
+    let folder_id = match resolve_vault_folder_id(&state).await {
         Some(id) => Some(id),
         None => {
             tracing::debug!(
@@ -1039,10 +1025,7 @@ pub async fn update_item(
     // vault, or the operator may be mid-setup).  We only block when we can
     // positively confirm the item belongs to a *different* folder.
     {
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1252,10 +1235,7 @@ pub async fn clone_item(
                 )
             }
         };
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match source.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1355,10 +1335,7 @@ pub async fn test_credential(
                 )
             }
         };
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1716,10 +1693,7 @@ pub async fn write_env(
                 )
             }
         };
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -1967,11 +1941,7 @@ pub async fn delete_folder(
     // Deleting vault_folder would silently break all credential lookups —
     // list_items, update_item, delete_item, etc. all filter by vault_folder.
     // If the requested folder id matches vault_folder's id, refuse.
-    if let Some(vault_folder_id) = state
-        .vault
-        .find_folder_id_by_name_async(&state.vault_folder)
-        .await
-    {
+    if let Some(vault_folder_id) = resolve_vault_folder_id(&state).await {
         if req.id.trim() == vault_folder_id.as_str() {
             return (
                 StatusCode::FORBIDDEN,
@@ -2046,10 +2016,7 @@ pub async fn move_item(
                 )
             }
         };
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
@@ -2178,10 +2145,7 @@ pub async fn delete_item(
                 )
             }
         };
-        let vault_folder_id = state
-            .vault
-            .find_folder_id_by_name_async(&state.vault_folder)
-            .await;
+        let vault_folder_id = resolve_vault_folder_id(&state).await;
         if let Some(ref folder_id) = vault_folder_id {
             match cipher.folder_id.as_deref() {
                 Some(item_folder_id) if item_folder_id != folder_id.as_str() => {
