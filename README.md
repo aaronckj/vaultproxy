@@ -303,25 +303,46 @@ Returns a JSON object:
 {
   "total_items": 42,
   "weak_passwords": [
-    {"name": "My Service", "username": "admin", "item_type": "login", "password_strength": "weak"}
+    {
+      "name": "My Service",
+      "username": "admin",
+      "item_type": "login",
+      "password_strength": "weak",
+      "reason": "fewer than 8 characters — increase length to at least 8"
+    }
   ],
   "reused_passwords": [
     [
-      {"name": "Site A", "username": "user@example.com", "item_type": "login", "password_strength": "fair"},
-      {"name": "Site B", "username": "user@example.com", "item_type": "login", "password_strength": "fair"}
+      {
+        "name": "Site A",
+        "username": "user@example.com",
+        "item_type": "login",
+        "password_strength": "fair",
+        "reason": "password shared with 1 other item(s): Site B"
+      },
+      {
+        "name": "Site B",
+        "username": "user@example.com",
+        "item_type": "login",
+        "password_strength": "fair",
+        "reason": "password shared with 1 other item(s): Site A"
+      }
     ]
   ],
+  "fair_passwords_count": 3,
   "weak_threshold_len": 8,
-  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters)"
+  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters); each AuditItem includes a `reason` field with an actionable explanation"
 }
 ```
 
 - `total_items`: count of vault items that were scanned. The in-process audit (`src/audit.rs`) scans every item in `vault_folder` with no cap — `total_items` is the true vault count for that folder. (The engine-sidecar audit path in `src/credential_audit/vw_adapter.rs` enforces `SCAN_ITEM_CAP = 1_000`; that cap does not apply here.)
-- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Only items scored `"weak"` appear here; `"fair"` and `"strong"` items are excluded.
-- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`.
-- `password_strength` values: `"weak"` (fewer than `weak_threshold_len` characters), `"fair"` (meets minimum length but not strong), `"strong"` (16+ characters with 3+ character classes: lowercase, uppercase, digit, symbol). Only `"weak"` items appear in `weak_passwords`; `"fair"` and `"strong"` items are silently excluded from that list but may appear in `reused_passwords`.
+- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, `password_strength` (`"weak"`), and `reason` (human-readable explanation, e.g. `"fewer than 8 characters — increase length to at least 8"`). Only items scored `"weak"` appear here; `"fair"` and `"strong"` items are excluded.
+- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`. The `reason` field for reuse-group items is overridden to describe the reuse: `"password shared with N other item(s): name1, name2, …"`.
+- `AuditItem.reason`: human-readable explanation of the `password_strength` classification or, for items in `reused_passwords`, a description of which other items share the same password. Always a non-empty string. Use this field to display actionable guidance to operators without requiring them to read source code.
+- `fair_passwords_count`: count of vault items whose password scored `"fair"` (8–15 characters, or 16+ characters with fewer than 3 character classes). `"fair"` items are NOT included in `weak_passwords` but are above the minimum length floor. An operator whose entire vault scores `"fair"` would otherwise see `weak_passwords: []` and might incorrectly conclude all credentials are strong. Added iter-68.
+- `password_strength` values: `"weak"` (fewer than `weak_threshold_len` characters), `"fair"` (meets minimum length but not strong), `"strong"` (16+ characters with 3+ character classes: lowercase, uppercase, digit, symbol). Only `"weak"` items appear in `weak_passwords`; `"fair"` and `"strong"` items are excluded from that list but may appear in `reused_passwords`.
 - `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
-- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65).
+- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65). Mentions the `reason` field added in iter-68.
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
 - Scoped to `vault_folder` — only items inside the configured folder are scanned.
 

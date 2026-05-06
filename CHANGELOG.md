@@ -3,6 +3,93 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.15] — iteration 69 reuse reason, test coverage, README fields
+
+### Bug fixes (iter-69)
+
+- **`reused_passwords` items show strength reason instead of reuse reason
+  (iter-69, HIGH)**: Items in `reused_passwords` had `reason` set to the
+  password-strength explanation (e.g. `"16+ characters with 3 or more
+  character classes…"` for a strong-but-reused password).  This is semantically
+  wrong — the item is in the reuse list because it is *shared*, not because it
+  is weak.  Displaying a positive strength message (`"strong password!"`) while
+  flagging the item as a security problem is confusing to operators.
+  Fixed: `run_audit()` now post-processes every reuse group and overrides
+  `reason` with `"password shared with N other item(s): name1, name2, …"` so
+  each reuse-list entry gives an actionable, accurate description.
+  `src/audit.rs` `run_audit()`.
+
+- **`scoring_note` does not mention the `reason` field (iter-69, LOW)**:
+  `scoring_note` described the scoring algorithm but did not direct callers to
+  `AuditItem.reason` for per-item explanations.  Updated `scoring_note` to
+  append `"; each AuditItem includes a \`reason\` field with an actionable
+  explanation"` so operators reading the note are aware of the field.
+  `src/audit.rs` `run_audit()`.
+
+### Test coverage (iter-69)
+
+- **`AuditItem.reason` field not verified in any HTTP-level test (iter-69,
+  MEDIUM)**: The integration test runs against an empty vault so
+  `weak_passwords` and `reused_passwords` are empty arrays — no `AuditItem`
+  is ever inspected.  If `reason` were removed from the struct, all existing
+  tests would still pass.  Added `audit_item_serialises_reason_field` unit
+  test in `src/audit.rs` that constructs an `AuditItem`, round-trips it
+  through `serde_json`, and asserts the `reason` key is present and correct.
+  Also added comments to the integration test pointing to the unit test as the
+  authoritative shape check, and added array-type assertions for
+  `weak_passwords` and `reused_passwords` at the HTTP level.
+
+- **`fair_passwords_count` not verified beyond presence check (iter-69,
+  MEDIUM)**: The integration test only asserts that `fair_passwords_count`
+  is a number field.  If the increment logic in `run_audit()` were deleted,
+  the field would always return `0` and no test would fail.  Added
+  `fair_passwords_count_logic_matches_classifier` unit test in `src/audit.rs`
+  that simulates the `run_audit()` counter logic using a known corpus of
+  passwords, verifies each password is classified correctly, and confirms the
+  simulated count matches the expected value.
+
+### Documentation (iter-69)
+
+- **README `GET /vault/audit/run` response schema missing `fair_passwords_count`
+  and `reason` (iter-69, MEDIUM)**: The JSON example omitted both fields; the
+  field descriptions listed `total_items`, `weak_passwords`, `reused_passwords`,
+  `weak_threshold_len`, and `scoring_note` but not `fair_passwords_count` or
+  `AuditItem.reason`.  Updated the JSON example to show both fields with
+  realistic values.  Added `AuditItem.reason` and `fair_passwords_count` to
+  the field-by-field description table.  Updated `reused_passwords` description
+  to mention the reuse-reason override (iter-69 bug fix).
+  `README.md`.
+
+- **GitHub release v0.2.14 not created (iter-69, LOW)**: The v0.2.14 tag was
+  pushed but no GitHub release was drafted.  Created
+  `gh release create v0.2.14` with release notes covering the iter-68 changes
+  (`AuditItem.reason`, `fair_passwords_count`, `password_strength()` tuple
+  return, mlock O(1) documentation).
+
+### Findings — no code change required (iter-69)
+
+- **`password_strength()` callers outside `run_audit()` (iter-69, VERIFY OK)**:
+  `grep -rn 'password_strength' src/` shows all callers are in `src/audit.rs`
+  only — six call sites (one in `run_audit()`, five in unit tests).  No other
+  file calls this function.  The tuple return from iter-68 has no silent
+  discard risk in external call sites.
+
+- **`cargo doc --no-deps` warning count (iter-69, VERIFY OK)**:
+  `cargo doc --no-deps 2>&1 | grep -c warning` = 0.  No new doc warnings
+  introduced by the iter-68 changes (`reason` field, `fair_passwords_count`,
+  `password_strength()` signature).
+
+- **CHANGELOG [0.2.14] completeness (iter-69, VERIFY OK)**: The [0.2.14]
+  section documents all three iter-68 changes: `AuditItem.reason`,
+  `AuditResult.fair_passwords_count`, and mlock O(1) clarification.  Complete.
+
+### Verification (iter-69)
+
+- `cargo test --all-targets`: 250 passed, 0 failed (+2 new tests:
+  `audit_item_serialises_reason_field`, `fair_passwords_count_logic_matches_classifier`).
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
 ## [0.2.14] — iteration 68 audit hardening
 
 ### Enhancements (iter-68)

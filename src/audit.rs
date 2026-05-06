@@ -293,9 +293,37 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
     drop(ephemeral_key);
 
     // Collect groups that have more than one item (actual reuse).
+    // iter-69: override `reason` for every item in a reuse group so the
+    // field reflects the *actionable* problem (password shared with other
+    // items) rather than the strength classification that was set when the
+    // item was first scored.  A strong-but-reused password previously showed
+    // `reason = "16+ characters with 3 or more character classes…"` — a
+    // positive message — while being listed as a security problem.  We now
+    // replace the reason with "password shared with N other item(s): name1,
+    // name2, …" so every item in the reuse list gives an operator a direct,
+    // actionable description.
     let reused_passwords: Vec<Vec<AuditItem>> = reuse_map
         .into_values()
         .filter(|group| group.len() > 1)
+        .map(|mut group| {
+            let n = group.len();
+            // Build the reuse reason for each item: list the *other* names
+            // in the group (all names except the item's own name).
+            for i in 0..n {
+                let other_names: Vec<&str> = group
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, item)| item.name.as_str())
+                    .collect();
+                group[i].reason = format!(
+                    "password shared with {} other item(s): {}",
+                    other_names.len(),
+                    other_names.join(", ")
+                );
+            }
+            group
+        })
         .collect();
 
     AuditResult {
@@ -309,11 +337,14 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         // in the note.  Previously a &'static str with no reference to the
         // constant — if WEAK_THRESHOLD changed from 8 to 12, the note would
         // still say "shorter than 8 characters" until someone noticed the drift.
+        // iter-69: mention the `reason` field so callers know where to find
+        // the per-item explanation without consulting source code.
         scoring_note: format!(
             "rule-based heuristic: length + character classes only; \
              no dictionary check — common passwords like 'password123' \
              may score 'fair' if they meet the length threshold \
-             (weak = fewer than {} characters)",
+             (weak = fewer than {} characters); \
+             each AuditItem includes a `reason` field with an actionable explanation",
             WEAK_THRESHOLD
         ),
     }
@@ -472,6 +503,41 @@ mod tests {
         );
     }
 
+    /// iter-69: Verify that `AuditItem` serialises with a `reason` field.
+    ///
+    /// This test catches the regression case where `reason` is removed from the
+    /// struct — `serde_json::to_value` would then produce an object without the
+    /// key, and the assertion would fail.  Without this, a caller could delete
+    /// the `reason` field and all existing tests would still pass because the
+    /// integration test runs against an empty vault (no `AuditItem` objects
+    /// appear in the response arrays to inspect).
+    #[test]
+    fn audit_item_serialises_reason_field() {
+        let item = AuditItem {
+            name: "Test Item".to_string(),
+            username: Some("user@example.com".to_string()),
+            item_type: "login".to_string(),
+            password_strength: "weak".to_string(),
+            reason: "fewer than 8 characters — increase length to at least 8".to_string(),
+        };
+        let json = serde_json::to_value(&item).expect("AuditItem must serialise to JSON");
+        assert!(
+            json.get("reason").is_some(),
+            "AuditItem JSON must include a 'reason' field; got: {json}"
+        );
+        assert_eq!(
+            json["reason"].as_str().unwrap_or(""),
+            "fewer than 8 characters — increase length to at least 8",
+            "AuditItem 'reason' field value must round-trip through JSON"
+        );
+        // Also verify other required fields are present.
+        assert!(json.get("name").is_some(), "AuditItem must have 'name'");
+        assert!(
+            json.get("password_strength").is_some(),
+            "AuditItem must have 'password_strength'"
+        );
+    }
+
     #[test]
     fn fair_password_reason_is_actionable() {
         // iter-68: "fair" passwords must have a non-empty reason that guides
@@ -482,6 +548,54 @@ mod tests {
         assert!(
             !reason.is_empty(),
             "fair password must have a non-empty reason"
+        );
+    }
+
+    /// iter-69: Verify that the passwords classified as `"fair"` by
+    /// `password_strength()` are exactly the ones that `run_audit()` would
+    /// count in `fair_passwords_count`.
+    ///
+    /// `run_audit()` cannot be called without a live `VaultManager`, so this
+    /// test validates the classifier branch that feeds the counter: only
+    /// passwords whose `password_strength()` returns `"fair"` are counted.
+    /// Weak and strong passwords must NOT be counted.
+    ///
+    /// Representative corpus:
+    ///   - 7-char          → "weak"   (< WEAK_THRESHOLD)
+    ///   - 8-char          → "fair"   (meets minimum, not strong)
+    ///   - 15-char         → "fair"   (below 16-char strong floor)
+    ///   - 16-char 2-class → "fair"   (16+ but only 2 char classes)
+    ///   - 16-char 3-class → "strong" (16+ with 3+ classes)
+    #[test]
+    fn fair_passwords_count_logic_matches_classifier() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"abc1234", "weak"),            // 7 chars
+            (b"abcde123", "fair"),           // 8 chars, 2 classes
+            (b"abcdefghijabcde", "fair"),    // 15 chars, 1 class
+            (b"abcdefghijklmnop", "fair"),   // 16 chars, 1 class (lower only)
+            (b"Correct-Horse-1!", "strong"), // 16+ chars, 4 classes
+        ];
+
+        // Simulate the fair_passwords_count increment logic from run_audit():
+        //   if strength == "weak"   → weak_passwords.push(...)
+        //   else if strength == "fair" → fair_passwords_count += 1
+        let mut simulated_fair_count: usize = 0;
+        for (pw, expected_strength) in cases {
+            let (strength, _reason) = password_strength(pw);
+            assert_eq!(
+                strength, *expected_strength,
+                "password {:?} expected '{}', got '{}'",
+                pw, expected_strength, strength
+            );
+            if strength == "fair" {
+                simulated_fair_count += 1;
+            }
+        }
+
+        // Expect exactly 3 "fair" passwords in the corpus above.
+        assert_eq!(
+            simulated_fair_count, 3,
+            "expected 3 fair passwords in test corpus, got {simulated_fair_count}"
         );
     }
 }

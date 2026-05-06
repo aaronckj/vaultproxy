@@ -2689,7 +2689,7 @@ vault_item  = "vault-proxy - Beta"
             "audit/run 'scoring_note' must contain '{}'; got: {body}",
             expected_phrase
         );
-        // iter-68: fair_passwords_count and reason field assertions.
+        // iter-68: fair_passwords_count assertion.
         assert!(
             body.get("fair_passwords_count").is_some(),
             "audit/run response must include 'fair_passwords_count' field (iter-68); got: {body}"
@@ -2697,6 +2697,27 @@ vault_item  = "vault-proxy - Beta"
         assert!(
             body["fair_passwords_count"].is_number(),
             "audit/run 'fair_passwords_count' must be a number; got: {body}"
+        );
+        // iter-69: AuditItem `reason` field shape assertion.
+        //
+        // The vault is empty in this integration test so `weak_passwords` and
+        // `reused_passwords` are empty arrays — there are no `AuditItem` objects
+        // to inspect for the `reason` field here.  The shape of `AuditItem` is
+        // verified in `src/audit.rs::tests::audit_item_serialises_reason_field`,
+        // which round-trips a constructed `AuditItem` through `serde_json` and
+        // asserts the `reason` key is present.  If `reason` were removed from
+        // `AuditItem`, that unit test fails before this integration test runs.
+        //
+        // What we CAN assert here: `weak_passwords` and `reused_passwords` are
+        // arrays (not objects, not null), so the shape contract is enforced at
+        // the HTTP layer.
+        assert!(
+            body["weak_passwords"].is_array(),
+            "audit/run 'weak_passwords' must be a JSON array; got: {body}"
+        );
+        assert!(
+            body["reused_passwords"].is_array(),
+            "audit/run 'reused_passwords' must be a JSON array; got: {body}"
         );
     }
 
