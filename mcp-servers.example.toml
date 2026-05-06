@@ -59,9 +59,16 @@ command = "uvx homeassistant-mcp@latest"
 # ── Smart server example (native /proxy integration) ─────────────────────────
 # A "smart" MCP server that natively supports vault-proxy does NOT need any
 # [[mcp_server.env]] entries with vault_item — it discovers the proxy sidecar
-# at runtime via the VAULT_PROXY_URL environment variable (automatically
-# injected by --launch) and calls POST $VAULT_PROXY_URL/proxy to make
-# authenticated requests. Credentials never appear in its environment.
+# at runtime via the VAULT_PROXY_URL environment variable and calls
+# POST $VAULT_PROXY_URL/proxy to make authenticated requests.
+# Credentials never appear in its environment.
+#
+# IMPORTANT: VAULT_PROXY_URL is automatically injected by vaultproxy into
+# every --launch child process.  You do NOT need to add a
+#   [[mcp_server.env]]
+#   var = "VAULT_PROXY_URL"
+# entry — doing so would override the auto-injected value and could break
+# the server if the proxy port ever changes.
 #
 # This pattern provides stronger isolation than the "dumb" launcher examples
 # above: vault-proxy injects auth headers into the outbound request internally,
@@ -80,7 +87,7 @@ command = "uvx homeassistant-mcp@latest"
 # [[mcp_server]]
 # name = "my-smart-mcp"
 # command = "/usr/local/bin/my-smart-mcp"
-# # No [[mcp_server.env]] vault_item entries — this server uses VAULT_PROXY_URL.
+# # VAULT_PROXY_URL is auto-injected — do NOT add it here manually.
 # # Static (non-secret) env vars are still fine:
 #
 #   [[mcp_server.env]]

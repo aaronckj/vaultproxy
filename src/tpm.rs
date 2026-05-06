@@ -8,6 +8,7 @@
 use std::net::IpAddr;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::Context;
 use rcgen::{
@@ -20,8 +21,18 @@ use rcgen::{
 // -------------------------------------------------------------------------- //
 
 /// Check if a TPM device is available.
+///
+/// The result is cached on first call via `OnceLock` — subsequent calls return
+/// the cached value with zero syscall overhead.
+///
+/// Rationale: `GET /vault/health` calls this on every request; Docker fires
+/// healthchecks every 30 s.  On a host without TPM hardware the `stat("/dev/tpm0")`
+/// always fails, producing ~2 880 failed syscalls per day.  TPM availability is
+/// a hardware fact that does not change at runtime: once the process starts the
+/// chip is either present or not.  Caching is therefore both safe and correct.
 pub fn tpm_available() -> bool {
-    Path::new("/dev/tpm0").exists()
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| Path::new("/dev/tpm0").exists())
 }
 
 /// Lock down a temp directory to owner-only before writing secrets into it.

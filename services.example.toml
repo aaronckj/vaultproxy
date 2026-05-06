@@ -65,6 +65,9 @@ name = "ha_home"
 base_url = "http://homeassistant.local:8123"
 auth = "bearer"
 vault_item = "vault-proxy - Home Assistant"
+# timeout_secs = 60   # optional: HA automations can run for 30+ seconds; raise
+                      # this if long-running service calls are timing out.
+                      # Default is the global --proxy-timeout (120 s).
 
 # ── API key injected as a header (e.g. Sonarr, Radarr, Overseerr) ───────────
 [[service]]

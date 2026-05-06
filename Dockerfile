@@ -97,7 +97,9 @@ RUN touch src/main.rs \
 # ---------------------------------------------------------------------------- #
 FROM debian:bookworm-slim AS runtime
 
-# curl: used by the Docker healthcheck defined in docker-compose.example.yml.
+# curl: required by the HEALTHCHECK instruction below AND by the healthcheck
+#   defined in docker-compose.example.yml.  Both use `curl -sf` to probe
+#   GET /vault/health.  Removing curl will silently break all health checks.
 # ca-certificates: required for TLS validation against public Vaultwarden
 #   instances and Bitwarden cloud.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -172,11 +174,13 @@ EXPOSE 3201
 # To get the dashboard, build locally: docker build --build-arg FEATURES=dashboard .
 EXPOSE 3202
 
-# Issue (iter-12): Add a HEALTHCHECK so `docker run` deployments get container
-# health status without relying solely on the docker-compose.example.yml entry.
-# Mirrors the healthcheck in docker-compose.example.yml exactly.
-# --interval: check every 30 s; --timeout: give curl 5 s; --start-period: allow
-# 15 s for the vault to unlock on first boot before counting failures.
+# HEALTHCHECK — used by plain `docker run` and any orchestrator that reads
+# image-embedded health metadata (Portainer, Nomad, etc.).
+# docker-compose.example.yml overrides this with an identical definition so that
+# `docker compose ps` shows the status directly.
+# --interval: probe every 30 s; --timeout: give curl 5 s to respond;
+# --start-period: allow 15 s for vault unlock before counting failures.
+# curl is installed above — do NOT remove it or this check silently breaks.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://127.0.0.1:3201/vault/health || exit 1
 

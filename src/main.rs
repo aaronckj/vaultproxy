@@ -195,6 +195,25 @@ struct Args {
     /// refresh. Operators should monitor for repeated sync-failure warnings.
     #[arg(long, env = "VAULT_REFRESH_INTERVAL_SECS", default_value = "0")]
     vault_refresh_interval_secs: u64,
+
+    /// Background credential-health audit interval in seconds.
+    ///
+    /// When set to a non-zero value, vault-proxy spawns a background task that
+    /// calls `run_audit()` (the same operation as `GET /vault/audit/run`) every
+    /// N seconds and logs the summary at INFO level.  This gives operators
+    /// continuous visibility into weak and reused passwords without requiring
+    /// manual API calls.
+    ///
+    /// The audit is read-only and runs entirely in-process: it HMAC-fingerprints
+    /// passwords with an ephemeral key and zeroizes them immediately — no
+    /// plaintext is stored or emitted.  Each audit decrypts every vault item's
+    /// password once, so on large vaults (500+ items) choose a generous interval
+    /// (e.g. 3600 s / 1 hour) to avoid sustained CPU use.
+    ///
+    /// Set to 0 (the default) to disable the background audit entirely and
+    /// rely on on-demand calls to `GET /vault/audit/run`.
+    #[arg(long, env = "AUDIT_INTERVAL_SECS", default_value = "0")]
+    audit_interval_secs: u64,
 }
 
 // -------------------------------------------------------------------------- //
@@ -2031,6 +2050,49 @@ async fn start_server(
         tracing::info!(
             "vault background refresh: disabled \
              (set VAULT_REFRESH_INTERVAL_SECS=300 to enable 5-minute auto-sync)"
+        );
+    }
+
+    // iter-61: background credential-health audit task.
+    //
+    // When `--audit-interval-secs` (or `AUDIT_INTERVAL_SECS`) is non-zero,
+    // spawn a task that runs `run_audit()` every N seconds and logs the
+    // summary at INFO level.  This is the same operation as a manual call to
+    // `GET /vault/audit/run` but triggered automatically by the scheduler.
+    //
+    // The audit is read-only and entirely in-process — it does not mutate
+    // the vault or call Vaultwarden.  Passwords are HMAC-fingerprinted with
+    // an ephemeral key and zeroized immediately; no plaintext is logged.
+    if args.audit_interval_secs > 0 {
+        let audit_vault = vault_arc.clone();
+        let audit_interval = args.audit_interval_secs;
+        tokio::spawn(async move {
+            tracing::info!(
+                "credential audit background task started — interval {} s",
+                audit_interval
+            );
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(audit_interval));
+            // Skip the first immediate tick so we don't run an audit right at
+            // startup (the vault may still be loading items).
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                tracing::debug!("credential audit background: running in-process audit");
+                let result = crate::audit::run_audit(&audit_vault).await;
+                tracing::info!(
+                    total = result.total_items,
+                    weak = result.weak_passwords.len(),
+                    reuse_groups = result.reused_passwords.len(),
+                    "credential audit background: complete"
+                );
+            }
+        });
+    } else {
+        tracing::info!(
+            "credential audit background: disabled \
+             (set AUDIT_INTERVAL_SECS=3600 to enable hourly audits, \
+             or call GET /vault/audit/run on demand)"
         );
     }
 
