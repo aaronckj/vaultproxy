@@ -24,6 +24,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0] — iteration 116: v1.0.0 stable release — Cargo.toml version sync, fmt fixes, sentinel completeness
+
+> **MILESTONE: v1.0.0 stable.** After 116 audit iterations, ~790 issues resolved, and 299 tests,
+> vaultproxy reaches its first stable release. The codebase has been hardened across security,
+> correctness, observability, and test coverage dimensions over 115 prior iterations. This entry
+> documents the final pre-release cleanups that close the gap between the `v1.0.0` git tag
+> (created at iter-115) and a fully correct stable release.
+
+### Journey summary (iterations 1–116)
+
+- **Iterations 1–20:** Initial proxy scaffold, HMAC token auth, vault folder scoping, TLS, rate limiting.
+- **Iterations 21–50:** Security response headers, dead-code elimination, per-module allow attributes, setup wizard, rpassword, cloud sync scaffold.
+- **Iterations 51–80:** Credential audit engine, browser rotation scaffold, TPM integration, policy engine, tool-permissions endpoint, safe_write_config (0600 atomic).
+- **Iterations 81–100:** Feature-gating (browser/engine/dashboard), scope guard completeness (list_items/list_duplicates/list_untracked empty-on-folder-not-found, item_in_vault_folder Option<bool>), `vault_folder_found` in health, 100th audit milestone.
+- **Iterations 101–112:** HTTP status code correctness (Json<Value> return-type trap — 20+ handlers fixed), HTTP 207 for partial sync, `"ok": true/false` sentinel completeness campaign across all collection and error paths, Connecterr TS client format fixes.
+- **Iterations 113–115:** `--persist-dashboard-cert` feature, mTLS cert stability, migration guide, `configured_vault_folder` in scoped list_folders response, headless-flag warning.
+- **Iteration 116 (this entry):** Final pre-release fixes — Cargo.toml version `1.0.0-beta.8` → `1.0.0`, `cargo fmt` compliance (main.rs, tpm.rs), `GET /sync/status` missing `"ok"` in both branches, `POST /sync/setup-cloud` stub silent-200 with no `"ok"` (now returns 501 Not Implemented with `"ok": false`).
+
+### Bugs (iter-116) — version sync and sentinel gaps
+
+- **`Cargo.toml` version `1.0.0-beta.8` while git tag is `v1.0.0` (iter-116)** — `Cargo.toml:3`. CRITICAL.
+  `cargo run -- --version` and `GET /vault/health` `"version"` field both read `CARGO_PKG_VERSION`
+  at compile time. With `version = "1.0.0-beta.8"`, the binary reports the wrong version even
+  though the `v1.0.0` tag exists. Fixed: bumped to `1.0.0`.
+
+- **`cargo fmt --check` failing on CI for `v1.0.0` tag (iter-116)** — `src/main.rs:1127`, `src/tpm.rs:283,293`. HIGH.
+  The `v1.0.0` CI run (run ID 25438651228) failed on `cargo fmt --check` at the "Check formatting"
+  step. Two diffs: (a) `src/main.rs:1127` — rustfmt prefers a line break before `.map_err(...)`,
+  (b) `src/tpm.rs:283,293` — rustfmt prefers `if let Err(e) = ...` on a single line for
+  `persist_dashboard_cert`. Both fixed. This is why the `v1.0.0` Docker image was never published.
+
+- **`GET /sync/status` missing `"ok"` in both branches (iter-116)** — `src/vault/handlers.rs:3482`. MEDIUM.
+  Both the `Some(sync)` and `None` paths returned JSON without `"ok"`. The configured path
+  returned `{"state": "..."}` and the not-configured path returned `{"state": "not_configured"}`.
+  Every other success handler carries `"ok": true`. Fixed: both paths now include `"ok": true`.
+
+- **`POST /sync/setup-cloud` stub returns HTTP 200 with no `"ok"` (iter-116)** — `src/vault/handlers.rs:3543`. MEDIUM.
+  The placeholder handler returned `{"result": "not_yet_implemented"}` at HTTP 200 — no `"ok"` field,
+  wrong status code for an unimplemented stub. Fixed: returns HTTP 501 Not Implemented with
+  `{"ok": false, "error": "not yet implemented — use POST /sync/init instead"}`.
+
+### Quality gates (iter-116)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo build` (headless) — 0 errors, 0 warnings
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets` — **256 passed**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **300 passed**; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
+
+---
+
 ## [1.0.0-beta.8] — iteration 115: headless-flag warning, configured_vault_folder, CLI tests
 
 ### Bugs (iter-115) — silent-ignore and diagnostic gaps

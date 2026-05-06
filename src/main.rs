@@ -1124,8 +1124,8 @@ async fn start_server(
     // When the flag is NOT set, behaviour is identical to pre-iter-113:
     // a fully ephemeral cert set is generated on every startup.
     tracing::info!("generating mTLS certificates");
-    let certs = tpm::generate_mtls_certs()
-        .map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
+    let certs =
+        tpm::generate_mtls_certs().map_err(|e| anyhow::anyhow!("cert generation failed: {}", e))?;
 
     // When --persist-dashboard-cert is active, try to read back a previously
     // saved server cert+key and splice it into the freshly-generated CertMaterial

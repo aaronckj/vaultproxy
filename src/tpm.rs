@@ -280,8 +280,7 @@ pub fn persist_dashboard_cert(config_dir: &str, material: &CertMaterial) {
     let crt_path = format!("{}/dashboard.crt", config_dir);
     let key_path = format!("{}/dashboard.key", config_dir);
 
-    if let Err(e) =
-        crate::secure::safe_write_config(&crt_path, material.server_cert_pem.as_bytes())
+    if let Err(e) = crate::secure::safe_write_config(&crt_path, material.server_cert_pem.as_bytes())
     {
         tracing::warn!(
             "persist_dashboard_cert: failed to write {}: {} — dashboard cert will remain ephemeral",
@@ -290,8 +289,7 @@ pub fn persist_dashboard_cert(config_dir: &str, material: &CertMaterial) {
         );
         return;
     }
-    if let Err(e) =
-        crate::secure::safe_write_config(&key_path, material.server_key_pem.as_bytes())
+    if let Err(e) = crate::secure::safe_write_config(&key_path, material.server_key_pem.as_bytes())
     {
         tracing::warn!(
             "persist_dashboard_cert: failed to write {}: {} — dashboard cert will remain ephemeral",

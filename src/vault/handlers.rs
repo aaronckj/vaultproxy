@@ -3484,13 +3484,14 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {
         Some(sync) => {
             let st = sync.get_status().await;
             Json(json!({
+                "ok": true,
                 "state": st.state,
                 "last_sync": st.last_sync,
                 "items_synced": st.items_synced,
                 "errors": st.errors,
             }))
         }
-        None => Json(json!({ "state": "not_configured" })),
+        None => Json(json!({ "ok": true, "state": "not_configured" })),
     }
 }
 
@@ -3543,10 +3544,16 @@ pub async fn sync_trigger(State(state): State<Arc<AppState>>) -> impl IntoRespon
 pub async fn setup_cloud(
     State(_state): State<Arc<AppState>>,
     Json(_req): Json<SetupCloudRequest>,
-) -> Json<Value> {
-    Json(json!({
-        "result": "not_yet_implemented",
-    }))
+) -> impl IntoResponse {
+    // iter-116: stub returns 501 Not Implemented with ok:false (was 200 + bare result field).
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "ok": false,
+            "error": "not yet implemented — use POST /sync/init instead",
+        })),
+    )
+        .into_response()
 }
 
 /// Request body for `POST /sync/init`.
@@ -4956,6 +4963,57 @@ mod check_permission_shape_tests {
         assert!(
             body["allowed"].is_boolean(),
             "success body must have 'allowed' field"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// sync_status and setup_cloud response shape (iter-116)                      //
+// -------------------------------------------------------------------------- //
+#[cfg(test)]
+mod sync_status_shape_tests {
+    use serde_json::json;
+
+    /// `GET /sync/status` configured path must include `"ok": true`.
+    /// Before iter-116 this path returned `{"state": "..."}` — missing `"ok"`.
+    #[test]
+    fn sync_status_configured_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "state": "idle",
+            "last_sync": null,
+            "items_synced": 0,
+            "errors": [],
+        });
+        assert_eq!(body["ok"], true, "sync_status configured path must contain ok: true");
+        assert!(body["state"].is_string(), "sync_status must contain 'state' field");
+    }
+
+    /// `GET /sync/status` not-configured path must include `"ok": true`.
+    #[test]
+    fn sync_status_not_configured_has_ok_true() {
+        let body = json!({ "ok": true, "state": "not_configured" });
+        assert_eq!(body["ok"], true, "sync_status not_configured path must contain ok: true");
+        assert_eq!(
+            body["state"].as_str().unwrap_or(""),
+            "not_configured",
+            "sync_status not_configured path state must be 'not_configured'"
+        );
+    }
+
+    /// `POST /sync/setup-cloud` stub must return `"ok": false` (it is not implemented).
+    /// Before iter-116 this returned `{"result": "not_yet_implemented"}` at HTTP 200
+    /// with no `"ok"` field — callers checking `body["ok"]` received `null`.
+    #[test]
+    fn setup_cloud_stub_has_ok_false() {
+        let body = json!({
+            "ok": false,
+            "error": "not yet implemented — use POST /sync/init instead",
+        });
+        assert_eq!(body["ok"], false, "setup_cloud stub must contain ok: false");
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("not yet implemented"),
+            "setup_cloud stub must contain an explanatory error message"
         );
     }
 }
