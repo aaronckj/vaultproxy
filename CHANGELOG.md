@@ -3,7 +3,64 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.4] — iteration 97: write_env 503 ok:false, item_in_vault_folder tests, AppState::new_stub
+## [0.3.4] — iteration 98: audit hardening, cfg(test) verification, post-v1.0 inventory
+
+### Audit findings (iter-98) — no code changes required
+
+- **`AppState::new_stub` cfg(test) gate (confirmed correct)** — `src/proxy/mod.rs:1359`.
+  `new_stub` is inside `#[cfg(test)] impl AppState` — correctly excluded from production binaries.
+  No dead code in non-test builds.
+
+- **`item_name_is_in_folder_id` dead_code annotation (confirmed not needed)** —
+  `src/vault/mod.rs:1556`. The function is called from production code at
+  `src/vault/handlers.rs:126` (`item_in_vault_folder`). Clippy clean with zero warnings.
+
+- **`make_state()` vs `AppState::new_stub` — not redundant** — `src/proxy/mod.rs`.
+  `make_state()` lives inside `mod integration_tests` (proxy-module-private); `AppState::new_stub`
+  is `pub` under `#[cfg(test)]`, accessible from `vault/handlers.rs` tests. Different scopes,
+  different roles.
+
+- **`write_env` success `"ok": true` present (confirmed)** — `src/vault/handlers.rs:2044`.
+  The 200 OK success path returns `{"ok": true, "target_path": ..., "updated": ..., "inserted": ...}`.
+  Symmetric with the 503 `{"ok": false, ...}` added in iter-97.
+
+- **SECURITY.md `POST /vault/resync` remediation (confirmed present)** — `SECURITY.md:77`.
+  The "Folder rename" section already includes: "In all cases, the remediation is: verify
+  `--vault-folder` matches the Vaultwarden folder name, then call `POST /vault/resync`."
+
+- **Rate limiter GC / `audit_run_uses_very_tight_limit` (confirmed no interference)** —
+  `src/security/rate_limit.rs:525`. Test calls `check()` directly; three calls run in
+  microseconds; `last_gc` initialised to `Instant::now() - GC_MIN_INTERVAL` so GC fires on
+  first call only. No timing sensitivity.
+
+- **`AppState::new_stub` vault_folder init (confirmed correct)** — `src/proxy/mod.rs:1401`.
+  `vault_folder` field is set to the passed `vault_folder: String` parameter. Tests at
+  `handlers.rs:4054` pass matching folder name to both `seed_for_test` and `new_stub`.
+
+- **Concurrency test adequacy (sequential, low severity)** — `src/vault/handlers.rs:4106`.
+  The "cached second call no deadlock" test is sequential. A true deadlock requires concurrent
+  access, which this test cannot trigger. Mitigant: iter-97 analysis confirmed three distinct
+  RwLock instances (none re-entrant); sequential test is adequate for the cache-hit path.
+  A concurrent spawn test would strengthen confidence but is not required to pass CI.
+
+- **Post-v1.0 item inventory (4 items, unchanged)** —
+  - `src/keystore.rs:333` — TPM-backed auto-unlock path (`post-v1.0: TPM auto-unlock`)
+  - `src/sync/cloud.rs:39-40` — Bitwarden cloud password change (`post-v1.0: Bitwarden cloud password change`)
+  - `src/sync/cloud.rs:786` — dashboard cloud-account settings (`post-v1.0: dashboard cloud settings`)
+  - `src/proxy/unifi_session.rs:90` — session rotation UI (`post-v1.0: rotation UI`)
+  All four remain correctly annotated. None newly resolvable in iter-98.
+
+### Quality gates (iter-98)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 277 passed; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — 277 passed; 0 failed
+- `cargo fmt --check` — clean (0 diffs)
+
+---
+
+## [0.3.4-pre] — iteration 97: write_env 503 ok:false, item_in_vault_folder tests, AppState::new_stub
 
 ### Fixes (iter-97)
 
