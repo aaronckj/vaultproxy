@@ -2091,8 +2091,13 @@ async fn start_server(
         let audit_vault = vault_arc.clone();
         let audit_interval = args.audit_interval_secs;
         let audit_mutex = state.audit_mutex.clone();
+        // iter-63: capture vault_folder so background log lines include it.
+        // In a multi-instance deployment (prod/staging both writing to the same
+        // log stream) the vault_folder distinguishes which instance's audit fired.
+        let audit_vault_folder = args.vault_folder.clone();
         tokio::spawn(async move {
             tracing::info!(
+                vault_folder = %audit_vault_folder,
                 "credential audit background task started — interval {} s",
                 audit_interval
             );
@@ -2114,6 +2119,7 @@ async fn start_server(
                     // Issues found — log at WARN so it surfaces through default
                     // log filters and alerts operators without manual inspection.
                     tracing::warn!(
+                        vault_folder = %audit_vault_folder,
                         total = result.total_items,
                         weak = n_weak,
                         reuse_groups = n_reuse,
@@ -2123,6 +2129,7 @@ async fn start_server(
                     // Clean run — log at DEBUG to avoid 288 identical INFO lines
                     // per day when no issues exist (e.g. 300 s interval, 0 weak).
                     tracing::debug!(
+                        vault_folder = %audit_vault_folder,
                         total = result.total_items,
                         weak = 0,
                         reuse_groups = 0,

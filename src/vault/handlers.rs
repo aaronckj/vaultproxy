@@ -4033,16 +4033,16 @@ mod health_version_tests {
             .lines()
             .find_map(|line| {
                 let trimmed = line.trim();
-                trimmed.strip_prefix("version = \"").and_then(|rest| rest.strip_suffix('"'))
+                trimmed
+                    .strip_prefix("version = \"")
+                    .and_then(|rest| rest.strip_suffix('"'))
             })
             .expect("Cargo.toml must contain a `version = \"X.Y.Z\"` line");
 
         assert_eq!(
-            version,
-            toml_version,
+            version, toml_version,
             "CARGO_PKG_VERSION '{}' does not match Cargo.toml version '{}'",
-            version,
-            toml_version
+            version, toml_version
         );
     }
 

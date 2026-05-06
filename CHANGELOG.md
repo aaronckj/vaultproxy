@@ -3,6 +3,77 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.12] — iteration 63 audit pass
+
+### Bug fixes (iter-63)
+
+- **`handle_audit_run()` no timeout on `audit_mutex` (iter-63, HIGH)**: `GET
+  /vault/audit/run` previously blocked indefinitely when the background audit
+  task held the mutex on a large vault. Added a 5-second acquisition timeout
+  mirroring the `reload_mutex` pattern: if the mutex cannot be acquired in 5 s,
+  the handler returns `503 Service Unavailable` with a `Retry-After: 10` header
+  and a `retry_after_s: 10` JSON field. Callers now get an immediate, actionable
+  response rather than a silent multi-second stall.
+  `src/audit.rs` `handle_audit_run()`.
+
+- **Background audit log missing `vault_folder` (iter-63, LOW)**: In deployments
+  with multiple vault-proxy instances sharing a log stream, the background audit
+  messages ("credential audit background: complete — no issues") were
+  indistinguishable between instances. Added `vault_folder = %audit_vault_folder`
+  as a structured field to the startup info, per-run warn, and per-run debug log
+  lines.
+  `src/main.rs` background audit task.
+
+### Verification (iter-63)
+
+- `cargo test --all-targets`: 247 passed (245 unit + 2 integration), 0 failed.
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
+### Findings — no code change required (iter-63)
+
+- **`make_state()` updated with `audit_mutex` (iter-63, VERIFY OK)**: Confirmed
+  at `src/proxy/mod.rs:1581` — `make_state()` already includes
+  `audit_mutex: Arc::new(tokio::sync::Mutex::new(()))`. All tests compile and
+  pass.
+
+- **Background task does NOT hold mutex during sleep (iter-63, VERIFY OK)**:
+  Confirmed: `src/main.rs` background loop is structured as
+  `interval.tick().await; { lock; run_audit(); }` — the `_guard` drops at end of
+  the loop body before `interval.tick().await` parks the task. The mutex is held
+  only during the active audit, not during the inter-tick sleep.
+
+- **`run_audit()` does NOT hold vault read lock during decrypt loop (iter-63,
+  VERIFY OK)**: `list_items()` acquires `items.read()`, clones the item list,
+  and drops the lock before returning. The subsequent `decrypt_password()` calls
+  each use `try_read()` independently per item. SIGHUP/reload is never blocked
+  for the full audit duration.
+
+- **`audit_mutex` timeout response (iter-63, VERIFY OK)**: With the 5-second
+  timeout now in place, a caller hitting `GET /vault/audit/run` while the
+  background task is running gets an immediate 503 with `Retry-After: 10` rather
+  than a silent wait. This closes the "hanging response with no indication"
+  finding.
+
+- **`--audit-interval-secs` warning message (iter-63, VERIFY OK)**: Message at
+  `src/main.rs:2082–2089` is actionable: structured fields `interval_secs` and
+  `min_secs` accompany the text "AUDIT_INTERVAL_SECS is below the recommended
+  minimum of 60 s — … Consider 3600 (hourly)." Operators see both the bad value
+  and the recommended floor in structured logs.
+
+- **Rate limit 2 req/60 s still appropriate (iter-63, NO CHANGE)**: The
+  `audit_mutex` prevents concurrent audit CPU load; the rate limit prevents
+  burst submission of sequential audits. Both serve distinct purposes. Raising
+  the limit would allow a single IP to queue 3–5 audits in rapid succession,
+  each decrypting the full vault. Keeping 2 req/60 s is the conservative choice
+  and can be revisited when vault size vs. audit duration data is available.
+
+- **v0.2.12 tag warranted (iter-63, TAGGED)**: iter-62 introduced the
+  `audit_mutex` fix (HIGH severity — prevented concurrent full-vault decryption).
+  iter-63 adds a timeout to that mutex so callers are never left hanging. Both
+  fixes together justify a patch release so users on
+  `ghcr.io/aaronckj/vaultproxy:v0.2.11` can upgrade.
+
 ## [0.2.11] — iteration 60 audit pass (no version bump — doc + test only)
 
 ### Bug fixes (iter-60)

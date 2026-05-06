@@ -11,6 +11,7 @@
 //! with an ephemeral key and zeroized immediately after use.
 
 use crate::vault::VaultManager;
+use axum::response::IntoResponse;
 use hmac::{Hmac, Mac};
 use serde::Serialize;
 use sha2::Sha256;
@@ -219,13 +220,48 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
 
 pub async fn handle_audit_run(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::proxy::AppState>>,
-) -> axum::Json<AuditResult> {
+) -> axum::response::Response {
     tracing::info!("GET /vault/audit/run — running in-process credential health audit");
     // iter-62: hold audit_mutex so a concurrent background audit task cannot run
     // a second full-vault decryption pass at the same time.  If the background
     // task is mid-run, this call blocks until it finishes and then runs its own
     // pass (no result is shared between the two — each caller gets a fresh scan).
-    let _guard = state.audit_mutex.lock().await;
+    //
+    // iter-63: 5-second acquisition timeout mirrors the reload_mutex pattern.
+    // Without this, an HTTP caller hitting GET /vault/audit/run while the background
+    // task is mid-run on a 1,000-item vault would hang for the full audit duration
+    // (potentially several seconds) with no visible indication that the delay is
+    // expected.  The timeout returns 503 + Retry-After so clients back off and
+    // operators see a clear diagnostic in the log, rather than a silent multi-second
+    // stall.  The background task continues uninterrupted — the 5 s limit only
+    // applies to *acquiring* the mutex, not to the audit itself.
+    let _guard =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), state.audit_mutex.lock())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::warn!(
+                    "audit/run: background audit is in progress; \
+                 mutex acquisition timed out after 5 s — returning 503 to caller"
+                );
+                let mut headers = axum::http::HeaderMap::new();
+                headers.insert(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("10"),
+                );
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    headers,
+                    axum::Json(serde_json::json!({
+                        "ok": false,
+                        "error": "background audit is in progress — retry after 10 s",
+                        "retry_after_s": 10,
+                    })),
+                )
+                    .into_response();
+            }
+        };
     let result = run_audit(&state.vault).await;
     tracing::info!(
         total = result.total_items,
@@ -233,7 +269,7 @@ pub async fn handle_audit_run(
         reuse_groups = result.reused_passwords.len(),
         "audit complete"
     );
-    axum::Json(result)
+    axum::Json(result).into_response()
 }
 
 // -------------------------------------------------------------------------- //
