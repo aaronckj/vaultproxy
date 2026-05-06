@@ -3,7 +3,87 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.0] — iteration 91: invalidate on persistent auth failure, stale post-v1.0 annotation, TPM docs
+## [0.3.0] — iteration 92: fix `sanitize_output` dead-code Clippy error breaking CI without `browser` feature
+
+### Fixes (iter-92)
+
+- **`sanitize_output` dead-code error breaks CI without `browser` feature (HIGH)** —
+  `src/security/sanitize.rs:133`. `sanitize_output` is declared in the always-compiled
+  `security::sanitize` module but is only called from `src/browser/vision.rs`, which is
+  gated behind `#[cfg(feature = "browser")]`. When the `browser` feature is absent (the
+  default build and the CI headless job), Clippy's `-D dead-code` fires because the
+  function is unreachable in that compilation unit. The v0.3.0 CI run (#25427014172)
+  failed on the `Run Clippy` step for exactly this reason — the Docker image was never
+  published.
+  Fix: add `#[cfg_attr(not(feature = "browser"), allow(dead_code))]` to `sanitize_output`.
+  This suppresses the lint when browser is off while keeping the function available for
+  the unit tests in `sanitize.rs` (which aren't browser-gated and call it directly).
+  With browser enabled, no attribute fires — the function has a real caller. Both Clippy
+  runs (default and `--features browser,engine,dashboard`) now pass cleanly.
+
+### Audit findings (iter-92) — no code changes required
+
+- **UniFi mutex guard live at zero site (confirmed correct)** —
+  `src/proxy/unifi_session.rs:305`. The persistent-failure zero (`*guard = None`) at
+  line 305 is inside the `if is_auth_failure(final_try...)` block. The `guard` variable
+  is a `tokio::sync::MutexGuard` acquired at line 243 (`let mut guard = slot.lock().await`)
+  and never moved, returned, or dropped before line 305. All intermediate bindings
+  (`session` at 286) borrow from `*guard` and are consumed before line 297. At line 305
+  the guard is unambiguously live and the lock is held. The comment in the code ("We still
+  hold the mutex guard here") is accurate. No issue.
+
+- **`invalidate` `post-v1.0:` annotation — still correct (confirmed, no change needed)** —
+  `src/proxy/unifi_session.rs:90`. `invalidate()` carries `post-v1.0: rotation UI`
+  because the production rotation-handler that would call `invalidate()` on a
+  credential-rotation event is not yet wired. The iter-91 fix implemented the
+  persistent-failure path by zeroing the guard directly inside `handle_request` — it did
+  not wire the rotation UI path. The annotation accurately reflects the remaining
+  deferred work. The CHANGELOG iter-91 note ("post-v1.0: deferred count drops from 5 to 5
+  — rotation UI unchanged") is correct. No change needed.
+
+- **`invalidate` `try_lock` silent no-op under contention — documented (confirmed adequate)** —
+  `src/proxy/unifi_session.rs:95`. The `try_lock()` in `invalidate()` silently skips
+  zeroing when the slot is held. This is documented in the inline comment: "Best-effort:
+  we can't await here so we just try_lock; if the slot is held, the holder will overwrite
+  the stale session." The logic is sound: if a request is in-flight when `invalidate` is
+  called, that in-flight holder will overwrite the slot on completion. The only caller
+  today is the test suite, and tests hold the lock briefly. The comment is sufficient for
+  the homelab context. No code change needed.
+
+- **v0.3.0 GitHub release — not yet created (action: create after this commit pushes CI)** —
+  `gh release list` shows no v0.3.0 release. The v0.3.0 tag exists but CI failed before
+  the Docker publish step, so no image was published either. The fix in this iteration
+  unblocks CI. After `git push`, the tag should be re-pushed or a new release created.
+  See process note below.
+
+- **CHANGELOG v0.3.0 section summary coverage — adequate (confirmed)** —
+  The `[0.3.0]` section covers iter-91 fixes directly. The broader v0.2.x series is
+  captured in the preceding CHANGELOG entries (iter-0 through iter-91). The v0.3.0
+  section correctly scopes itself to what changed in the v0.3.0 bump itself rather than
+  restating 89 prior iterations. Acceptable for a CHANGELOG following Keep a Changelog.
+
+- **README `VAULT_PROXY_CALLER_ID` code snippet — prose-only, sufficient (no change)** —
+  `README.md:553–558`. The "Smart servers and `--launch`" section describes the pattern
+  in prose with a rendered HTTP header example. An inline code snippet (Node.js or
+  Python) would be helpful but would also need maintenance as language conventions evolve.
+  The current prose + header block is unambiguous for any language. No change made.
+
+- **CONTRIBUTING.md `libtss2-dev` / `tpm2-tss-devel` — correct package names (confirmed)** —
+  `CONTRIBUTING.md:56`. `apt install libtss2-dev` is the correct Debian/Ubuntu package
+  (provides `tss2-sys` pkg-config metadata). `dnf install tpm2-tss-devel` is the correct
+  Fedora/RHEL package name (`tpm2-tss-devel`, not `tss2-esapi-devel`). Both names were
+  verified against upstream distro package indexes. No issue.
+
+### Quality gates (iter-92)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 239 passed; 0 failed (237 unit + 2 integration)
+- `cargo test --all-targets --features browser,engine,dashboard` — 272 passed; 0 failed (270 unit + 2 integration)
+- `cargo fmt --check` — clean (0 diffs)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
+## [0.3.0-rc1] — iteration 91: invalidate on persistent auth failure, stale post-v1.0 annotation, TPM docs
 
 ### Fixes (iter-91)
 

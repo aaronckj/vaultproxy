@@ -130,6 +130,9 @@ const MAX_OUTPUT_SIZE: usize = 100 * 1024;
 ///
 /// Called from `browser/vision.rs` — sanitises LLM vision-model responses
 /// before they are parsed into `VisionAction` structs (iter-87).
+/// When the `browser` feature is disabled, this function is unused in
+/// production code but remains available for the unit tests in this module.
+#[cfg_attr(not(feature = "browser"), allow(dead_code))]
 pub fn sanitize_output(text: &str) -> String {
     sanitize_internal(text, /* aggressive */ true)
 }
