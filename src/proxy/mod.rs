@@ -2689,6 +2689,15 @@ vault_item  = "vault-proxy - Beta"
             "audit/run 'scoring_note' must contain '{}'; got: {body}",
             expected_phrase
         );
+        // iter-68: fair_passwords_count and reason field assertions.
+        assert!(
+            body.get("fair_passwords_count").is_some(),
+            "audit/run response must include 'fair_passwords_count' field (iter-68); got: {body}"
+        );
+        assert!(
+            body["fair_passwords_count"].is_number(),
+            "audit/run 'fair_passwords_count' must be a number; got: {body}"
+        );
     }
 
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires

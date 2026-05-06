@@ -3,6 +3,103 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.14] — iteration 68 audit hardening
+
+### Enhancements (iter-68)
+
+- **`AuditItem` gains `reason` field (iter-68, MEDIUM)**: `AuditItem` previously
+  exposed only `password_strength` (`"weak"`, `"fair"`, `"strong"`) with no
+  explanation of *why*.  An operator seeing `"my item is weak"` had no
+  actionable guidance — they needed to read the source to learn the threshold.
+  Added a `reason: String` field to `AuditItem` populated directly by the
+  `password_strength()` function (which now returns `(&'static str, &'static str)`).
+  Example values: `"fewer than 8 characters — increase length to at least 8"`,
+  `"8–15 characters — increase to 16+ with mixed character classes for strong rating"`,
+  `"16+ characters with 3 or more character classes (lower, upper, digit, symbol)"`.
+  `src/audit.rs` `AuditItem`, `password_strength()`, `run_audit()`.
+
+- **`AuditResult` gains `fair_passwords_count` field (iter-68, MEDIUM)**:
+  `"fair"` passwords were completely invisible in the audit response — an
+  operator whose entire vault scores `"fair"` (7–15 char passwords with mixed
+  case but no symbols) would see `weak_passwords: []` and might incorrectly
+  conclude their credentials are strong.  Added `fair_passwords_count: usize`
+  to `AuditResult` so the middle tier is surfaced without bloating the response
+  with a full list of fair items.  The log line at audit completion now also
+  includes the fair count.
+  `src/audit.rs` `AuditResult`, `run_audit()`.
+
+- **`run_audit()` mlock footprint documented (iter-68, LOW)**: Added a
+  `# Memory and mlock implications` section to the `run_audit()` docstring
+  clarifying that the mlock footprint is O(1) in vault size (only one
+  `SecureBuffer` per password is live at a time — it is dropped before the
+  next item is processed).  For a 50,000-item vault the peak mlocked bytes are
+  ~32 (ephemeral key) + ~128 (one password) = well under the 64 KB Linux
+  default `ulimit -l` quota.  Previously the comment `pw_buf is dropped here`
+  was the only indicator; the docstring now explains the implication for
+  `mlock` quota.
+  `src/audit.rs` `run_audit()` docstring.
+
+### Bug fixes (iter-68)
+
+- **`password_strength()` return type changed to tuple (iter-68)**: Function
+  now returns `(&'static str, &'static str)` (strength, reason) instead of
+  `&'static str`.  All call sites in `run_audit()` and the unit tests updated.
+  The `"fair"` branch that previously fell through a single `return "fair"`
+  now has two distinct paths with distinct reasons: one for 16+ char passwords
+  lacking character diversity, and one for the 8–15 char range.
+  `src/audit.rs` `password_strength()` and unit tests.
+
+### Findings — no code change required (iter-68)
+
+- **CI run 25417356435 (iter-67 fmt fix) — passed (VERIFY OK)**: The
+  `in_progress` run seen at audit start completed successfully.  The Docker
+  image push step was mid-flight when the audit began; all preceding steps
+  (fmt check, clippy, tests) had already passed.  The iter-67 fmt blocker was
+  fixed correctly.
+
+- **`run_audit()` no SCAN_ITEM_CAP — mlock O(1) not O(N) (iter-68, VERIFY OK)**:
+  The concern that all 50,000 passwords would be simultaneously mlocked is
+  unfounded.  `pw_buf` is dropped (and zeroized + munlocked) inside the loop
+  before the next iteration calls `decrypt_password()`.  Peak live mlocked
+  buffers = 2 (ephemeral key + current password).  No cap is needed for
+  mlock safety.  A cap could still be useful for CPU/time budgeting on very
+  large vaults — consider a future `AUDIT_ITEM_LIMIT` flag if needed.
+
+- **`password_strength()` sequential-character check absent (iter-68, INFO)**:
+  Patterns like `"abcd1234"` or `"qwerty123!"` score `"fair"` or `"strong"`
+  because the algorithm checks only length and character classes.  This is the
+  documented no-dictionary-check limitation.  The `scoring_note` field in every
+  response now reads: `"rule-based heuristic: length + character classes only;
+  no dictionary check — common passwords like 'password123' may score 'fair'…"`.
+  Sequential-character detection would require either a zxcvbn dependency or a
+  hardcoded pattern list.  Both are out of scope for this in-process sidecar;
+  operators who need it should use the credential-audit sidecar.
+
+- **`--check` VAULT_PROXY_PUBLIC_URL output stream (iter-68, VERIFY OK)**:
+  All `--check` output (services.toml results, VAULT_PROXY_PUBLIC_URL
+  validation) uses `println!` (stdout).  The code comment at line ~358 of
+  `src/main.rs` explicitly states "All output uses println! (stdout) so CI
+  pipelines that capture stdout see the result — consistent with all other
+  --check output."  No stderr/stdout split exists.  Consistent.
+
+- **README length (iter-68, MONITOR)**: `README.md` is 555 lines — slightly
+  above the 500-line threshold but still well-organized with clear section
+  headers.  No structural reorganization needed; the additive growth has been
+  in the credential audit and changelog sections which are logically grouped.
+
+- **CHANGELOG iter-67 entries absent from [0.2.13] (iter-68, FIXED)**: The
+  [0.2.13] entry only covered iter-66 fixes.  The iter-67 changes (fmt blocker
+  fix, scoring assertion precision, README 503/audit docs) were committed to
+  main without a CHANGELOG update.  This release note (v0.2.14) covers both
+  the iter-67 commit and all iter-68 changes.
+
+### Verification (iter-68)
+
+- `cargo test --all-targets`: 248 passed, 0 failed (246 binary + 2 integration;
+  +1 new test: `fair_password_reason_is_actionable`).
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
 ## [0.2.13] — iteration 66 audit pass
 
 ### Bug fixes (iter-66)

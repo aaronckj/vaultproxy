@@ -24,6 +24,23 @@ pub struct AuditResult {
     pub total_items: usize,
     pub weak_passwords: Vec<AuditItem>,
     pub reused_passwords: Vec<Vec<AuditItem>>,
+    /// Number of items that scored `"fair"` (8–15 chars, or 16+ chars with
+    /// fewer than 3 character classes).
+    ///
+    /// `"fair"` items are NOT included in `weak_passwords` (they are above
+    /// the length floor) but they are not strong either.  An operator whose
+    /// entire vault scores `"fair"` would previously see `weak_passwords: []`
+    /// and might incorrectly conclude all credentials are strong.  This field
+    /// makes the middle tier visible without bloating the response with a full
+    /// list of fair items.
+    ///
+    /// If you need the full list of fair items, filter
+    /// `AuditItem::password_strength == "fair"` on the reused_passwords groups
+    /// or call `GET /vault/audit/run` with a future `include_fair=true` flag
+    /// (not yet implemented — open an issue if you need it).
+    ///
+    /// iter-68: added so "fair" is not invisible to operators.
+    pub fair_passwords_count: usize,
     /// Minimum password length (exclusive) for classification as "weak".
     ///
     /// Passwords with `len < weak_threshold_len` are reported in
@@ -54,6 +71,15 @@ pub struct AuditItem {
     pub username: Option<String>,
     pub item_type: String,
     pub password_strength: String, // "weak", "fair", "strong"
+    /// Human-readable reason for the `password_strength` classification.
+    ///
+    /// For `"weak"` items this explains *why* the password is weak so an
+    /// operator can take a targeted action (e.g. "fewer than 8 characters"
+    /// rather than a bare `"weak"` label).  For `"fair"` and `"strong"` items
+    /// the reason is still present so callers can display it in a summary view.
+    ///
+    /// iter-68: added to make audit output actionable without consulting source.
+    pub reason: String,
 }
 
 /// Determine password strength without storing the plaintext.
@@ -116,7 +142,13 @@ pub struct AuditItem {
 /// to `str` when it is valid UTF-8 and count `chars()`; if the bytes are not
 /// valid UTF-8 (Bitwarden v1 legacy encoding) we fall back to byte count so
 /// the function remains infallible.
-fn password_strength(pw: &[u8]) -> &'static str {
+/// Returns `(strength, reason)` where `strength` is one of `"weak"`,
+/// `"fair"`, or `"strong"`, and `reason` is a human-readable explanation
+/// suitable for display in the `AuditItem::reason` field.
+///
+/// iter-68: extracted reason so callers can display actionable feedback
+/// without re-implementing the scoring logic.
+fn password_strength(pw: &[u8]) -> (&'static str, &'static str) {
     // iter-58: use char count (codepoints), not byte count, so Unicode passwords
     // are measured by the number of characters visible to the user rather than
     // their UTF-8 encoding width.  A 4-char Cyrillic password has 8 bytes but
@@ -125,7 +157,10 @@ fn password_strength(pw: &[u8]) -> &'static str {
         .map(|s| s.chars().count())
         .unwrap_or(pw.len()); // non-UTF-8 legacy encoding: fall back to bytes
     if len < WEAK_THRESHOLD {
-        return "weak";
+        return (
+            "weak",
+            "fewer than 8 characters — increase length to at least 8",
+        );
     }
     if len >= 16 {
         let has_lower = pw.iter().any(|b| b.is_ascii_lowercase());
@@ -137,10 +172,20 @@ fn password_strength(pw: &[u8]) -> &'static str {
             .filter(|&&v| v)
             .count();
         if classes >= 3 {
-            return "strong";
+            return (
+                "strong",
+                "16+ characters with 3 or more character classes (lower, upper, digit, symbol)",
+            );
         }
+        return (
+            "fair",
+            "16+ characters but fewer than 3 character classes — add uppercase, digits, or symbols",
+        );
     }
-    "fair"
+    (
+        "fair",
+        "8–15 characters — increase to 16+ with mixed character classes for strong rating",
+    )
 }
 
 /// Compute HMAC-SHA256(key, data) and return the hex-encoded digest.
@@ -172,6 +217,26 @@ pub const WEAK_THRESHOLD: usize = 8;
 /// - Passwords are decrypted transiently and zeroized immediately after use.
 /// - The HMAC key is ephemeral: generated once per call, never stored.
 /// - Plaintext passwords are never included in the return value.
+///
+/// # Memory and `mlock` implications (iter-68)
+///
+/// Each `vault.decrypt_password()` call returns a `SecureBuffer` that is
+/// mlocked (pinned to RAM via `memsec::mlock`, not swappable).  Critically,
+/// each password buffer is **dropped immediately** after its HMAC fingerprint
+/// is computed — only one `SecureBuffer` is live at a time in this loop.
+/// The peak mlocked footprint is therefore:
+///
+///   - 1 × ephemeral key (32 bytes, mlocked)
+///   - 1 × current password buffer (typically 8–128 bytes, mlocked)
+///
+/// This means the mlock ceiling is effectively O(1) in vault size, **not**
+/// O(N).  The function does NOT decrypt all passwords simultaneously.
+///
+/// Linux default `mlock` quota is 64 KB (`ulimit -l`).  With at most ~256
+/// bytes mlocked at any instant, this is well within the default quota even
+/// in resource-constrained containers.  If `mlock` fails (e.g. container
+/// without `IPC_LOCK` capability), `SecureBuffer::new` logs a warning and
+/// continues — the buffer is still zeroized on drop.
 pub async fn run_audit(vault: &VaultManager) -> AuditResult {
     // Generate an ephemeral key for reuse detection — valid only for this run.
     let ephemeral_key = crate::secure::secure_random(32);
@@ -180,6 +245,7 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
     let total_items = masked_items.len();
 
     let mut weak_passwords: Vec<AuditItem> = Vec::new();
+    let mut fair_passwords_count: usize = 0;
     // Map from HMAC digest → list of AuditItems that share that password.
     let mut reuse_map: HashMap<String, Vec<AuditItem>> = HashMap::new();
 
@@ -192,23 +258,32 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
             Err(_) => continue,
         };
 
-        let strength = password_strength(pw_buf.as_bytes());
+        // iter-68: password_strength returns (strength, reason) so the AuditItem
+        // can include an actionable explanation without requiring callers to
+        // re-implement the scoring rules.
+        let (strength, reason) = password_strength(pw_buf.as_bytes());
 
         let audit_item = AuditItem {
             name: masked.name.clone(),
             username: masked.username.clone(),
             item_type,
             password_strength: strength.to_string(),
+            reason: reason.to_string(),
         };
 
         if strength == "weak" {
             weak_passwords.push(audit_item.clone());
+        } else if strength == "fair" {
+            // iter-68: track fair count so operators can see "fair" items are
+            // present even though they are not listed in weak_passwords.
+            fair_passwords_count += 1;
         }
 
         // Compute HMAC fingerprint for reuse grouping; pw_buf is dropped below.
         let digest = hmac_hex(ephemeral_key.as_bytes(), pw_buf.as_bytes());
 
         // pw_buf is dropped here — SecureBuffer zeroizes on drop.
+        // Only one SecureBuffer is live at a time (O(1) mlock footprint).
         drop(pw_buf);
 
         reuse_map.entry(digest).or_default().push(audit_item);
@@ -227,6 +302,7 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         total_items,
         weak_passwords,
         reused_passwords,
+        fair_passwords_count,
         weak_threshold_len: WEAK_THRESHOLD,
         // iter-64: surface the no-dictionary-check limitation in the API response.
         // iter-65: use format!() so the actual WEAK_THRESHOLD value is embedded
@@ -341,10 +417,19 @@ mod tests {
         let pw = "АБВГ";
         assert_eq!(pw.chars().count(), 4, "sanity: 4 chars");
         assert_eq!(pw.len(), 8, "sanity: 8 bytes");
+        let (strength, reason) = password_strength(pw.as_bytes());
         assert_eq!(
-            password_strength(pw.as_bytes()),
-            "weak",
+            strength, "weak",
             "4-char Cyrillic password must be 'weak', not 'fair'"
+        );
+        // iter-68: reason must be non-empty and mention the length criterion.
+        assert!(
+            !reason.is_empty(),
+            "reason must be non-empty for a weak password"
+        );
+        assert!(
+            reason.contains("8"),
+            "weak reason must mention the 8-character threshold, got: {reason}"
         );
     }
 
@@ -357,27 +442,46 @@ mod tests {
         assert_eq!(pw.len(), 16, "sanity: 16 bytes");
         // 8 chars = WEAK_THRESHOLD: not weak.  16 bytes but only 1 char class
         // (all uppercase non-ASCII, no ASCII lower/digit/punct) → "fair".
+        let (strength, _reason) = password_strength(pw.as_bytes());
         assert_ne!(
-            password_strength(pw.as_bytes()),
-            "weak",
+            strength, "weak",
             "8-char Cyrillic password must not be 'weak'"
         );
     }
 
     #[test]
     fn ascii_7_char_password_is_weak() {
-        assert_eq!(password_strength(b"abc1234"), "weak");
+        assert_eq!(password_strength(b"abc1234").0, "weak");
     }
 
     #[test]
     fn ascii_8_char_password_is_not_weak() {
-        assert_ne!(password_strength(b"abc12345"), "weak");
+        assert_ne!(password_strength(b"abc12345").0, "weak");
     }
 
     #[test]
     fn strong_password_classified_strong() {
         // 16+ chars with lowercase, uppercase, digit, symbol = "strong"
         let pw = b"Correct-Horse-1!";
-        assert_eq!(password_strength(pw), "strong");
+        let (strength, reason) = password_strength(pw);
+        assert_eq!(strength, "strong");
+        // iter-68: reason must mention the character class requirement.
+        assert!(
+            reason.contains("16"),
+            "strong reason must mention 16-character threshold, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn fair_password_reason_is_actionable() {
+        // iter-68: "fair" passwords must have a non-empty reason that guides
+        // the operator toward a specific improvement.
+        let pw = b"abcde123"; // 8 chars, only digits + lowercase = fair
+        let (strength, reason) = password_strength(pw);
+        assert_eq!(strength, "fair");
+        assert!(
+            !reason.is_empty(),
+            "fair password must have a non-empty reason"
+        );
     }
 }
