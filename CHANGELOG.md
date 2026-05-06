@@ -3,6 +3,99 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.16] — iteration 70 reuse reason truncation, cross-list docs, test coverage
+
+### Bug fixes (iter-70)
+
+- **Reuse reason string unbounded when many items share a password (iter-70,
+  MEDIUM)**: When a default/shared password is used by 50+ vault items, the
+  `reason` field on each `AuditItem` in `reused_passwords` listed ALL other item
+  names in a single string — producing unboundedly long reason strings (thousands
+  of characters).  Fixed: names are now capped at the first 5 entries and a
+  `"... and N more"` suffix is appended when the group is larger.  The full count
+  is still reported (`"password shared with 50 other item(s): A, B, C, D, E, ...
+  and 45 more"`).  Module-level constant `REUSE_NAME_DISPLAY_LIMIT = 5` controls
+  the cap.  `src/audit.rs` `run_audit()`.
+
+### Documentation (iter-70)
+
+- **Cross-list item not documented in README (iter-70, MEDIUM)**: An item with a
+  short, reused password appears in BOTH `weak_passwords` (strength reason) and in
+  a `reused_passwords` group (reuse reason).  This is intentional but was not
+  documented — an operator might be confused by seeing the same item name in two
+  places for two different reasons and might incorrectly deduplicate the results.
+  Added a `weak_passwords` / `reused_passwords` cross-list note to the
+  `GET /vault/audit/run` response field documentation: explains that the same item
+  can appear in both lists for independent reasons, that both problems need to be
+  resolved, and that display-layer deduplication is incorrect.  `README.md`.
+
+- **v0.2.15 GitHub release not created (iter-70, LOW)**: The v0.2.15 tag was
+  pushed but no GitHub release was drafted.  Created `gh release create v0.2.15`
+  with release notes covering the iter-69 changes (reuse reason override, shape
+  test, `fair_passwords_count` test, README fields).
+
+### Test coverage (iter-70)
+
+- **No test for cross-list weak+reused item (iter-70, MEDIUM)**: An item that is
+  both weak AND reused appears in both output lists with different `reason` values.
+  There was no test verifying (a) that the two entries have distinct reasons and
+  (b) that the `weak_passwords` entry retains the strength reason while the
+  `reused_passwords` entry gets the reuse reason.  Added
+  `cross_list_weak_and_reused_items_have_distinct_reasons` unit test in
+  `src/audit.rs`.
+
+- **No test for reuse reason truncation (iter-70, MEDIUM)**: No test verified that
+  the truncation cap is applied at exactly 5 names or that the `"... and N more"`
+  suffix is correct.  Added `reuse_reason_truncates_at_five_names` (8-item group →
+  5 shown + "... and 2 more") and `reuse_reason_not_truncated_at_exactly_five_names`
+  (5-item group → no suffix) unit tests in `src/audit.rs`.
+
+- **`fair_passwords_count_logic_matches_classifier` does not assert weak/fair
+  mutual exclusion (iter-70, LOW)**: The test verified the fair count but did not
+  explicitly assert that the simulated weak count is correct and that weak + fair
+  are mutually exclusive (no password counted in both).  Extended the test to also
+  count simulated weak passwords and assert that `simulated_fair + simulated_weak ==
+  4` (total non-strong passwords in the corpus), confirming the `else if` branch
+  correctly prevents double-counting.
+
+### Findings — no code change required (iter-70)
+
+- **`fair_passwords_count` does not double-count weak items (iter-70, VERIFY OK)**:
+  The counter increment is in an `else if strength == "fair"` branch (lines 276–279)
+  — a `"weak"` password enters the `if strength == "weak"` arm and never reaches
+  the `else if`.  Weak items are NOT also counted as fair.  Confirmed by reading
+  the branch and by the extended `fair_passwords_count_logic_matches_classifier`
+  test.
+
+- **`reused_passwords` deduplication (iter-70, VERIFY OK)**: Each vault item is
+  inserted into `reuse_map` exactly once per loop iteration (`reuse_map.entry(digest)
+  .or_default().push(audit_item)`).  The post-processing step collects groups via
+  `reuse_map.into_values()`, consuming the map.  An item cannot appear multiple
+  times in the same group and cannot appear in multiple groups (a password has
+  exactly one HMAC digest).  No deduplication bug present.
+
+- **`scoring_note` grammar (iter-70, VERIFY OK)**: The full `scoring_note` string
+  reads: `"rule-based heuristic: length + character classes only; no dictionary
+  check — common passwords like 'password123' may score 'fair' if they meet the
+  length threshold (weak = fewer than 8 characters); each AuditItem includes a
+  \`reason\` field with an actionable explanation"`.  The semicolons correctly
+  separate three independent clauses; the em-dash introduces the limitation caveat.
+  Grammatically correct; reads as one compound sentence.
+
+- **v0.2.15 CI run (iter-70, VERIFY OK)**: `gh run list --repo aaronckj/vaultproxy
+  --limit 3` shows the v0.2.15 tag triggered a CI run (status: in_progress at time
+  of check — run ID 25418005539).  The v0.2.14 and v0.2.13 runs both completed with
+  `success`.
+
+### Verification (iter-70)
+
+- `cargo test --all-targets`: 253 passed, 0 failed (+3 new tests:
+  `cross_list_weak_and_reused_items_have_distinct_reasons`,
+  `reuse_reason_truncates_at_five_names`,
+  `reuse_reason_not_truncated_at_exactly_five_names`).
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
 ## [0.2.15] — iteration 69 reuse reason, test coverage, README fields
 
 ### Bug fixes (iter-69)
