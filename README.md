@@ -313,10 +313,10 @@ Returns a JSON object:
 }
 ```
 
-- `weak_passwords`: items whose password is shorter than 8 characters.
-- `reused_passwords`: groups of two or more items that share the same password (detected via HMAC fingerprints — no plaintext stored or returned).
+- `weak_passwords`: array of `AuditItem` objects whose password is shorter than 8 characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Passwords scored `"fair"` (8–15 chars or lacking character-class diversity) are not surfaced here.
+- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned).
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
-- Scoped to `vault_folder` — only items inside the configured folder are scanned.
+- Scoped to `vault_folder` — only items inside the configured folder are scanned (max 1 000 items per scan; see `SCAN_ITEM_CAP` in `vw_adapter.rs`).
 
 ### Complete credential audit workflow
 

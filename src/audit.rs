@@ -35,10 +35,35 @@ pub struct AuditItem {
 
 /// Determine password strength without storing the plaintext.
 ///
+/// # Algorithm
+///
+/// This is a **rule-based heuristic**, NOT zxcvbn, NOT HIBP k-anonymity.
+///
+/// Choice rationale (iter-56 / audit):
+///   - zxcvbn requires a dictionary corpus (~500 KB), adds a crate dependency,
+///     and runs a pattern-matching pass over the plaintext.  For an in-process
+///     sidecar that already minimises the plaintext window, rule-based scoring
+///     avoids holding the plaintext any longer than strictly necessary.
+///   - HIBP k-anonymity requires an outbound HTTPS call per password — not
+///     suitable for an air-gapped or LAN-only homelab deployment, and would
+///     leak partial password hashes to an external service.
+///   - The heuristic correctly classifies the most dangerous passwords (those
+///     shorter than 8 characters) and identifies structural strength (length ≥
+///     16 with mixed character classes).  "Fair" is intentionally conservative:
+///     any password that is not clearly strong is flagged for review.
+///
 /// Rules:
-///  - len < 8                                  → "weak"
-///  - len >= 16 with 3+ character classes      → "strong"
-///  - everything else                          → "fair"
+///  - len < 8                                  → "weak"   (reported in `weak_passwords`)
+///  - len >= 16 with 3+ character classes      → "strong" (NOT reported)
+///  - everything else                          → "fair"   (NOT reported — see note)
+///
+/// Note: only "weak" passwords appear in `AuditResult::weak_passwords`.
+/// "fair" passwords are silently dropped from the report.  If you want to
+/// surface them, filter `AuditItem::password_strength == "fair"` in the
+/// caller.
+///
+/// Character classes: lowercase ASCII, uppercase ASCII, ASCII digits, ASCII
+/// punctuation (symbols).  Non-ASCII bytes count toward length only.
 fn password_strength(pw: &[u8]) -> &'static str {
     let len = pw.len();
     if len < 8 {

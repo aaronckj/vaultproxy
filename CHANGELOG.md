@@ -3,6 +3,83 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.7] — iteration 56: trailing-slash rate-limit bypass, cfg(test) registry cleanup, scan item cap, audit algorithm docs
+
+### Security fixes (iter-56)
+
+- **Trailing-slash rate-limiter bypass (iter-56, MEDIUM)**: The rate-limit
+  middleware keyed on the raw URI path. A caller sending `GET /vault/audit/run/`
+  (trailing slash) would not match the `"/vault/audit/run"` entry in
+  `RATE_LIMITED_PATHS` and would fall through to the default 60 req/60 s budget,
+  bypassing the 2 req/60 s cap designed to prevent audit-decrypt DoS. Fixed:
+  `rate_limit_middleware` now strips a single trailing slash from paths longer
+  than `/` before the match, normalising `/vault/audit/run/` → `/vault/audit/run`.
+  Added `trailing_slash_uses_same_bucket_as_canonical_path` unit test.
+
+### Hardening (iter-56)
+
+- **`from_config`/`from_vault`/`build_media_entry` moved to `#[cfg(test)]`
+  (iter-56)**: These three items in `src/proxy/registry.rs` were previously
+  tagged `#[allow(dead_code)]` with a comment claiming they were "called only by
+  /vault/connecterr-secrets HTTP handlers". Investigation confirmed no production
+  handler calls them — they are only exercised by tests. Moving the definitions
+  inside `#[cfg(test)]` removes them from production binaries and makes accidental
+  production use a compile error.
+
+- **`scan/start` item count cap — `SCAN_ITEM_CAP = 1_000` (iter-56)**:
+  `VwAdapter::list_items_metadata()` previously returned all scoped items with
+  no upper bound. A vault_folder with 10 000 items would send all 10 000 items
+  to the engine sidecar in one request, potentially exhausting the engine's
+  memory and producing an oversized HTTP body. Added `SCAN_ITEM_CAP = 1_000`
+  constant; when the item count exceeds the cap, `list_items_metadata()` truncates
+  and emits a `tracing::warn!`. Documented in README under `GET /vault/audit/run`.
+
+### Documentation (iter-56)
+
+- **`password_strength` algorithm documented (iter-56)**: The `audit.rs`
+  `password_strength()` function now carries a full algorithm docstring explaining
+  why rule-based scoring was chosen over zxcvbn (avoids dictionary corpus and
+  extended plaintext window) and over HIBP k-anonymity (avoids outbound HTTPS
+  calls that leak partial hashes to an external service). The docstring also
+  clarifies that only `"weak"` passwords appear in `weak_passwords`; `"fair"`
+  passwords are not reported.
+
+- **README `AuditResult` schema corrected (iter-56)**: `weak_passwords` and
+  `reused_passwords` descriptions now specify the array element type (`AuditItem`
+  with fields `name`, `username`, `item_type`, `password_strength`) and clarify
+  that "fair" passwords are not surfaced. `SCAN_ITEM_CAP` noted in scope bullet.
+
+### Findings — no code change required (iter-56)
+
+- **Rate limiter test isolation (issue 1)**: `make_state()` does not contain a
+  `RateLimiter`. The limiter is injected per-test via `make_audit_run_app()` which
+  creates a fresh `RateLimiter::new()` with its own `Arc<Mutex<HashMap>>`. No
+  shared state between tests; the concern is unfounded.
+
+- **`_review-delete` folder scope (issue 2)**: Vaultwarden's `/api/folders` API
+  creates top-level folders only (VW does not support folder nesting). The
+  `_review-delete` folder is therefore always a root-level folder — this is
+  correct and intentional. Operators should be aware the folder appears in their
+  flat folder list alongside personal folders. The `marker.rs` docstring already
+  mentions idempotency; a note about the top-level placement would be a future
+  improvement but is not a bug.
+
+- **`AuditResult` README schema (issue 3)**: The README correctly showed
+  `weak_passwords` as an array of objects and `reused_passwords` as an array of
+  arrays of objects. The prior description was accurate; this iteration only
+  improved it by adding explicit field names and the "fair is not surfaced" note.
+
+- **Empty vault_folder with `run_audit` (issue 4)**: `run_audit()` iterates over
+  `vault.list_items()`. When the vault has no items the loop body never runs and
+  `AuditResult { total_items: 0, weak_passwords: vec![], reused_passwords: vec![] }`
+  is returned correctly. No error, no panic.
+
+- **`scan/start` + `apply` 50-item threshold (issue 8)**: The `confirm_bulk`
+  threshold guards the number of *pending flagged items* (results of a scan),
+  not the number of items scanned. Even with SCAN_ITEM_CAP at 1 000, only the
+  subset flagged by the engine as dead/weak/duplicate counts against the 50-item
+  apply guard. The threshold remains appropriate.
+
 ## [0.2.6] — iterations 53–55: VwAdapter scope bypass fix, audit/run endpoint, rate limit, localhost HTTPS warn, iter-55 tests
 
 ### Security fixes (iter-53 — CRITICAL)

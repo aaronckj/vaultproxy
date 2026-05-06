@@ -8,6 +8,27 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use url::Url;
 
+/// Maximum number of items sent to the external credential-audit engine per
+/// scan request.
+///
+/// # Rationale (iter-56)
+///
+/// `list_items_metadata()` returns all scoped items with no upper bound.  A
+/// vault_folder with 10 000 items would emit all 10 000 items in a single
+/// `scan/start` payload to the engine sidecar, which:
+///   - exhausts the engine's in-process memory for the scan session,
+///   - can produce an HTTP request body large enough to hit default body limits,
+///   - and makes the first-run experience for large shared vaults unexpectedly
+///     slow (the operator gets no progress feedback until all items are classified).
+///
+/// 1 000 items is generous for a homelab sidecar (the typical vault_folder has
+/// 50–200 managed service credentials).  If an operator genuinely needs more,
+/// they should split the vault_folder or raise this constant and recompile.
+///
+/// When the cap is reached, a `tracing::warn!` is emitted so the operator knows
+/// items were silently dropped — they can then split the scan across folders.
+const SCAN_ITEM_CAP: usize = 1_000;
+
 pub struct VwAdapter {
     vault: Arc<VaultManager>,
     /// Vault folder scope — only items in this folder are returned by
@@ -92,6 +113,22 @@ impl VaultAdapter for VwAdapter {
                     masked
                 }
             }
+        };
+
+        // iter-56: cap to SCAN_ITEM_CAP to prevent accidentally sending thousands
+        // of items to the engine sidecar in a single request.  Emit a warning so
+        // the operator knows items were truncated and can act (split folders or
+        // raise the cap constant).
+        let masked = if masked.len() > SCAN_ITEM_CAP {
+            tracing::warn!(
+                "credaudit: vault_folder contains {} items — truncating scan to {} items. \
+                 Increase SCAN_ITEM_CAP or split into multiple vault_folders to audit all items.",
+                masked.len(),
+                SCAN_ITEM_CAP
+            );
+            masked.into_iter().take(SCAN_ITEM_CAP).collect::<Vec<_>>()
+        } else {
+            masked
         };
 
         let mut out = Vec::with_capacity(masked.len());

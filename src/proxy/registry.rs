@@ -308,15 +308,20 @@ impl ServiceRegistry {
     // Config-driven construction                                               //
     // ---------------------------------------------------------------------- //
 
-    /// Internal legacy path — used only by the /vault/connecterr-secrets HTTP handlers.
+    /// Internal legacy path — test-only. No production code calls this.
     /// Public users register services via services.toml and from_toml_file().
     /// DO NOT add new service-specific logic here.
     ///
     /// Reads `modules.media.services`, `modules.ha.instances`,
     /// `modules.opnsense.instances`, `modules.npm.instances`, and
     /// `modules.duplicati.instances`.
-    #[allow(dead_code)] // called only by from_vault and by tests; from_vault is legacy internal path
-    #[doc(hidden)]
+    ///
+    /// iter-56: gated `#[cfg(test)]` — was previously `#[allow(dead_code)]`
+    /// with a comment claiming it was "called only by from_vault and by tests".
+    /// Neither production handler nor `main.rs` calls it. Moving the definition
+    /// into test-only compilation removes it from production binaries entirely
+    /// and makes it impossible to accidentally call from production code.
+    #[cfg(test)]
     pub fn from_config(config: &serde_json::Value) -> Self {
         let mut registry = Self::new();
 
@@ -522,8 +527,9 @@ impl ServiceRegistry {
     ///
     /// Keys `ssh`, `docker`, `vaultwarden`, and `apiKey` are silently ignored —
     /// they don't need proxy-side registrations.
-    #[allow(dead_code)] // legacy internal path — v1.0: will be removed in favor of services.toml
-    #[doc(hidden)]
+    ///
+    /// iter-56: gated `#[cfg(test)]` — no production handler calls this.
+    #[cfg(test)]
     pub fn from_vault(aggregated: &serde_json::Value, vault_prefix: &str) -> Self {
         let mut registry = Self::new();
 
@@ -1385,13 +1391,12 @@ fn login_path_has_traversal(path: &str) -> bool {
     path.split('/').any(|seg| seg == ".." || seg == ".")
 }
 
-/// Internal legacy path — used only by the /vault/connecterr-secrets HTTP handlers.
-/// Public users register services via services.toml and from_toml_file().
-/// DO NOT add new service-specific logic here.
-///
 /// Map a media service type to a `ServiceEntry`, returning `None` for unknown
-/// types.
-#[allow(dead_code)] // called only by from_config (legacy internal path)
+/// types.  Only used by `from_config` and `from_vault` which are themselves
+/// test-only.
+///
+/// iter-56: gated `#[cfg(test)]` alongside `from_config`/`from_vault`.
+#[cfg(test)]
 fn build_media_entry(
     name: String,
     svc_type: &str,
