@@ -3,6 +3,81 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.27] — iteration 84: README browser/engine build examples, release readiness audit
+
+### Documentation fixes (iter-84)
+
+- **README Building section missing `--features browser` and `--features engine` examples (MEDIUM)** —
+  Iter-81 added the `browser` and `engine` feature gates, and iter-82/83 wired their CI steps
+  and CONTRIBUTING documentation. The `Building` section of README listed only `--features tpm`
+  and `--features dashboard` under Cargo examples, and only `dashboard`, `tpm`, and
+  `dashboard,tpm` under Docker examples. Added `--features browser`, `--features engine`, and
+  `--features dashboard,browser,engine` to both Cargo and Docker build example blocks.
+  `README.md`.
+
+### Audit findings (iter-84) — no code changes required
+
+- **CONTRIBUTING.md pre-PR checklist** — `cargo fmt --check` is present in both the "Lint and
+  formatting requirements" prose section AND step 2 of the "PR process" four-command checklist.
+  No fix needed.
+
+- **v0.2.26 GitHub release** — Already created (2026-05-06T07:59:57Z) with full iter-83 notes.
+  No action needed.
+
+- **CI timeout** — `docker-publish.yml` has no `timeout-minutes:` on the job; the GitHub
+  Actions default is 360 minutes. With the two additional feature-matrix steps (~3 minutes each),
+  total CI time is ~13 minutes — well within the 360-minute default. No timeout risk.
+
+- **`cargo doc --no-deps --features browser,engine,dashboard` warnings** — 0 warnings. Clean.
+
+- **`cargo test --features browser`** — 231 unit + 2 integration tests pass. `make_state()`
+  compiles correctly in both default and `--features browser` configurations.
+
+- **CHANGELOG [0.2.26]** — Present and complete with all 7 iter-83 findings plus verification.
+
+- **v1.0 deferred item count** — 21 total `v1.0:` tagged items across 9 files.
+  - `src/credential_audit/pass2.rs`: 9 items (engine scaffold — opt-in `engine` feature)
+  - `src/keystore.rs`: 4 items (credential rotation UI, TPM unlock path, factory reset flow)
+  - `src/sync/cloud.rs`: 2 items (master password change, cloud-account settings)
+  - `src/policy.rs`: 1 item (dashboard policy management UI)
+  - `src/proxy/unifi_session.rs`: 1 item (rotation handler after credential change)
+  - `src/security/rate_limit.rs`: 1 item (configurable per-route rate limiting)
+  - `src/security/sanitize.rs`: 1 item (browser agent output pipeline)
+  - `src/vault/mod.rs`: 1 item (dashboard field inspector)
+  - `src/vault/handlers.rs`: 1 item (folder-scoped vault handlers)
+  Assessment: 9 of 21 items are in the `engine` scaffold. The remaining 12 span stable-core
+  modules (`keystore`, `policy`, `rate_limit`, `sanitize`, `vault`, `sync/cloud`, `proxy`).
+  The stable core has suppressions but they are non-functional scaffolds awaiting dashboard/
+  rotation UI wiring — not correctness gaps. The claim "stable core has zero suppressions"
+  from the audit prompt was inaccurate; correct count is 12 suppressions in stable-core files.
+
+- **v1.0.0-rc.1 / v0.3.0 assessment** — Two separate questions:
+  - *v0.3.0 vs v0.2.27*: Under SemVer, the v0.2.x series accumulated new feature-gated
+    modules (`browser`, `engine`), new CLI flags (`--vault-refresh-interval-secs`,
+    `--audit-interval-secs`, `--litellm-*`, `--vision-model`, `--env-write-root`, etc.),
+    new endpoints (`/audit/credaudit/*`, `/browser/*`, `/vault/reload-services`, etc.),
+    and breaking changes to AuditResult shape and reuse-reason format. Each of those is
+    a minor-version increment under SemVer for a pre-1.0 library. v0.3.0 is warranted as
+    the next release that bundles these additions; see recommendation below.
+  - *v1.0.0-rc.1*: Premature. 12 `v1.0:` suppressions remain in stable-core files
+    (`keystore`, `policy`, `rate_limit`, `sanitize`, `vault`, `sync`), meaning the
+    dashboard rotation UI, TPM unlock flow, configurable rate limiting, and folder-scoping
+    are all unimplemented. v1.0.0 requires: (a) all stable-core `v1.0:` items wired or
+    explicitly removed/deferred; (b) the 9 pass2 `v1.0:` items either wired or explicitly
+    deferred to a post-1.0 release; (c) a SECURITY.md threat model review; (d) a
+    full-suite integration test against a live Vaultwarden instance. RC is not yet
+    appropriate.
+
+### Verification (iter-84)
+
+- `cargo test --all-targets`: 228 passed (lib) + 2 passed (integration) = 230 total, 0 failed.
+- `cargo test --all-targets --features browser,engine,dashboard`: 258 passed, 0 failed.
+- `cargo test --features browser`: 231 passed (lib) + 2 passed (integration) = 233 total, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+- `cargo doc --no-deps --features browser,engine,dashboard`: 0 warnings.
+
 ## [0.2.26] — iteration 83: CI clippy feature matrix, CONTRIBUTING MSRV + test commands, dead_code comment hygiene
 
 ### Bug fixes (iter-83)

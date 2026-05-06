@@ -461,6 +461,15 @@ cargo build --release --features tpm
 
 # With web dashboard — adds management UI on 127.0.0.1:3202
 cargo build --release --features dashboard
+
+# With browser-based credential rotation — requires LiteLLM + Playwright
+cargo build --release --features browser
+
+# With credential-audit engine sidecar path
+cargo build --release --features engine
+
+# Full feature set (dashboard + browser rotation + engine sidecar)
+cargo build --release --features dashboard,browser,engine
 ```
 
 ### Docker
@@ -477,8 +486,14 @@ docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .
 # TPM build — requires TSS2 libraries; add libssl-dev in Dockerfile if needed
 docker build --build-arg FEATURES=tpm -t vaultproxy:tpm .
 
+# Browser rotation build — requires LiteLLM endpoint + Playwright agent
+docker build --build-arg FEATURES=browser -t vaultproxy:browser .
+
+# Full build — dashboard + browser + engine
+docker build --build-arg FEATURES=dashboard,browser,engine -t vaultproxy:full .
+
 # Dashboard + TPM
-docker build --build-arg FEATURES=dashboard,tpm -t vaultproxy:full .
+docker build --build-arg FEATURES=dashboard,tpm -t vaultproxy:tpm-dashboard .
 ```
 
 To run the dashboard build with Docker Compose, add a `build` section and the `FEATURES` arg:
