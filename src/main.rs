@@ -1004,6 +1004,16 @@ async fn start_server(
             proxy_timeout_s   = args.proxy_timeout,
             "vault-proxy startup configuration summary"
         );
+        // iter-78: surface the on-demand audit endpoint in startup logs when the
+        // background scheduler is enabled, so operators who set --audit-interval-secs
+        // for the first time see both the scheduled cadence and the manual endpoint.
+        if args.audit_interval_secs > 0 {
+            tracing::info!(
+                audit_interval_secs = args.audit_interval_secs,
+                "credential audit scheduler enabled — on-demand endpoint: \
+                 GET /vault/audit/run (Authorization: Bearer <token from /config/internal-token>)"
+            );
+        }
     }
 
     // Issue (iter-25): Validate that vault_folder actually EXISTS in Vaultwarden
@@ -2188,6 +2198,14 @@ async fn start_server(
                     );
                     let mut interval =
                         tokio::time::interval(std::time::Duration::from_secs(audit_interval));
+                    // iter-78: skip missed ticks instead of bursting.  The default
+                    // `Burst` behaviour means that if an audit takes longer than the
+                    // configured interval, every missed tick fires immediately after
+                    // the slow audit completes — potentially queuing up dozens of
+                    // back-to-back runs on a very short interval.  `Skip` discards
+                    // all missed ticks so exactly one new run is scheduled after the
+                    // slow audit finishes, maintaining the intended cadence.
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     // Skip the first immediate tick so we don't run an audit right at
                     // startup (the vault may still be loading items).
                     //
@@ -2271,7 +2289,7 @@ async fn start_server(
                                  {} weak password(s), {} item(s) with shared passwords \
                                  across {} reuse group(s) (total {} items scanned). \
                                  Review: GET /vault/audit/run \
-                                 (Authorization: Bearer $(cat /config/internal-token))",
+                                 (Authorization: Bearer <token from /config/internal-token>)",
                                 inner_folder,
                                 n_weak,
                                 n_reused_items,
@@ -2478,17 +2496,26 @@ async fn start_server(
 /// to read $CONFIG_DIR/tool-permissions.json and mentally apply the priority
 /// rules (overrides > longest-category-match > Log default) — error-prone and
 /// not available to operators running in Docker without shell access.
-async fn handle_get_permissions(
+pub(crate) async fn handle_get_permissions(
     AxumState(state): AxumState<Arc<AppState>>,
 ) -> AxumJson<serde_json::Value> {
     let perms = state.permissions.read().await;
+    // iter-78: include whether the permissions file exists on disk so callers
+    // can distinguish "file exists with all defaults" from "file not found —
+    // using built-in defaults".  Both states produce an identical JSON shape
+    // for `defaults` and `overrides`; without this field an operator cannot
+    // tell whether their custom file was loaded or silently missing.
+    let permissions_path = format!("{}/tool-permissions.json", state.config_dir);
+    let config_file_exists = std::path::Path::new(&permissions_path).exists();
     tracing::debug!("GET /vault/permissions — returning current tool permissions");
     AxumJson(serde_json::json!({
         "defaults": perms.defaults,
         "overrides": perms.overrides,
+        "config_file_exists": config_file_exists,
         "note": "GET /vault/permissions — current tool permission configuration (defaults = category-level, overrides = per-tool-name; overrides take priority). \
-                 Permissions are loaded from $CONFIG_DIR/tool-permissions.json at startup; \
-                 restart vault-proxy to reload after editing the file."
+                 config_file_exists=true means tool-permissions.json was found in $CONFIG_DIR at startup; \
+                 false means built-in defaults are active. \
+                 Restart vault-proxy to reload after editing the file."
     }))
 }
 

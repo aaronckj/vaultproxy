@@ -143,6 +143,12 @@ const RATE_LIMITED_PATHS: &[&str] = &[
     // passwords simultaneously.  Limit to 2 req/60 s per IP so a slow or
     // mis-configured caller cannot DDoS the proxy's decrypt loop.
     "/vault/audit/run",
+    // iter-78: permissions diagnostic endpoint — gated behind the internal bearer
+    // token but still subject to rate limiting.  An attacker who obtains the
+    // internal token could call this endpoint in a tight loop to probe the
+    // permission system structure.  30 req/60 s is generous for legitimate use
+    // (reading permissions once per request) while preventing automated probing.
+    "/vault/permissions",
 ];
 
 /// Per-route tighter limits for destructive operations (iter-37/38).

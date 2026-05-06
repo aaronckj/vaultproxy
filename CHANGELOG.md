@@ -3,6 +3,61 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.22] — iteration 78: ntfy body plain text, permissions rate-limit, MissedTickBehavior::Skip, config_file_exists, startup log, integration test
+
+### Bug fixes (iter-78)
+
+- **ntfy notification body contained unevaluated shell command (iter-78, MEDIUM)**:
+  The ntfy push notification body ended with
+  `"(Authorization: Bearer $(cat /config/internal-token))"`. This string is
+  plain text delivered to ntfy.sh and then to the operator's phone — the shell
+  subshell expansion `$(cat ...)` is never evaluated. The recipient saw the
+  literal text `$(cat /config/internal-token)` rather than a token value or a
+  human-readable instruction. Fixed to `"<token from /config/internal-token>"`,
+  which is accurate plain English matching the help text elsewhere in the codebase.
+  `src/main.rs:2274`.
+
+- **`GET /vault/permissions` missing from `RATE_LIMITED_PATHS` (iter-78, MEDIUM)**:
+  The endpoint was added to `internal_router` in iter-77 (bearer-token gated) but
+  was not added to the rate-limiter's `RATE_LIMITED_PATHS` array. An attacker who
+  obtained the internal token could call the endpoint in a tight loop to probe the
+  permission system structure without hitting any rate limit. Added at the default
+  60 req/60 s bucket (appropriate for a read-only diagnostic). `src/security/rate_limit.rs:146-151`.
+
+- **Background audit interval bursts after slow audit (iter-78, LOW)**:
+  `tokio::time::Interval` uses `MissedTickBehavior::Burst` by default — if an audit
+  takes longer than `--audit-interval-secs`, every missed tick fires immediately
+  after the slow audit finishes, potentially queuing back-to-back runs. Set
+  `MissedTickBehavior::Skip` so missed ticks are discarded and exactly one new run
+  is scheduled at the next boundary. `src/main.rs:2199-2208`.
+
+### Improvements (iter-78)
+
+- **`GET /vault/permissions` response includes `config_file_exists` (iter-78, LOW)**:
+  Both "file exists with all defaults" and "file not found — using built-in
+  defaults" produced identical JSON for `defaults` and `overrides`. Added a
+  `config_file_exists: bool` field so callers can distinguish the two states
+  without disk access or restart. `src/main.rs:2505-2510`.
+
+- **Startup log mentions `GET /vault/audit/run` when scheduler is enabled (iter-78, LOW)**:
+  When `--audit-interval-secs > 0`, a new `INFO` log line records the interval
+  and the on-demand HTTP endpoint with its auth requirement. An operator enabling
+  the scheduler for the first time now sees the endpoint immediately in startup
+  logs without consulting the help text. `src/main.rs:1007-1014`.
+
+- **Integration test for `GET /vault/permissions` (iter-78, MEDIUM)**:
+  Added HTTP-level integration test verifying: (a) 401 without bearer token,
+  (b) 200 with correct JSON shape (`defaults`, `overrides`, `config_file_exists`,
+  `note` keys), (c) `config_file_exists` is `false` when the permissions file is
+  absent. `src/proxy/mod.rs:2744-2848`.
+
+### Verification (iter-78)
+
+- `cargo test --all-targets`: 257 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: 0 diff lines (clean).
+- `cargo doc --no-deps`: 0 warnings.
+
 ## [0.2.21] — iteration 77: ntfy URL, permissions endpoint, scoring_note docs, README JSON fix
 
 ### Bug fixes (iter-77)

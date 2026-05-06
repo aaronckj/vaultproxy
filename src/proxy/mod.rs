@@ -2741,6 +2741,113 @@ vault_item  = "vault-proxy - Beta"
         }
     }
 
+    // ---------------------------------------------------------------------- //
+    // (k) GET /vault/permissions — bearer auth, JSON shape, config_file_exists //
+    // ---------------------------------------------------------------------- //
+
+    /// iter-78: GET /vault/permissions integration tests.
+    ///
+    /// Verifies three invariants end-to-end across the full HTTP stack:
+    ///   (a) 401 UNAUTHORIZED when the Authorization header is absent.
+    ///   (b) 200 OK with correct JSON shape (defaults, overrides, config_file_exists,
+    ///       note keys) when the correct bearer token is supplied.
+    ///   (c) `config_file_exists` is `false` when the permissions file is absent
+    ///       (the stub state uses config_dir="/config" which does not exist in test).
+    ///
+    /// The test uses the same internal-router wiring as the `make_audit_run_app`
+    /// helper and the existing `internal_token_middleware_returns_401_without_header`
+    /// test to stay consistent with production wiring.
+    #[tokio::test]
+    async fn get_vault_permissions_requires_bearer_and_returns_correct_shape() {
+        use crate::security::rate_limit::RateLimiter;
+
+        let state = make_state(ServiceRegistry::new());
+        let token = state.internal_token.as_str().to_string();
+
+        let internal_router = Router::new()
+            .route("/vault/permissions", get(crate::handle_get_permissions))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::require_internal_token,
+            ))
+            .with_state(state.clone());
+
+        let limiter = RateLimiter::new(60, 60);
+        let app = Router::new()
+            .merge(internal_router)
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                crate::security::rate_limit::rate_limit_middleware,
+            ))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = reqwest::Client::new();
+
+        // (a) No auth header → 401 UNAUTHORIZED.
+        let resp = client
+            .get(format!("http://{}/vault/permissions", addr))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "GET /vault/permissions without auth must return 401 UNAUTHORIZED"
+        );
+
+        // (b) Correct bearer token → 200 with expected JSON shape.
+        let resp = client
+            .get(format!("http://{}/vault/permissions", addr))
+            .header("authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /vault/permissions with correct bearer must return 200 OK"
+        );
+        let body: serde_json::Value = resp.json().await.expect("response must be JSON");
+
+        assert!(
+            body.get("defaults").is_some(),
+            "GET /vault/permissions response must include 'defaults' key; got: {body}"
+        );
+        assert!(
+            body.get("overrides").is_some(),
+            "GET /vault/permissions response must include 'overrides' key; got: {body}"
+        );
+        assert!(
+            body.get("note").is_some(),
+            "GET /vault/permissions response must include 'note' key; got: {body}"
+        );
+        // (c) config_file_exists must be present and false (stub state uses
+        // config_dir="/config" which does not exist in the test environment).
+        assert!(
+            body.get("config_file_exists").is_some(),
+            "GET /vault/permissions response must include 'config_file_exists' key; got: {body}"
+        );
+        assert_eq!(
+            body["config_file_exists"].as_bool(),
+            Some(false),
+            "config_file_exists must be false when permissions file is absent; got: {body}"
+        );
+        // defaults must be an object (not null, not array).
+        assert!(
+            body["defaults"].is_object(),
+            "GET /vault/permissions 'defaults' must be a JSON object; got: {body}"
+        );
+        // overrides must be an object (empty by default).
+        assert!(
+            body["overrides"].is_object(),
+            "GET /vault/permissions 'overrides' must be a JSON object; got: {body}"
+        );
+    }
+
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires
     /// a tight 2 req/60 s limiter across the full HTTP stack so the third
     /// request returns 429 TOO_MANY_REQUESTS.
