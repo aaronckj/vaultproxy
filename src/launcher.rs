@@ -371,11 +371,16 @@ pub async fn launch(
         );
     }
 
-    // Issue (iter-88): Reject server names that contain characters that would
+    // Issue (iter-89): Reject server names that contain characters that would
     // corrupt the child's environment when injected as VAULT_PROXY_CALLER_ID.
     //
-    // POSIX env var *values* are arbitrary byte strings, but three characters
-    // cause real problems in practice:
+    // POSIX.1-2017 §8.1: env var NAMES must match [A-Za-z_][A-Za-z0-9_]*.
+    // Env var VALUES may contain any byte string except null bytes — '=' in a
+    // value is perfectly legal (e.g. VAULT_PROXY_CALLER_ID=prod=main is a
+    // valid POSIX env entry; the first '=' is the name/value delimiter and any
+    // subsequent '=' characters are part of the value).
+    //
+    // Two characters cause real problems in practice when used in VALUES:
     //
     //   '\0' — null bytes terminate the C-string representation; the value is
     //           silently truncated at the first null.  A name "foo\0bar" would
@@ -386,11 +391,13 @@ pub async fn launch(
     //           file written from the child's environment.  The OS allows it,
     //           but it is never intentional in a server name.
     //
-    //   '='   — on POSIX the first '=' in an env entry separates the key from
-    //           the value; a value containing '=' is fine structurally, but a
-    //           server name with '=' is almost certainly a misconfiguration that
-    //           would make the CALLER_ID header value contain '=', confusing
-    //           any consumer that uses '=' as a delimiter.
+    // '=' WAS rejected in iter-88 but is now ALLOWED (iter-89).  The concern
+    // was that consumers might use '=' as a delimiter in CALLER_ID values, but
+    // POSIX explicitly permits '=' in env var values.  Server names like
+    // "prod=main" or "server=v2" are valid operator choices.  The X-Caller-Id
+    // HTTP header also allows '=' (RFC 7230 allows any visible ASCII in header
+    // values).  Removing the restriction unblocks legitimate naming conventions
+    // without introducing any real safety risk.
     //
     // The path-separator check above already rejects '/' and '\'. This check
     // adds the env-value safety layer that the path check does not cover.
@@ -409,15 +416,7 @@ pub async fn launch(
              VAULT_PROXY_CALLER_ID and newlines can corrupt environment file parsing)"
         );
     }
-    if server_name.contains('=') {
-        anyhow::bail!(
-            "mcp_server name '{}' contains '=' — \
-             server names must not contain '=' (they are injected as \
-             VAULT_PROXY_CALLER_ID; '=' in the value confuses consumers that \
-             use '=' as a delimiter). Use a name without '='.",
-            server_name
-        );
-    }
+    // '=' is intentionally NOT rejected — it is valid in POSIX env var values.
 
     // Issue (iter-17): Prevent duplicate launches of the same MCP server.
     //
@@ -934,10 +933,14 @@ command = "cmd-b"
         );
     }
 
-    // Issue (iter-88): Server name env-var value sanitization — characters that
+    // Issue (iter-89): Server name env-var value sanitization — characters that
     // corrupt VAULT_PROXY_CALLER_ID when injected into the child's environment.
+    // '=' is intentionally NOT in this list — POSIX.1-2017 §8.1 permits '=' in
+    // env var VALUES (the first '=' is the name/value delimiter; subsequent
+    // occurrences are part of the value).  Server names like "prod=main" are
+    // valid naming conventions and must not be blocked.
     fn server_name_env_value_is_safe(name: &str) -> bool {
-        !name.contains('\0') && !name.contains('\n') && !name.contains('\r') && !name.contains('=')
+        !name.contains('\0') && !name.contains('\n') && !name.contains('\r')
     }
 
     #[test]
@@ -960,11 +963,20 @@ command = "cmd-b"
         );
     }
 
+    // Issue (iter-89): '=' IS allowed in server names (was rejected in iter-88).
+    // POSIX.1-2017 §8.1: values may contain any byte except null.  A server
+    // name like "prod=main" is a valid operator naming convention and must not
+    // be blocked.  The X-Caller-Id header also allows '=' (RFC 7230 visible
+    // ASCII).  This test documents the ALLOWED behaviour.
     #[test]
-    fn test_server_name_eq_sign_rejected_for_env_value() {
+    fn test_server_name_eq_sign_allowed_for_env_value() {
         assert!(
-            !server_name_env_value_is_safe("name=bad"),
-            "server name with '=' must be rejected (VAULT_PROXY_CALLER_ID value confusion)"
+            server_name_env_value_is_safe("prod=main"),
+            "server name with '=' must be ALLOWED — '=' is valid in POSIX env var values"
+        );
+        assert!(
+            server_name_env_value_is_safe("server=v2"),
+            "server name 'server=v2' must be allowed"
         );
     }
 
@@ -985,6 +997,10 @@ command = "cmd-b"
         assert!(
             server_name_env_value_is_safe("server with spaces"),
             "name with spaces is allowed (spaces are valid in env var values)"
+        );
+        assert!(
+            server_name_env_value_is_safe("name=value"),
+            "'=' in server name is allowed — valid POSIX env var value character"
         );
     }
 

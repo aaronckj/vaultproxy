@@ -3,6 +3,79 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.31] — iteration 89: relax '=' in server names, vision test fmt fix, quality gate snapshot
+
+### Fixes (iter-89)
+
+- **`=` restriction in server names relaxed — was over-restrictive (MEDIUM)** —
+  `src/launcher.rs`. Iter-88 added `bail!` when a server name contained `=`, on the
+  concern that `VAULT_PROXY_CALLER_ID=prod=main` might confuse consumers that treat `=`
+  as a delimiter. POSIX.1-2017 §8.1 is unambiguous: env var *names* must match
+  `[A-Za-z_][A-Za-z0-9_]*`, but *values* may contain any byte except null bytes.
+  The entry `VAULT_PROXY_CALLER_ID=prod=main` is a valid POSIX env entry; the first `=`
+  is the name/value delimiter and subsequent `=` characters are part of the value.
+  Server names like `"prod=main"` and `"server=v2"` are valid operator naming
+  conventions. The `=` rejection is removed; the `bail!` block, the supporting comment
+  block referencing `=` as a banned character, and the
+  `test_server_name_eq_sign_rejected_for_env_value` test are all removed.
+  Replaced with `test_server_name_eq_sign_allowed_for_env_value` (documents the now-allowed
+  behaviour) and a note added to `test_server_name_safe_values_pass_env_check`.
+  The helper `server_name_env_value_is_safe` no longer checks `contains('=')`.
+  `\0`, `\n`, `\r` remain rejected (correct: null truncates the C-string value;
+  newlines enable env-file injection). 15 deferred items unchanged.
+
+- **`cargo fmt` diff in `browser/vision.rs` (LOW)** —
+  `src/browser/vision.rs`. Two formatting violations in the test module added by iter-88:
+  (1) `let adversarial_llm_response = <long string>` was split across two lines in a way
+  that `rustfmt` reformats to a single line (the string fits within 100 chars on one line);
+  (2) `!sanitized.to_lowercase().contains(...)` was reformatted to a 3-line chain.
+  Fixed to match `rustfmt` output. `cargo fmt --check` was red; now passes.
+
+### Audit findings (iter-89) — no code changes required
+
+- **Dashboard `api.rs` — no remaining `find_folder_id_by_name_async` direct calls** —
+  `src/dashboard/api.rs`. Item 2 confirmed clean: no dashboard handler calls
+  `state.vault.find_folder_id_by_name_async` directly. The only remaining direct call is
+  in `src/vault/connecterr_secrets.rs:127` — that function takes a bare `VaultManager`
+  reference (not `Arc<AppState>`), so it cannot use the `resolve_vault_folder_id` cache
+  by design. Not a bug.
+
+- **Vision test `#[cfg(test)]` gate sufficient — no `#[cfg(feature = "browser")]` needed** —
+  `src/browser/vision.rs:234`. The entire `browser` module is gated at the crate root
+  (`#[cfg(feature = "browser")] mod browser;` in `main.rs:19`). `vision.rs` is never
+  compiled without the `browser` feature, so `#[cfg(test)]` is sufficient. Adding
+  `#[cfg(all(test, feature = "browser"))]` would be defensive but is not required for
+  correctness or compilation.
+
+- **`resolve_vault_folder_id` cache clear + re-populate on SIGHUP confirmed correct** —
+  `src/main.rs:2049,2062`. SIGHUP clears `cached_folder_id` (line 2049), then immediately
+  re-resolves via `find_folder_id_by_name_async` for the startup-check log (line 2062).
+  The cache is NOT re-populated by the SIGHUP handler — only cleared. On the next real
+  request, `resolve_vault_folder_id` in `vault/handlers.rs` sees `None`, takes the slow
+  path, and populates the cache from Vaultwarden. This is correct: the SIGHUP handler
+  does not write the resolved ID back into `cached_folder_id`, so the first
+  post-SIGHUP request pays the O(n) scan once, then all subsequent requests hit the warm
+  cache. No bug.
+
+- **v0.2.30 GitHub release — already exists** — `gh release list` confirms
+  `v0.2.30` was created before this audit pass. No action needed.
+
+- **`unseal_private_key_from_tpm` — no `#[cfg(feature = "tpm")]` gate needed** —
+  `src/keystore.rs:334`. The function calls `crate::tpm::unseal_from_tpm` which is always
+  compiled (tpm.rs is not feature-gated). The `tpm = ["tss-esapi"]` feature in Cargo.toml
+  gates the optional `tss-esapi` hardware driver; the software-fallback path in `tpm.rs`
+  always compiles. Adding `#[cfg(feature = "tpm")]` to `unseal_private_key_from_tpm`
+  would be incorrect — the function is needed for both TPM and software-fallback builds.
+  The `#[allow(dead_code)]` annotation with `post-v1.0:` tag is accurate and sufficient.
+
+### Quality gates (iter-89)
+
+- `cargo test --all-targets --features browser,engine,dashboard` — 270 passed; 0 failed
+- `cargo test --features browser` — 245 passed; 0 failed (5 vision tests confirmed running)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — clean (0 diffs)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
 ## [0.2.30] — iteration 88: VAULT_PROXY_CALLER_ID docs, server-name env-value validation, resolve_folder cache wired, sanitize_output vision tests
 
 ### Features (iter-88)
