@@ -130,9 +130,20 @@ const MAX_OUTPUT_SIZE: usize = 100 * 1024;
 ///
 /// Called from `browser/vision.rs` — sanitises LLM vision-model responses
 /// before they are parsed into `VisionAction` structs (iter-87).
-/// When the `browser` feature is disabled, this function is unused in
-/// production code but remains available for the unit tests in this module.
-#[cfg_attr(not(feature = "browser"), allow(dead_code))]
+///
+/// # Compilation gate (iter-93)
+///
+/// `#[cfg(any(feature = "browser", test))]` ensures the function is compiled
+/// exactly when it has a real caller:
+///   - `feature = "browser"` — production call site in `browser/vision.rs`.
+///   - `test` — the unit tests in this module that verify sanitization logic.
+///
+/// Without this gate, Clippy's `-D dead_code` fires in the default build
+/// (no `browser` feature) because the function body is compiled but has no
+/// reachable call site. The `#[cfg_attr]` workaround in iter-92 suppressed
+/// the warning; this replaces the suppression with a proper compile-time gate
+/// that cleanly omits the function body when neither condition holds.
+#[cfg(any(feature = "browser", test))]
 pub fn sanitize_output(text: &str) -> String {
     sanitize_internal(text, /* aggressive */ true)
 }

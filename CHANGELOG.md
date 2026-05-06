@@ -3,6 +3,82 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] — iteration 93: rate-limit entry cap, sanitize_output compile gate, vault folder rename diagnostics
+
+### Fixes (iter-93)
+
+- **Rate-limiter HashMap grows unboundedly under unique `X-Caller-Id` churn (MEDIUM)** —
+  `src/security/rate_limit.rs`. The opportunistic GC (`retain`) only evicts entries whose
+  window expired more than 4× ago (≥ 4 minutes). Within a single 60-second window every
+  entry is live and none are evicted. A hostile or misconfigured local process setting a
+  unique `X-Caller-Id` on every request could accumulate one entry per request per route
+  with no bound. Fix: add `MAX_CALLER_ENTRIES = 10_000` hard cap. When the cap is reached
+  and a new `(route, caller_key)` pair would be inserted, the request is rejected with 429
+  and a `WARN` log. Existing callers already in the map are unaffected — the cap only
+  blocks new entrants. At the homelab scale (≤ 1 000 MCP servers × 10 rate-limited
+  routes = 10 000 max entries) the cap is never hit under normal operation.
+  Test added: `max_caller_entries_cap_rejects_new_callers`.
+
+- **`sanitize_output` gate: `#[cfg_attr]` suppression replaced with proper compile gate (LOW)** —
+  `src/security/sanitize.rs:135`. The iter-92 fix used `#[cfg_attr(not(feature = "browser"),
+  allow(dead_code))]` to suppress Clippy's dead-code lint when the `browser` feature is
+  absent. This suppresses the symptom without removing the dead code. The cleaner fix is
+  `#[cfg(any(feature = "browser", test))]`, which omits the function body entirely unless
+  it has a real caller: `browser` feature (production) or `test` configuration. Both
+  Clippy runs (default and `--features browser,engine,dashboard`) pass cleanly. The unit
+  tests in `sanitize.rs` that call `sanitize_output` remain compiled via the `test` arm.
+
+- **Vault folder rename produces silent `debug!` — no operator-visible warning (LOW)** —
+  `src/vault/handlers.rs`. When `resolve_vault_folder_id` returns `None` (folder absent),
+  the three affected handlers (`list_items`, `list_untracked_items`, `create_item`) logged
+  at `debug!` level with the message "fresh vault?". After an operator renames the
+  Vaultwarden folder (e.g. "vault-proxy" → "vault-proxy-v2"), `args.vault_folder` still
+  says "vault-proxy", the scan returns `None`, and `debug!` goes completely silent in
+  production (default log level is `info`). Fix: upgrade all three to `tracing::warn!`
+  with an actionable message explaining the rename scenario and the remediation steps
+  (`verify --vault-folder, then call POST /vault/resync`).
+
+- **`reset_keystore` stale `#[allow(dead_code)]` annotation (COSMETIC)** —
+  `src/keystore.rs:563`. The annotation said "post-v1.0: will be called from dashboard
+  'factory reset' flow" but `reset_keystore` IS already called from
+  `dashboard/api.rs::handle_reset`. The function was wired in a prior iteration; the
+  comment was never updated. Fix: replace the unconditional `#[allow(dead_code)]` with
+  `#[cfg_attr(not(feature = "dashboard"), allow(dead_code))]` — accurate because the
+  only call site lives inside the `dashboard` feature gate, so the lint fires only when
+  `dashboard` is absent.
+
+### Audit findings (iter-93) — no code changes required
+
+- **v0.3.0 tag position — correct (confirmed)** —
+  `git rev-parse HEAD` == `git rev-parse v0.3.0` (both `7092eee`). The iter-92 fix and
+  the v0.3.0 tag are on the same commit. No re-tagging needed.
+
+- **`reset_keystore` tractability (post-v1.0:)** —
+  `src/dashboard/api.rs:1329`. `reset_keystore` is already wired to `POST /api/reset`
+  inside the dashboard. The function itself is complete (deletes all keystore files).
+  The remaining `post-v1.0:` work in `keystore.rs` is `unseal_private_key_from_tpm`
+  (line 333): used only when the TPM-backed auto-unlock path is wired. Not yet tractable
+  without the TPM auto-unlock UI work.
+
+- **Default test count 237 → 238 — one new test added (expected)** —
+  `max_caller_entries_cap_rejects_new_callers` in `rate_limit.rs`. The sanitize_output
+  tests (6 tests) still compile via `#[cfg(any(feature = "browser", test))]` — the `test`
+  arm keeps them available in all configurations. No tests were lost.
+
+- **`post-v1.0:` items — count unchanged** —
+  Deferred items: `unseal_private_key_from_tpm` (keystore.rs:333),
+  `invalidate` rotation-UI path (unifi_session.rs:90),
+  `change_master_password` field (cloud.rs:40, 786).
+  Count: 3 distinct deferred items (down from 4 after `reset_keystore` annotation fixed).
+
+### Quality gates (iter-93)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 238 passed; 0 failed (236 unit + 2 integration)
+- `cargo test --all-targets --features browser,engine,dashboard` — 271 passed; 0 failed (269 unit + 2 integration)
+- `cargo fmt --check` — clean (0 diffs)
+
 ## [0.3.0] — iteration 92: fix `sanitize_output` dead-code Clippy error breaking CI without `browser` feature
 
 ### Fixes (iter-92)

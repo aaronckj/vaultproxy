@@ -627,10 +627,15 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
             .filter(|item| item.folder_id.as_deref() == Some(folder_id.as_str()))
             .collect(),
         None => {
-            // vault_folder not found — fresh vault or misconfiguration.
+            // vault_folder not found — fresh vault or misconfiguration (e.g.
+            // the folder was renamed in Vaultwarden and `--vault-folder` no
+            // longer matches). Call `POST /vault/resync` to re-scan after
+            // verifying the folder name in `args.vault_folder` (iter-93).
             // Return all items so first-run tooling still works.
-            tracing::debug!(
-                "list_items: vault_folder '{}' not found — returning all items (fresh vault?)",
+            tracing::warn!(
+                "list_items: vault_folder '{}' not found in vault — returning all items \
+                 (fresh vault or folder renamed? verify --vault-folder matches the Vaultwarden \
+                 folder name, then call POST /vault/resync)",
                 state.vault_folder
             );
             items
@@ -799,8 +804,10 @@ pub async fn list_untracked_items(State(state): State<Arc<AppState>>) -> Json<se
             out
         }
         None => {
-            tracing::debug!(
-                "list_untracked_items: vault_folder '{}' not found — returning all untracked items (fresh vault?)",
+            tracing::warn!(
+                "list_untracked_items: vault_folder '{}' not found in vault — returning all \
+                 untracked items (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
                 state.vault_folder
             );
             all_untracked
@@ -937,8 +944,10 @@ pub async fn create_item(
     let folder_id = match resolve_vault_folder_id(&state).await {
         Some(id) => Some(id),
         None => {
-            tracing::debug!(
-                "create_item: vault_folder '{}' not found — creating item without folder (fresh vault?)",
+            tracing::warn!(
+                "create_item: vault_folder '{}' not found — creating item without folder \
+                 (fresh vault or folder renamed? verify --vault-folder, then call \
+                 POST /vault/resync)",
                 effective_folder_name
             );
             None

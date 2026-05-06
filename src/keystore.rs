@@ -560,7 +560,13 @@ pub fn has_tpm_key(config_dir: &str) -> bool {
 }
 
 /// Delete all keystore files from `config_dir`.
-#[allow(dead_code)] // post-v1.0: will be called from dashboard "factory reset" flow
+///
+/// Called by `dashboard/api.rs::handle_reset` (iter-93: corrected stale
+/// annotation — the function IS wired to the dashboard "factory reset"
+/// endpoint; the old `#[allow(dead_code)]` comment was left from before the
+/// dashboard wiring landed). When the `dashboard` feature is absent the only
+/// call site is compiled out, so we scope the allow to that configuration.
+#[cfg_attr(not(feature = "dashboard"), allow(dead_code))]
 pub fn reset_keystore(config_dir: &str) -> Result<()> {
     for filename in &[
         CREDENTIALS_FILE,

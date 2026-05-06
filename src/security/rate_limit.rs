@@ -56,6 +56,26 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+/// Hard cap on the number of distinct `(route, caller_key)` entries the rate
+/// limiter will track simultaneously (iter-93).
+///
+/// Without a cap, a malicious or misconfigured local process that sets a unique
+/// `X-Caller-Id` on every request can grow the HashMap indefinitely — one entry
+/// per request — consuming unbounded memory over time. The GC at the top of
+/// `check()` evicts entries whose window expired more than 4× ago, but within
+/// a single 60-second window all entries are live and none are evicted.
+///
+/// At 10 000 entries the map holds ≈ 10 000 × (≈ 200 bytes key + RouteCounter)
+/// ≈ 2–3 MB — negligible. Once this cap is reached, new `(route, caller_key)`
+/// combinations are rejected with 429 (rate-limited). Existing callers that
+/// already have an entry are unaffected. The cap resets naturally as the GC
+/// evicts expired entries.
+///
+/// 10 000 is generous: a homelab sidecar with 1 000 MCP servers × 10 rate-
+/// limited routes = 10 000 entries maximum under normal operation. Anything
+/// beyond that indicates a hostile or runaway caller.
+const MAX_CALLER_ENTRIES: usize = 10_000;
+
 use axum::{
     extract::{ConnectInfo, Request},
     http::StatusCode,
@@ -145,6 +165,21 @@ impl RateLimiter {
         counters.retain(|_, c| now.duration_since(c.window_start) < self.window * 4);
 
         let key = (path.to_string(), caller_key.to_string());
+
+        // Hard cap: if a new entry would exceed MAX_CALLER_ENTRIES, reject the
+        // request rather than growing the map unboundedly (iter-93). The check
+        // uses `contains_key` so existing callers that already have an entry are
+        // always allowed to proceed.
+        if !counters.contains_key(&key) && counters.len() >= MAX_CALLER_ENTRIES {
+            tracing::warn!(
+                "rate_limit: MAX_CALLER_ENTRIES ({}) reached — rejecting new caller '{}' on {}",
+                MAX_CALLER_ENTRIES,
+                caller_key,
+                path
+            );
+            return false;
+        }
+
         let counter = counters.entry(key).or_insert(RouteCounter {
             count: 0,
             window_start: now,
@@ -553,5 +588,45 @@ mod tests {
         let key = extract_caller_key(&req);
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|c| c == 'a'));
+    }
+
+    /// iter-93: once MAX_CALLER_ENTRIES distinct callers have been admitted,
+    /// new callers are rejected (429) to bound HashMap growth. Existing callers
+    /// already in the map are unaffected and still allowed.
+    #[tokio::test]
+    async fn max_caller_entries_cap_rejects_new_callers() {
+        // Use a cap-sized limiter by overriding the constant indirectly:
+        // build a limiter with 1 req/60s and fill it with MAX_CALLER_ENTRIES
+        // distinct callers, then verify the next new caller is rejected.
+        //
+        // We can't directly set MAX_CALLER_ENTRIES in a test without changing
+        // the production constant. Instead we fill the limiter with
+        // MAX_CALLER_ENTRIES entries (one per unique caller-id) and confirm
+        // the (MAX_CALLER_ENTRIES + 1)th new caller is blocked.
+        let limiter = RateLimiter::new(2, 60);
+
+        // Fill up to MAX_CALLER_ENTRIES unique (route, caller) pairs.
+        for i in 0..MAX_CALLER_ENTRIES {
+            let caller = format!("caller-{}", i);
+            // First request from each new caller — should always succeed (cap
+            // not yet reached for this caller).
+            assert!(
+                limiter.check("/proxy", &caller).await,
+                "caller {} should be admitted before cap",
+                i
+            );
+        }
+
+        // One more new caller — cap reached, must be rejected.
+        assert!(
+            !limiter.check("/proxy", "caller-overflow").await,
+            "new caller after MAX_CALLER_ENTRIES must be rejected"
+        );
+
+        // An existing caller (already in the map) must still be allowed.
+        assert!(
+            limiter.check("/proxy", "caller-0").await,
+            "existing caller must still be allowed after cap is reached"
+        );
     }
 }
