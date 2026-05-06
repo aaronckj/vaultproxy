@@ -302,9 +302,14 @@
 
             try {
                 var data = await api("/api/audit");
-                render(data);
+                // iter-121: surface server-side errors instead of silently showing nothing.
+                if (data && data.ok === false) {
+                    statusNote.textContent = "Audit error: " + (data.error || "unknown error");
+                } else {
+                    render(data);
+                }
             } catch(e) {
-                statusNote.textContent = "Audit failed — see console.";
+                statusNote.textContent = "Audit failed: " + (e && e.message ? e.message : String(e));
             } finally {
                 runBtn.disabled = false;
             }

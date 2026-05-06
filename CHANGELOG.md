@@ -5,7 +5,89 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [1.0.1] — iterations 117–119: dashboard "ok" sentinel pass, diagnostic fields, CI OCI fix, stability hardening
+## [1.0.1] — iterations 117–121: dashboard "ok" sentinel pass, diagnostic fields, CI OCI fix, stability hardening
+
+### Bugs (iter-121) — complete dashboard silent-error audit
+
+- **`rotation.html` silently shows "Idle" on `ok:false` from `/api/browser/status` (iter-121)** — `dashboard/rotation.html:244`. MEDIUM.
+  `refreshStatus()` had no `ok === false` guard. A server-side error returned as
+  `{"ok":false,"error":"..."}` would leave the step showing "Idle" and the badge stuck on "Running"
+  indefinitely. Fixed: `ok === false` guard renders error text in the step field, sets badge to
+  "Error", and stops the polling interval.
+
+- **`settings.html` `checkSetupStatus()` silently ignores `ok:false` (iter-121)** — `dashboard/settings.html:343`. LOW.
+  The catch comment read `// Silently ignore — setup status is optional` but an `ok:false` response
+  from the API (not a network exception) was also silently swallowed — the wizard would never show
+  any feedback to the operator. Fixed: `ok === false` guard renders an error heading/message inside
+  the wizard panel and makes it visible.
+
+- **`settings.html` `loadTpm()` leaves table in "Loading..." on `ok:false` (iter-121)** — `dashboard/settings.html:517`. LOW.
+  On a server-side error the TPM table stayed in its initial "Loading..." state with no indication of
+  the failure. Fixed: `ok === false` guard sets TPM status to "Error" and renders an error row in the
+  sealed-credentials table.
+
+- **`settings.html` `loadCredentials()` silently swallows `ok:false` (iter-121)** — `dashboard/settings.html:880`. MEDIUM.
+  The URL/email/cloud-status cards would show stale "--" values when `/api/credentials` returned an
+  error. Fixed: `ok === false` guard renders the error string in the URL card so the operator sees it.
+
+- **`index.html` silently shows "--" on `ok:false` from `/api/status` (iter-121)** — `dashboard/index.html:52`. MEDIUM.
+  All three overview cards (vault items, cloud sync, services) stayed "--" on server error with no
+  explanation. Fixed: `ok === false` guard renders the error in the vault-count and sync-state fields.
+
+- **`sync.html` silently shows "--" on `ok:false` from `/api/sync` (iter-121)** — `dashboard/sync.html:121`. MEDIUM.
+  State/last-sync/items-synced stayed "--" on error; errors table showed nothing. Fixed: `ok === false`
+  guard calls `applyState("error")` and renders the error string in the errors table.
+
+- **`audit.html` shows "Audit failed — see console" with no visible message (iter-121)** — `dashboard/audit.html:304`. LOW.
+  The catch branch set `statusNote.textContent = "Audit failed — see console."` — helpful only if
+  the user has DevTools open. An `ok:false` response from the API was also not handled (render would
+  fail or show empty data). Fixed: `ok === false` guard renders `"Audit error: <message>"` in
+  `statusNote`; the catch branch now includes the error message text.
+
+- **`GET /api/permissions` missing `configured_vault_folder` (iter-121)** — `src/dashboard/api.rs:939`. LOW.
+  `GET /vault/permissions` (proxy endpoint, iter-120) added `configured_vault_folder` for operator
+  diagnostics. `GET /api/permissions` (dashboard endpoint) was not updated. The dashboard page could
+  not show operators what vault folder the permissions are scoped to. Fixed: added
+  `"configured_vault_folder": app.vault_folder` to the `GET /api/permissions` response.
+  `dashboard/permissions.html` updated to display it in a subtitle beneath the page heading.
+
+- **`dashboard/permissions.html` does not display `configured_vault_folder` (iter-121)** — `dashboard/permissions.html:53`. LOW.
+  Even after iter-120 added the field to `/vault/permissions`, the dashboard page never consumed it.
+  Fixed: added a "Vault folder scope: <value>" subtitle paragraph populated from
+  `data.configured_vault_folder` on load.
+
+- **No test asserting `GET /api/permissions` returns `configured_vault_folder` (iter-121)** — `src/dashboard/api.rs:1905`. LOW.
+  The existing `api_permissions_has_ok_true` shape test did not include the new field.
+  Fixed: test renamed to `api_permissions_has_ok_true_and_configured_vault_folder`; assertion added
+  that `body["configured_vault_folder"].is_string()`.
+
+### Bugs (iter-120) — three more dashboard pages + telemetry path + OCI version prefix
+
+- **`audit-log.html` silently shows empty table on `ok:false` (iter-120)** — `dashboard/audit-log.html:121`. MEDIUM.
+  The `api('/api/audit-log')` call had no `ok === false` guard; a server-side error left the table
+  empty with no explanation. Fixed: `ok === false` guard renders an error row in the table.
+
+- **`policies.html` silently shows empty table on `ok:false` (iter-120)** — `dashboard/policies.html:218`. MEDIUM.
+  Same pattern as audit-log.html. Fixed: `ok === false` guard calls `showError()` with the error message.
+
+- **`permissions.html` silently shows empty table on `ok:false` (iter-120)** — `dashboard/permissions.html:209`. MEDIUM.
+  Same pattern. Fixed: `ok === false` guard calls `showStatus()` with the error message.
+
+- **`audit-runs.html` reads `tdata.summary` instead of `tdata.telemetry.summary` (iter-120)** — `dashboard/audit-runs.html:304`. MEDIUM.
+  After iter-119 wrapped the telemetry response in `{"ok":true,"telemetry":{...}}`, the dashboard
+  JS still read `tdata.summary` (always `undefined`) instead of `tdata.telemetry.summary`. All six
+  telemetry counters silently showed `0`. Fixed: reads `tdata.telemetry.summary` with null-safety.
+
+- **Docker image OCI version label gets `v`-prefixed version (iter-120)** — `.github/workflows/docker-publish.yml`.
+  `docker/metadata-action` with `type=semver,pattern={{version}}` strips the `v` prefix
+  (e.g. `v1.0.1` → `1.0.1`). The CI workflow passed `IMAGE_VERSION=${{ github.ref_name }}` which
+  retains the prefix (e.g. `v1.0.1`), causing the OCI label to read `v1.0.1` while the semver tag
+  reads `1.0.1`. Fixed: workflow now passes `IMAGE_VERSION=${{ steps.meta.outputs.version }}`
+  (the already-stripped value from metadata-action).
+
+- **`GET /vault/permissions` missing `configured_vault_folder` (iter-120)** — `src/main.rs:2661`. LOW.
+  The proxy permissions endpoint lacked the diagnostic field already present in `GET /vault/folders`
+  and `GET /sync/status` (iter-115/117). Fixed: added `"configured_vault_folder": state.vault_folder`.
 
 ### Bugs (iter-119) — final stability pass
 
@@ -74,6 +156,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`SyncStatus` + `configured_vault_folder` in Connecterr** — No `SyncStatus` type or
   `/sync/status` call found in `sidecar-client.ts`. TypeScript ignores extra fields on `as` casts
   regardless; no breakage possible.
+
+### Quality gates (iter-121)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets -- -D warnings` — 0 warnings
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets` — **258 passed**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **315 passed** (+ 2 integration) = **317 total**; 0 failed (existing shape test updated to cover `configured_vault_folder`)
 
 ### Quality gates (iter-119)
 

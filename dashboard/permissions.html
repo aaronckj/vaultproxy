@@ -50,8 +50,11 @@
 
     <div class="container">
         <h1>Tool Permissions</h1>
-        <p style="color:var(--text-muted, #a6adc8); margin-bottom:1.5rem;">
+        <p style="color:var(--text-muted, #a6adc8); margin-bottom:0.5rem;">
             Control which MCP tools can execute freely, require confirmation, or are blocked entirely.
+        </p>
+        <p id="vault-folder-note" style="color:var(--text-muted, #a6adc8); font-size:0.85rem; margin-bottom:1.5rem;">
+            Vault folder scope: <code id="vault-folder-value" style="color:var(--accent, #60a5fa)">—</code>
         </p>
 
         <div class="btn-bar">
@@ -206,10 +209,16 @@
 
         function loadPerms() {
             // iter-120: surface server-side errors instead of silently showing empty.
+            // iter-121: display configured_vault_folder from the API response.
             api('/api/permissions').then(function(data) {
                 if (data && data.ok === false) {
                     showStatus('Error loading permissions: ' + (data.error || 'unknown error'), false);
                     return;
+                }
+                // Show the vault folder scope so operators can confirm what is being filtered.
+                var folderEl = document.getElementById('vault-folder-value');
+                if (folderEl) {
+                    folderEl.textContent = (data && data.configured_vault_folder) ? String(data.configured_vault_folder) : '(not configured)';
                 }
                 renderTable(data);
             }).catch(function() {});

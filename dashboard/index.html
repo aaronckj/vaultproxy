@@ -51,6 +51,15 @@
         try {
             const data = await api("/api/status");
 
+            // iter-121: surface server-side errors instead of silently showing "--".
+            if (data && data.ok === false) {
+                var errMsg = "Error: " + (data.error || "unknown error");
+                document.getElementById("vault-count").textContent = errMsg;
+                document.getElementById("sync-state").textContent = errMsg;
+                document.getElementById("service-count").textContent = "--";
+                return;
+            }
+
             const countEl = document.getElementById("vault-count");
             countEl.textContent = String(data.vault_items);
 

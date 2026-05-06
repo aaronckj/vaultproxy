@@ -346,6 +346,22 @@
                 if (resp.status === 401 || resp.status === 303) return;
                 var data = await resp.json();
 
+                // iter-121: surface server-side errors instead of silently ignoring.
+                if (data.ok === false) {
+                    var heading = setupWizard.querySelector("h2");
+                    if (heading) {
+                        heading.textContent = "Setup Status Unavailable";
+                        heading.style.color = "var(--err, #e57373)";
+                    }
+                    var desc = setupWizard.querySelector("p");
+                    if (desc) {
+                        desc.textContent = "Error: " + (data.error || "unknown error");
+                        desc.style.color = "var(--err, #e57373)";
+                    }
+                    setupWizard.style.display = "";
+                    return;
+                }
+
                 if (data.vaultwarden_configured) {
                     setupVwIcon.textContent = "\u2713";
                     setupVwIcon.style.color = "var(--ok, #4caf50)";
@@ -390,7 +406,7 @@
                     }
                 }
             } catch(e) {
-                // Silently ignore — setup status is optional
+                // Network error — setup status is optional; wizard remains hidden
             }
         }
 
@@ -517,6 +533,21 @@
         async function loadTpm() {
             try {
                 var data = await api("/api/settings/tpm");
+
+                // iter-121: surface server-side errors instead of leaving table in "Loading..." state.
+                if (data && data.ok === false) {
+                    tpmEl.textContent = "Error";
+                    tpmEl.className = "value err";
+                    clearElement(sealBody);
+                    var row = document.createElement("tr");
+                    var cell = document.createElement("td");
+                    cell.setAttribute("colspan", "2");
+                    cell.style.color = "var(--err, #e57373)";
+                    cell.textContent = "Error loading TPM status: " + (data.error || "unknown error");
+                    row.appendChild(cell);
+                    sealBody.appendChild(row);
+                    return;
+                }
 
                 tpmEl.textContent = data.tpm_available ? "Yes" : "No";
                 tpmEl.className = "value";
@@ -882,6 +913,14 @@
                 var resp = await fetch("/api/credentials");
                 if (resp.status === 401) return; // not logged in
                 var data = await resp.json();
+                // iter-121: surface server-side errors instead of showing stale "--" values.
+                if (data.ok === false) {
+                    var errMsg = "Error: " + (data.error || "unknown error");
+                    document.getElementById("creds-vw-url").textContent = errMsg;
+                    document.getElementById("creds-vw-email").textContent = "--";
+                    document.getElementById("creds-cloud-status").textContent = "--";
+                    return;
+                }
                 if (data.configured && !data.locked) {
                     document.getElementById("creds-vw-url").textContent = data.vaultwarden.url;
                     document.getElementById("creds-vw-email").textContent = data.vaultwarden.email;
@@ -900,7 +939,7 @@
                     document.getElementById("creds-vw-email").textContent = "--";
                     document.getElementById("creds-cloud-status").textContent = "--";
                 }
-            } catch(e) { /* ignore */ }
+            } catch(e) { /* network error — ignore */ }
         }
 
         function getSetupPw() {

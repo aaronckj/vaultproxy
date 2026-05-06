@@ -936,10 +936,16 @@ pub async fn get_permissions(State(state): State<DashboardState>) -> Json<Value>
         })
         .collect();
 
+    // iter-121: mirror the configured_vault_folder field already present in
+    // GET /vault/permissions (main.rs iter-120) and GET /vault/folders / GET /sync/status
+    // (iter-115/117). Allows operators to confirm the scope from the dashboard UI.
+    let vault_folder = app.vault_folder.clone();
+
     Json(json!({
         "ok": true,
         "tools": tools,
         "overrides": perms.overrides.clone(),
+        "configured_vault_folder": vault_folder,
     }))
 }
 
@@ -1896,19 +1902,29 @@ mod dashboard_ok_shape_tests {
         );
     }
 
-    /// `GET /api/permissions` must carry `"ok": true`.
+    /// `GET /api/permissions` must carry `"ok": true` and `"configured_vault_folder"` string.
+    /// iter-121: the dashboard handler now mirrors the vault_folder field present in
+    /// GET /vault/permissions (iter-120) so operators can confirm scope from the UI.
     #[test]
-    fn api_permissions_has_ok_true() {
+    fn api_permissions_has_ok_true_and_configured_vault_folder() {
         let body = json!({
             "ok": true,
             "tools": [],
             "overrides": {},
+            "configured_vault_folder": "vault-proxy",
         });
         assert_eq!(
             body["ok"], true,
             "GET /api/permissions must return ok: true"
         );
-        assert!(body["tools"].is_array());
+        assert!(
+            body["tools"].is_array(),
+            "GET /api/permissions must return tools array"
+        );
+        assert!(
+            body["configured_vault_folder"].is_string(),
+            "GET /api/permissions must include 'configured_vault_folder' string field (iter-121)"
+        );
     }
 
     /// `GET /api/settings/notifications` must carry `"ok": true`.

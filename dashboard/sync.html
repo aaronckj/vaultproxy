@@ -121,6 +121,14 @@
         async function loadStatus() {
             try {
                 var data = await api("/api/sync");
+                // iter-121: surface server-side errors instead of showing "--" state.
+                if (data && data.ok === false) {
+                    applyState("error");
+                    lastEl.textContent = "--";
+                    itemsEl.textContent = "--";
+                    renderErrors(["Error loading sync status: " + (data.error || "unknown error")]);
+                    return;
+                }
                 applyState(data.state || "unknown");
                 lastEl.textContent = formatDate(data.last_sync);
                 itemsEl.textContent = String(data.items_synced != null ? data.items_synced : 0);

@@ -250,6 +250,16 @@
         }
         if (!data) return;
 
+        // iter-121: surface server-side errors instead of silently showing Idle.
+        if (data.ok === false) {
+            var stepEl2 = document.getElementById('current-step');
+            if (stepEl2) stepEl2.textContent = 'Error: ' + (data.error || 'unknown error');
+            var badge2 = document.getElementById('status-badge');
+            if (badge2) { badge2.textContent = 'Error'; badge2.className = 'badge badge-error'; }
+            clearInterval(refreshTimer);
+            return;
+        }
+
         // Update step
         var stepEl = document.getElementById('current-step');
         if (stepEl) stepEl.textContent = data.current_step || 'Idle';
@@ -370,8 +380,13 @@
             var data = await resp.json();
             if (data.ok && data.password) {
                 showPasswordModal(data.password);
+            } else if (data.ok === false) {
+                // iter-121: log server-side errors; do not surface modally (non-critical path)
+                console.warn('rotation/acknowledge-password error:', data.error || 'unknown');
             }
-        } catch(e) {}
+        } catch(e) {
+            // network errors are non-fatal here; rotation status poll will reflect the result
+        }
     })();
     </script>
 </body>
