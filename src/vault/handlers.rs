@@ -3440,8 +3440,8 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {
 
 /// `POST /sync/trigger` — trigger a full cloud sync.
 ///
-/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
-/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// Issue (iter-102): changed return type from `Json<Value>` to `impl IntoResponse`
+/// so that error paths return the correct HTTP status codes. The old `Json<Value>`
 /// type silently returned HTTP 200 for sync-failure (should be 503) and
 /// not-configured (should be 503) paths.
 pub async fn sync_trigger(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -3505,8 +3505,8 @@ pub struct SyncInitRequest {
 /// For users who don't use secrets files, they can POST a refresh token
 /// (obtained from `bw login`) and their cloud master password to start syncing.
 ///
-/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
-/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// Issue (iter-102): changed return type from `Json<Value>` to `impl IntoResponse`
+/// so that error paths return the correct HTTP status codes. The old `Json<Value>`
 /// type silently returned HTTP 200 for all error paths:
 ///   - already-active → 409 Conflict
 ///   - keystore unlock failures → 503 Service Unavailable
@@ -3695,8 +3695,8 @@ pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCo
 /// Bitwarden cloud setup. The sidecar will authenticate, get a device token
 /// for future 2FA-free logins, and start syncing.
 ///
-/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
-/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// Issue (iter-102): changed return type from `Json<Value>` to `impl IntoResponse`
+/// so that error paths return the correct HTTP status codes. The old `Json<Value>`
 /// type silently returned HTTP 200 for all error paths:
 ///   - keystore unlock failure → 503 Service Unavailable
 ///   - no cloud credentials → 503 Service Unavailable

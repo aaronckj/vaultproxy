@@ -3423,3 +3423,126 @@ mod browser_rotate_guard_tests {
         );
     }
 }
+
+// -------------------------------------------------------------------------- //
+// browser_status 503 tests (iter-106)                                        //
+// -------------------------------------------------------------------------- //
+//
+// Iter-105 fixed `browser_status` to return HTTP 503 with `"ok": false` when
+// the browser agent is not configured, but no test was added at the time.
+//
+// These tests verify:
+//   (a) browser=None → HTTP 503 with `"ok": false` in the body.
+//   (b) browser=Some(idle agent) → HTTP 200 with `{"status": "idle"}`.
+
+#[cfg(all(test, feature = "browser"))]
+mod browser_status_tests {
+    use super::{browser_status, AppState};
+    use crate::browser::BrowserAgent;
+    use crate::notify::Notifier;
+    use crate::proxy::registry::ServiceRegistry;
+    use crate::proxy::unifi_session::UnifiSessionCache;
+    use crate::security::audit_log::AuditLog;
+    use crate::security::permissions::ToolPermissions;
+    use axum::extract::State as AxumState;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    /// Build the minimal `AppState` needed to exercise `browser_status`.
+    fn make_state(browser_agent: Option<Arc<BrowserAgent>>) -> Arc<AppState> {
+        use std::sync::atomic::{AtomicU64 as AuU64, Ordering};
+        static CTR: AuU64 = AuU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        Arc::new(AppState {
+            vault: Arc::new(crate::vault::VaultManager::new_stub()),
+            registry: Arc::new(tokio::sync::RwLock::new(ServiceRegistry::new())),
+            http: reqwest::Client::new(),
+            http_permissive: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap(),
+            ca_cert_clients: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            unifi_sessions: Arc::new(UnifiSessionCache::new()),
+            session_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            client_certs: None,
+            cloud_sync: None,
+            approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
+            browser: browser_agent,
+            permissions: Arc::new(tokio::sync::RwLock::new(ToolPermissions::load(
+                "/nonexistent/tool-permissions.json",
+            ))),
+            audit_log: Arc::new(AuditLog::new(&format!(
+                "/tmp/vp-test-browser-status-{n}.json"
+            ))),
+            notifier: Arc::new(Notifier::disabled()),
+            handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            vault_folder: "vault-proxy".to_string(),
+            last_resync_unix: Arc::new(AtomicU64::new(0)),
+            internal_token: Arc::new("test-token".to_string()),
+            cached_folder_id: Arc::new(tokio::sync::RwLock::new(None)),
+            env_write_root: String::new(),
+            config_dir: "/config".to_string(),
+            proxy_timeout: 120,
+            reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        })
+    }
+
+    /// Helper: extract status code + JSON body from an `impl IntoResponse`.
+    async fn extract(resp: impl IntoResponse) -> (StatusCode, serde_json::Value) {
+        let response = resp.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body read failed");
+        let body = serde_json::from_slice(&bytes).expect("body is not valid JSON");
+        (status, body)
+    }
+
+    /// Issue (iter-105 fix, test added iter-106): when `browser` is `None`
+    /// (agent not configured), `browser_status` must return HTTP 503 with
+    /// `"ok": false` — not HTTP 200 as it did before iter-105.
+    #[tokio::test]
+    async fn browser_status_none_returns_503() {
+        let state = make_state(None);
+        let (status, body) = extract(browser_status(AxumState(state)).await).await;
+
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "browser=None must return 503; got {status}"
+        );
+        assert_eq!(
+            body.get("ok").and_then(|v| v.as_bool()),
+            Some(false),
+            "body must contain ok=false; got {body}"
+        );
+        assert!(
+            body.get("error").is_some(),
+            "body must contain an error field; got {body}"
+        );
+    }
+
+    /// When a browser agent is configured but idle (no current job),
+    /// `browser_status` must return HTTP 200 with `{"status": "idle"}`.
+    #[tokio::test]
+    async fn browser_status_idle_returns_200() {
+        let agent = Arc::new(BrowserAgent::new("http://mlbox.local:4000", "", "gpt-4o"));
+        let state = make_state(Some(agent));
+        let (status, body) = extract(browser_status(AxumState(state)).await).await;
+
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "idle browser must return 200; got {status}"
+        );
+        assert_eq!(
+            body.get("status").and_then(|v| v.as_str()),
+            Some("idle"),
+            "body must contain status=idle; got {body}"
+        );
+    }
+}

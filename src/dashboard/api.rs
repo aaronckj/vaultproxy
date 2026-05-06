@@ -1,11 +1,14 @@
 //! Dashboard JSON API handlers.
 
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::sse::{Event, Sse},
     Json,
 };
+// Path is only used by the cfg(feature = "engine") credaudit handlers.
+#[cfg(feature = "engine")]
+use axum::extract::Path;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 use tokio_stream::StreamExt as _;
@@ -1659,7 +1662,10 @@ pub async fn setup_cloud_via_dashboard(
 
 #[cfg(feature = "engine")]
 fn credaudit_unavailable() -> Json<Value> {
+    // Issue (iter-106): missing "ok": false — all credaudit error responses
+    // must carry the standard "ok": false field.
     Json(json!({
+        "ok": false,
         "error": "credential audit unavailable: vault not unlocked"
     }))
 }
@@ -1670,8 +1676,8 @@ pub async fn credaudit_runs_list(State(state): State<DashboardState>) -> Json<Va
         return credaudit_unavailable();
     };
     match orch.list_runs() {
-        Ok(runs) => Json(json!({"runs": runs})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(runs) => Json(json!({"ok": true, "runs": runs})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1684,8 +1690,8 @@ pub async fn credaudit_run_detail(
         return credaudit_unavailable();
     };
     match orch.get_run_detail(&run_id) {
-        Ok(detail) => Json(json!(detail)),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(detail) => Json(json!({"ok": true, "detail": detail})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1698,8 +1704,8 @@ pub async fn credaudit_scan_start(State(state): State<DashboardState>) -> Json<V
         return credaudit_unavailable();
     };
     match orch.start_scan().await {
-        Ok(run_id) => Json(json!({"run_id": run_id})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(run_id) => Json(json!({"ok": true, "run_id": run_id})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1733,8 +1739,8 @@ pub async fn credaudit_apply(
         .apply(&body.run_id, None, body.dry_run, body.confirm_bulk)
         .await
     {
-        Ok(out) => Json(json!(out)),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(out) => Json(json!({"ok": true, "result": out})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1748,7 +1754,7 @@ pub async fn credaudit_telemetry(
     };
     match orch.get_telemetry(&run_id).await {
         Ok(v) => Json(v),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
 
@@ -1765,12 +1771,12 @@ pub async fn credaudit_verify_start(
     };
     let run_id = body.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
     if run_id.is_empty() {
-        return Json(json!({"error": "run_id required"}));
+        return Json(json!({"ok": false, "error": "run_id required"}));
     }
     // verify_start takes self: Arc<Self> so it can move a clone into the
     // background tokio::spawn worker. Clone the Arc here.
     match orch.clone().verify_start(run_id).await {
-        Ok(n) => Json(json!({"verify_started_for": n, "run_id": run_id})),
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Ok(n) => Json(json!({"ok": true, "verify_started_for": n, "run_id": run_id})),
+        Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }

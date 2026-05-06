@@ -51,7 +51,11 @@ pub struct DashboardState {
         >,
     >,
     /// Placeholder when the `engine` feature is disabled.
+    /// `#[allow(dead_code)]` suppresses the "never read" lint — the field exists
+    /// for structural symmetry with the `engine`-enabled variant so that call
+    /// sites don't need feature gates when constructing `DashboardState`.
     #[cfg(not(feature = "engine"))]
+    #[allow(dead_code)]
     pub cred_audit_orch: Option<()>,
 }
 
