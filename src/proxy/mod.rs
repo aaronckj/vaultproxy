@@ -276,8 +276,18 @@ pub struct ProxyResponse {
 }
 
 /// Error response body.
+///
+/// iter-108: added `ok: false` so every vault-proxy-generated error from
+/// `POST /proxy` is unambiguously distinguishable from upstream success bodies
+/// by the presence of `"ok": false`.  The SUCCESS path returns the raw upstream
+/// body (no `"ok"` field added); callers checking `body["ok"] == false` can
+/// detect vault-proxy-level errors (unknown service, timeout, bad gateway,
+/// permission denied, bad method) without inspecting the HTTP status code.
 #[derive(Debug, Serialize)]
 pub struct ProxyError {
+    /// Always `false` — signals that this is a vault-proxy error, not an
+    /// upstream body.
+    pub ok: bool,
     pub error: String,
 }
 
@@ -1349,7 +1359,16 @@ async fn send_request(builder: reqwest::RequestBuilder) -> anyhow::Result<ProxyR
 // -------------------------------------------------------------------------- //
 
 fn proxy_error(code: StatusCode, message: String) -> (StatusCode, Json<ProxyError>) {
-    (code, Json(ProxyError { error: message }))
+    // iter-108: ProxyError now carries `ok: false` so callers can detect
+    // vault-proxy-level errors by checking `body["ok"] == false` without
+    // having to inspect the HTTP status code.
+    (
+        code,
+        Json(ProxyError {
+            ok: false,
+            error: message,
+        }),
+    )
 }
 
 // -------------------------------------------------------------------------- //

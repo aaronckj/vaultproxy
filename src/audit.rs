@@ -21,6 +21,13 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Serialize)]
 pub struct AuditResult {
+    /// Always `true` — included so callers checking `body["ok"]` receive a
+    /// defined value rather than `null`.  The error path (503 mutex timeout)
+    /// returns `{"ok": false, ...}` via a separate `serde_json::json!()` literal;
+    /// this field covers the success path.
+    ///
+    /// iter-108: added for `GET /vault/audit/run` `"ok": true` completeness.
+    pub ok: bool,
     pub total_items: usize,
     pub weak_passwords: Vec<AuditItem>,
     pub reused_passwords: Vec<Vec<AuditItem>>,
@@ -410,6 +417,7 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         .collect();
 
     AuditResult {
+        ok: true,
         total_items,
         weak_passwords,
         reused_passwords,
@@ -849,6 +857,7 @@ mod tests {
         // vault.list_items() returns an empty Vec.  This is the path hit by
         // any fresh vault or an operator who has not yet added any items.
         let result = AuditResult {
+            ok: true,
             total_items: 0,
             weak_passwords: vec![],
             reused_passwords: vec![],
@@ -902,9 +911,11 @@ mod tests {
             WEAK_THRESHOLD,
             result.scoring_note
         );
-        // Serialize to JSON and verify all six top-level fields are present.
+        // Serialize to JSON and verify all seven top-level fields are present.
+        // iter-108: "ok" added to AuditResult so callers get a defined value.
         let json = serde_json::to_value(&result).expect("AuditResult must serialise");
         for field in &[
+            "ok",
             "total_items",
             "weak_passwords",
             "reused_passwords",
@@ -918,6 +929,10 @@ mod tests {
                 field
             );
         }
+        assert_eq!(
+            json["ok"], true,
+            "AuditResult 'ok' field must be true on the success path"
+        );
     }
 
     /// iter-70: Verify that the reuse reason is NOT truncated when there are
@@ -983,6 +998,7 @@ mod tests {
     fn n_reused_items_is_zero_when_reused_passwords_empty() {
         // Construct the AuditResult produced by an all-unique-password vault.
         let result = AuditResult {
+            ok: true,
             total_items: 5,
             weak_passwords: vec![],
             reused_passwords: vec![], // no reuse groups
@@ -1026,6 +1042,7 @@ mod tests {
         };
 
         let result = AuditResult {
+            ok: true,
             total_items: 5,
             weak_passwords: vec![],
             reused_passwords: vec![

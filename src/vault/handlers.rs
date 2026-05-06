@@ -678,7 +678,11 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
         })
         .collect();
 
+    // iter-108: add "ok": true so callers checking body["ok"] receive a defined
+    // value rather than null.  Every other success handler in this file returns
+    // "ok": true; list_services was the only outlier.
     Json(json!({
+        "ok": true,
         "count": services.len(),
         "services": services,
     }))
@@ -988,6 +992,7 @@ pub async fn create_item(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
+                    "ok": false,
                     "error": format!(
                         "folder_name '{}' is not the vault-proxy folder ('{}') — \
                          create_item only creates items inside the vault-proxy folder",
@@ -1007,7 +1012,7 @@ pub async fn create_item(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("encrypt name: {}", e)})),
+                Json(json!({"ok": false, "error": format!("encrypt name: {}", e)})),
             )
         }
     };
@@ -1034,7 +1039,7 @@ pub async fn create_item(
     if let Some(bad) = req.fields.iter().find(|f| f.field_type > 3) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!(
+            Json(json!({"ok": false, "error": format!(
                 "field '{}' has invalid field_type {} (expected 0..=3)",
                 bad.name, bad.field_type
             )})),
@@ -1052,7 +1057,9 @@ pub async fn create_item(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": format!("encrypt field name '{}': {}", f.name, e)})),
+                        Json(
+                            json!({"ok": false, "error": format!("encrypt field name '{}': {}", f.name, e)}),
+                        ),
                     )
                 }
             };
@@ -1061,7 +1068,9 @@ pub async fn create_item(
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": format!("encrypt field value '{}': {}", f.name, e)})),
+                        Json(
+                            json!({"ok": false, "error": format!("encrypt field value '{}': {}", f.name, e)}),
+                        ),
                     )
                 }
             };
@@ -1138,7 +1147,7 @@ pub async fn create_item(
             tracing::error!("create cipher failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                Json(json!({"ok": false, "error": e.to_string()})),
             )
         }
     }
@@ -1160,7 +1169,7 @@ pub async fn update_item(
     if req.id.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "id must not be empty"})),
+            Json(json!({"ok": false, "error": "id must not be empty"})),
         );
     }
 
@@ -1170,7 +1179,7 @@ pub async fn update_item(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({"error": "item not found"})),
+                Json(json!({"ok": false, "error": "item not found"})),
             )
         }
     };
@@ -1194,6 +1203,7 @@ pub async fn update_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} is not in the vault-proxy folder ('{}') — \
                                  update_item only modifies items owned by vault-proxy",
@@ -1207,6 +1217,7 @@ pub async fn update_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "item {} has no folder — update_item only modifies items \
                                  inside the vault-proxy folder ('{}')",
@@ -1238,7 +1249,7 @@ pub async fn update_item(
         if new_name.trim().is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "name must not be empty"})),
+                Json(json!({"ok": false, "error": "name must not be empty"})),
             );
         }
         updated.name = match encrypt_to_cipher_string(new_name, enc_key, mac_key) {
@@ -1246,7 +1257,7 @@ pub async fn update_item(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("encrypt name: {}", e)})),
+                    Json(json!({"ok": false, "error": format!("encrypt name: {}", e)})),
                 )
             }
         };
@@ -1299,7 +1310,7 @@ pub async fn update_item(
             tracing::error!("update cipher failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                Json(json!({"ok": false, "error": e.to_string()})),
             )
         }
     }
@@ -1359,6 +1370,8 @@ pub async fn handshake(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Some(certs) => (
             StatusCode::OK,
             Json(json!({
+                // iter-108: add "ok": true for consistency with all other success bodies.
+                "ok": true,
                 "ca_cert_pem":     certs.ca_cert_pem,
                 "client_cert_pem": certs.client_cert_pem,
                 "client_key_pem":  certs.client_key_pem,
@@ -1389,13 +1402,13 @@ pub async fn clone_item(
     if req.source_id.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "source_id is required" })),
+            Json(json!({ "ok": false, "error": "source_id is required" })),
         );
     }
     if req.name.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "name is required" })),
+            Json(json!({ "ok": false, "error": "name is required" })),
         );
     }
 
@@ -1416,7 +1429,7 @@ pub async fn clone_item(
             None => {
                 return (
                     StatusCode::NOT_FOUND,
-                    Json(json!({"error": "source item not found"})),
+                    Json(json!({"ok": false, "error": "source item not found"})),
                 )
             }
         };
@@ -1427,6 +1440,7 @@ pub async fn clone_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "source item {} is not in the vault-proxy folder ('{}') — \
                                  clone_item only clones items owned by vault-proxy",
@@ -1439,6 +1453,7 @@ pub async fn clone_item(
                     return (
                         StatusCode::FORBIDDEN,
                         Json(json!({
+                            "ok": false,
                             "error": format!(
                                 "source item {} has no folder — clone_item only clones items \
                                  inside the vault-proxy folder ('{}')",
@@ -1479,7 +1494,7 @@ pub async fn clone_item(
             tracing::error!("clone cipher failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "ok": false, "error": e.to_string() })),
             )
         }
     }
