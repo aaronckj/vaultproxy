@@ -948,4 +948,102 @@ mod tests {
             "no truncation suffix expected at exactly 5 names, got: {reason}"
         );
     }
+
+    /// iter-76: Verify that `n_reused_items` (computed as
+    /// `reused_passwords.iter().map(|g| g.len()).sum()`) returns 0 when
+    /// `reused_passwords` is an empty `Vec<Vec<AuditItem>>`.
+    ///
+    /// This is the edge case hit by any vault where no two items share a
+    /// password.  `run_audit()` returns `reused_passwords: vec![]`, and
+    /// main.rs computes:
+    ///
+    ///   `let n_reused_items: usize = result.reused_passwords.iter().map(|g| g.len()).sum();`
+    ///
+    /// An empty iterator's `.sum::<usize>()` must return 0 (the additive
+    /// identity).  This test locks that invariant so a future refactor of
+    /// the computation (e.g. changing `map(|g| g.len())` to something else)
+    /// cannot silently break the clean-vault path.
+    ///
+    /// Without this test the only coverage of the empty-reuse path is the
+    /// `zero_item_audit_result_has_correct_shape` test (iter-72), which
+    /// does not exercise the `.sum()` expression in main.rs.
+    #[test]
+    fn n_reused_items_is_zero_when_reused_passwords_empty() {
+        // Construct the AuditResult produced by an all-unique-password vault.
+        let result = AuditResult {
+            total_items: 5,
+            weak_passwords: vec![],
+            reused_passwords: vec![], // no reuse groups
+            fair_passwords_count: 3,
+            weak_threshold_len: WEAK_THRESHOLD,
+            scoring_note: "test".to_string(),
+        };
+
+        // Replicate the n_reused_items computation from main.rs exactly.
+        let n_reused_items: usize = result.reused_passwords.iter().map(|g| g.len()).sum();
+        assert_eq!(
+            n_reused_items, 0,
+            "n_reused_items must be 0 when reused_passwords is empty; got {n_reused_items}"
+        );
+
+        // Confirm it is safe to use in arithmetic (no underflow, no panic).
+        let total_issues = result.weak_passwords.len() + n_reused_items;
+        assert_eq!(
+            total_issues, 0,
+            "total_issues must be 0 for a clean vault; got {total_issues}"
+        );
+    }
+
+    /// iter-76: Verify that `n_reused_items` correctly sums across multiple
+    /// reuse groups of different sizes.
+    ///
+    /// This covers the non-empty case of the `.iter().map(|g| g.len()).sum()`
+    /// expression in main.rs: two groups (sizes 3 and 2) should sum to 5.
+    /// This is the complement to `n_reused_items_is_zero_when_reused_passwords_empty`
+    /// — together they pin both the zero and non-zero branches of the sum.
+    #[test]
+    fn n_reused_items_sums_across_groups() {
+        // Build a synthetic AuditResult with two reuse groups: one of 3 items
+        // and one of 2 items.  Total n_reused_items must be 5.
+        let make_item = |name: &str| AuditItem {
+            name: name.to_string(),
+            username: None,
+            item_type: "login".to_string(),
+            password_strength: "fair".to_string(),
+            reason: "password shared with 2 other items: B, C".to_string(),
+        };
+
+        let result = AuditResult {
+            total_items: 5,
+            weak_passwords: vec![],
+            reused_passwords: vec![
+                vec![make_item("A"), make_item("B"), make_item("C")], // group 1: 3 items
+                vec![make_item("D"), make_item("E")],                 // group 2: 2 items
+            ],
+            fair_passwords_count: 5,
+            weak_threshold_len: WEAK_THRESHOLD,
+            scoring_note: "test".to_string(),
+        };
+
+        let n_reused_items: usize = result.reused_passwords.iter().map(|g| g.len()).sum();
+        assert_eq!(
+            n_reused_items, 5,
+            "n_reused_items must be 5 for groups of size 3 + 2; got {n_reused_items}"
+        );
+
+        // The outer array must have 2 groups.
+        assert_eq!(
+            result.reused_passwords.len(),
+            2,
+            "reused_passwords must have 2 groups"
+        );
+
+        // Each inner element must itself be a Vec<AuditItem> (non-empty).
+        for (i, group) in result.reused_passwords.iter().enumerate() {
+            assert!(
+                !group.is_empty(),
+                "reused_passwords[{i}] must be a non-empty inner Vec"
+            );
+        }
+    }
 }

@@ -3,6 +3,48 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.20] — iteration 76: reused_passwords nested-array shape, n_reused_items tests, v0.2.21 bump
+
+### Bug fixes (iter-76)
+
+- **No CHANGELOG entry for v0.2.20 (iter-76, LOW)**: Cargo.toml was bumped to
+  `0.2.20` in the iter-75 commit but no `[0.2.20]` section was added to
+  CHANGELOG.md — the previous entry was `[0.2.19]`.  Added this section.
+  `CHANGELOG.md`.
+
+### Improvements (iter-76)
+
+- **Integration test: assert `reused_passwords` inner elements are arrays
+  (iter-76, LOW)**: The integration test `audit_run_requires_bearer_token...`
+  asserted `body["reused_passwords"].is_array()` (outer array only).  With an
+  empty vault the outer array is always `[]` — this passes vacuously even if
+  the type were accidentally changed from `Vec<Vec<AuditItem>>` to
+  `Vec<AuditItem>` (flat).  Added a per-element loop asserting `group.is_array()`
+  so any non-array element in a populated vault would be caught.  Accompanied by
+  a comment explaining why the check is vacuously true on an empty vault but
+  still serves as a shape contract.  `src/proxy/mod.rs:2718–2736`.
+
+- **Unit tests: `n_reused_items` zero and multi-group sum (iter-76, LOW)**:
+  The `n_reused_items` computation in `main.rs`
+  (`result.reused_passwords.iter().map(|g| g.len()).sum()`) had no unit test
+  for the empty-`Vec<Vec<_>>` edge case (clean vault where no passwords are
+  shared).  Added two tests to `src/audit.rs`:
+    1. `n_reused_items_is_zero_when_reused_passwords_empty` — verifies that
+       `.iter().map(|g| g.len()).sum::<usize>()` returns `0` on `vec![]`, and
+       that `total_issues` is therefore `0` for a clean vault.
+    2. `n_reused_items_sums_across_groups` — verifies the non-empty case: two
+       groups of sizes 3 and 2 sum to 5.  Also asserts the nested-array shape
+       (`reused_passwords[i]` is a non-empty `Vec`) to document the
+       `Vec<Vec<AuditItem>>` contract.
+  `src/audit.rs:951–1030`.
+
+### Verification (iter-76)
+
+- `cargo test --all-targets`: 256 passed (254 unit + 2 integration), 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: 0 diff lines (clean).
+- `cargo doc --no-deps`: 0 warnings.
+
 ## [0.2.19] — iteration 74–75: JoinHandle abort, notify failure logging, reuse count, yield_now
 
 ### Bug fixes (iter-74–75)

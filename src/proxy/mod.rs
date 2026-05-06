@@ -2719,6 +2719,26 @@ vault_item  = "vault-proxy - Beta"
             body["reused_passwords"].is_array(),
             "audit/run 'reused_passwords' must be a JSON array; got: {body}"
         );
+        // iter-76: assert that reused_passwords is a nested array (Vec<Vec<AuditItem>>
+        // serialises as [[{...}], [{...}]]) not a flat array ([{...}, {...}]).
+        // With an empty vault the outer array is always empty and this check can
+        // never fail — the assertion below documents the expected shape so a future
+        // test that populates the vault will catch a regression where the type is
+        // accidentally changed to Vec<AuditItem>.
+        //
+        // What we CAN assert now: every element of reused_passwords (if any)
+        // must itself be a JSON array.  On an empty vault this is vacuously true
+        // (the loop body never executes) but the assertion is still meaningful
+        // because it would catch a non-array element on any populated vault test.
+        if let Some(groups) = body["reused_passwords"].as_array() {
+            for (i, group) in groups.iter().enumerate() {
+                assert!(
+                    group.is_array(),
+                    "audit/run 'reused_passwords[{i}]' must be a JSON array (nested \
+                     Vec<Vec<AuditItem>> shape); got element: {group}"
+                );
+            }
+        }
     }
 
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires
