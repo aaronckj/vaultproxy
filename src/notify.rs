@@ -192,7 +192,26 @@ impl Notifier {
                     queue.drain(..queue.len() - 50);
                 }
                 let json_bytes = serde_json::to_string_pretty(&queue)?;
-                crate::secure::safe_write_config(queue_path, json_bytes.as_bytes())?;
+                // Issue (iter-53): Explicitly surface write failures rather than
+                // propagating a bare `?` that the caller may swallow with `.ok()`.
+                // If the filesystem is full or /config is read-only, the caller
+                // (notify_rotation, notify_2fa) uses `.ok()` — the error is
+                // propagated as Err from send() but silently dropped there.
+                // Logging the error here ensures it appears in structured logs
+                // even when the caller ignores the Result.
+                if let Err(e) = crate::secure::safe_write_config(queue_path, json_bytes.as_bytes())
+                {
+                    tracing::error!(
+                        to = %to,
+                        path = queue_path,
+                        "failed to write notification queue — email notification \
+                         to '{}' WILL BE LOST. Check that /config is writable \
+                         and not full. Error: {:#}",
+                        to,
+                        e
+                    );
+                    return Err(e);
+                }
 
                 tracing::info!("queued email notification to {}", to);
                 Ok(())

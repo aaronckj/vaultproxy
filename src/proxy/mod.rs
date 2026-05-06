@@ -2489,7 +2489,10 @@ vault_item  = "vault-proxy - Beta"
         ));
         let vault_mgr = Arc::new(VaultManager::new_stub());
         let orch: SharedOrch = Arc::new(Orchestrator {
-            vault: Arc::new(VwAdapter::new(vault_mgr.clone())),
+            vault: Arc::new(VwAdapter::new(
+                vault_mgr.clone(),
+                Some("vault-proxy".to_string()),
+            )),
             engine: EngineClient::new(dead_engine_url),
             marker: Marker::new(vault_mgr),
             conn,

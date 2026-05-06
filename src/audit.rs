@@ -1,14 +1,11 @@
-// iter-50: scaffold module — not yet fully wired to production call sites.
-//
 // NOTE: This module (`src/audit.rs`) is the *local* credential health analyser
 // that runs entirely inside the proxy process using HMAC fingerprints.  It is
 // DISTINCT from `src/credential_audit/` which is the multi-pass audit system
 // that talks to the external credential-audit engine sidecar.  Do not merge or
 // remove either without updating the other.
 //
-// Remove `#![allow(dead_code)]` and this comment block once `run_audit` is
-// called from the audit-log dashboard or a scheduled endpoint (v1.0 target).
-#![allow(dead_code)]
+// iter-53: `run_audit` is now reachable via `GET /vault/audit/run` (wired in
+// main.rs behind the internal bearer token). `#![allow(dead_code)]` removed.
 //! In-process credential health audit — analyzes weak/reused passwords without
 //! exposing plaintext to any external system.  Passwords are HMAC-fingerprinted
 //! with an ephemeral key and zeroized immediately after use.
@@ -132,4 +129,34 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         weak_passwords,
         reused_passwords,
     }
+}
+
+// -------------------------------------------------------------------------- //
+// HTTP handler — `GET /vault/audit/run`                                       //
+// -------------------------------------------------------------------------- //
+//
+// iter-53: Wire `run_audit` to a read-only HTTP endpoint so the feature is
+// discoverable without requiring v1.0 database wiring.
+//
+// Security properties:
+//   - Read-only: no vault mutations (no writes to Vaultwarden).
+//   - Gated behind the internal bearer token (added to the internal_router in
+//     main.rs) — requires `Authorization: Bearer <token>` from the caller.
+//   - Plaintext passwords are never included in the JSON response. All
+//     passwords are HMAC-fingerprinted with an ephemeral key (see `run_audit`).
+//   - The `AuditItem` struct contains only item name, username, type, and
+//     strength classification — no credential values.
+
+pub async fn handle_audit_run(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::proxy::AppState>>,
+) -> axum::Json<AuditResult> {
+    tracing::info!("GET /vault/audit/run — running in-process credential health audit");
+    let result = run_audit(&state.vault).await;
+    tracing::info!(
+        total = result.total_items,
+        weak = result.weak_passwords.len(),
+        reuse_groups = result.reused_passwords.len(),
+        "audit complete"
+    );
+    axum::Json(result)
 }

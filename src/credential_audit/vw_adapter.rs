@@ -10,11 +10,23 @@ use url::Url;
 
 pub struct VwAdapter {
     vault: Arc<VaultManager>,
+    /// Vault folder scope — only items in this folder are returned by
+    /// `list_items_metadata`. Prevents the credential-audit scan from
+    /// fingerprinting or moving personal items that live outside the
+    /// vault-proxy–owned folder (e.g. personal banking credentials).
+    ///
+    /// When `None` (fresh vault / first-run) the adapter falls back to
+    /// returning all items so the very first scan still works before the
+    /// operator has created the vault_folder in Vaultwarden.
+    vault_folder: Option<String>,
 }
 
 impl VwAdapter {
-    pub fn new(vault: Arc<VaultManager>) -> Self {
-        Self { vault }
+    pub fn new(vault: Arc<VaultManager>, vault_folder: Option<String>) -> Self {
+        Self {
+            vault,
+            vault_folder,
+        }
     }
 
     fn host_of(uri: &str) -> Option<String> {
@@ -27,7 +39,43 @@ impl VwAdapter {
 #[async_trait]
 impl VaultAdapter for VwAdapter {
     async fn list_items_metadata(&self) -> Result<Vec<EngineInputItem>> {
+        // Issue (iter-53): Scope to vault_folder so the credential-audit scan
+        // never fingerprints or marks personal vault items that live outside
+        // the vault-proxy–owned folder. Without this guard, the unscoped
+        // list_items() call returns ALL vault items (including personal banking
+        // credentials), and the subsequent apply step can call marker.mark()
+        // on any item id — moving personal items to _review-delete.
+        //
+        // When vault_folder is set and the folder exists, we use list_items()
+        // and filter by folder_id. When the folder is not yet known (fresh
+        // vault / first-run), we fall back to returning all items so the very
+        // first scan still works before the operator creates the folder.
+        let folder_id: Option<String> = match &self.vault_folder {
+            Some(name) => self.vault.find_folder_id_by_name_async(name).await,
+            None => None,
+        };
+
         let masked = self.vault.list_items().await;
+        // Filter to vault_folder items only when we have a resolved folder_id.
+        // When folder_id is None (fresh vault), pass through all items.
+        let masked: Vec<_> = match &folder_id {
+            Some(fid) => masked
+                .into_iter()
+                .filter(|item| item.folder_id.as_deref() == Some(fid.as_str()))
+                .collect(),
+            None => {
+                if self.vault_folder.is_some() {
+                    tracing::warn!(
+                        "credaudit: vault_folder '{}' not found in vault — \
+                         scanning ALL items (fresh vault?). Once the folder exists, \
+                         only items inside it will be scanned.",
+                        self.vault_folder.as_deref().unwrap_or("")
+                    );
+                }
+                masked
+            }
+        };
+
         let mut out = Vec::with_capacity(masked.len());
         for item in masked {
             // Try to fetch decrypted notes excerpt + custom field names by NAME.

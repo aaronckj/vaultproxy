@@ -2519,4 +2519,72 @@ timeout_secs = 0
             elapsed
         );
     }
+
+    // Issue (iter-53): Verify `ca_cert` + `insecure_tls = true` behaviour.
+    //
+    // When both are set, `insecure_tls` wins (disables ALL cert verification),
+    // making `ca_cert` redundant. The registry must:
+    //   - Emit a tracing::warn (we can't capture it in a unit test, but the
+    //     observable behaviour is the absence of a `ca_cert_path` on the entry).
+    //   - Register the service (not skip it) — the combination is a warning,
+    //     not a hard error.
+    //   - Set `insecure_tls = true` on the resulting ServiceEntry.
+    //   - Set `ca_cert_path = None` on the resulting ServiceEntry (insecure_tls
+    //     wins, so the cert path is discarded).
+    #[test]
+    fn test_ca_cert_and_insecure_tls_both_set_insecure_wins() {
+        use std::io::Write as _;
+
+        // Embed a minimal self-signed PEM inline so the test has no external
+        // file dependencies (*.pem is in .gitignore by policy). This cert was
+        // generated with `openssl req -x509 -newkey rsa:2048 -days 3650 -nodes
+        // -subj "/CN=test-ca"` and is used only to pass the file-read+parse
+        // check in from_toml_file. The actual TLS handshake is never exercised.
+        let pem = "-----BEGIN CERTIFICATE-----\n\
+MIIDBTCCAe2gAwIBAgIUJx/l+4jEqwciB0lBWCAbJaUQjEgwDQYJKoZIhvcNAQEL\n\
+BQAwEjEQMA4GA1UEAwwHdGVzdC1jYTAeFw0yNjA1MDYwMjMwMTZaFw0zNjA1MDMw\n\
+MjMwMTZaMBIxEDAOBgNVBAMMB3Rlc3QtY2EwggEiMA0GCSqGSIb3DQEBAQUAA4IB\n\
+DwAwggEKAoIBAQCkMcGIDvtHHaSt2o9uYZ1rWk2vQ+BmG4HsgjRQ9BuBwHQxHJJ2\n\
+zAcEIBOq4joG2ebi5RLhpyvNqEkQbb8TwTjpIa8yu61LjtWKIPOfgR8cuZqwh3bm\n\
+RzL4GcXhy5t28TEgaj7sGrelqeSz1WQZVcpQ+IuROdN0UM9JpwzSf0+WE112vO9/\n\
+K6WW3iWsa1/UCqWxmh4e6ep4MKw/0EWAVscgvtZUC7z9YD+MsdZu4mQAXdlCaA9l\n\
+YYijtIWL+UrYx3zlIdjWu11ED8BoP0arT57+BRQgb0yDur2GyDt7PYiTLNiQbdmr\n\
+mTgNKRcXfRfK262krgFEUXQXCPCgsEOeTzaBAgMBAAGjUzBRMB0GA1UdDgQWBBTJ\n\
+Cg98ffWqFdybyk1T6tkX6UNn0DAfBgNVHSMEGDAWgBTJCg98ffWqFdybyk1T6tkX\n\
+6UNn0DAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQB59Oz/+uzw\n\
+ZyAVY9jOSR/uoxc/MhtYdzZUsurYNE0KNzHd+VXPO1KgUVluz692XlB9QITRKWBK\n\
+L3tdkq8PxdEeQ7StxCS6uyAEzdoLcp7X/aiQTP8oT8EvUuzga+IBJFNGMB1Xk61W\n\
+RR4INqNjzAgEXjxdHSeoblj8Kmp1pcTJBv6PjX5qjSHTDJKQNL4V/OgNOkU2C8Bc\n\
+OZE3iT5vkLCbC+2oyeArfNapH3tRiXQOvnzUYsqTH4rwQxG+wGbznyosDhskWwmQ\n\
+o/JL4AWvIgawzevYwfxyM5lzx/fa0eEq6x6sktAXu2jyL4aea8KQQ7GuzSoG0Glm\n\
+i1J0BBT9c7yU\n\
+-----END CERTIFICATE-----\n";
+        let mut certfile = tempfile::NamedTempFile::new().unwrap();
+        certfile.write_all(pem.as_bytes()).unwrap();
+        let cert_path = certfile.path().to_str().unwrap().to_string();
+
+        let toml_content = format!(
+            "[[service]]\nname = \"conflicting_tls\"\nbase_url = \"https://192.0.2.10:8443/api\"\n\
+             auth = \"bearer\"\nvault_item = \"test - Conflicting TLS\"\n\
+             ca_cert = \"{}\"\ninsecure_tls = true\n",
+            cert_path.replace('\\', "\\\\")
+        );
+        let mut tf = tempfile::NamedTempFile::new().unwrap();
+        tf.write_all(toml_content.as_bytes()).unwrap();
+
+        let registry = ServiceRegistry::from_toml_file(tf.path());
+        let svc = registry.get("conflicting_tls").expect(
+            "service with both ca_cert and insecure_tls must be registered (warn, not skip)",
+        );
+        // insecure_tls wins — the service is registered with TLS verification disabled.
+        assert!(
+            svc.insecure_tls,
+            "insecure_tls must be true when both ca_cert and insecure_tls are set"
+        );
+        // ca_cert_path must be None — insecure_tls takes precedence and discards the cert.
+        assert!(
+            svc.ca_cert_path.is_none(),
+            "ca_cert_path must be None when insecure_tls wins (cert is redundant)"
+        );
+    }
 }

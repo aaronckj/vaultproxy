@@ -1325,6 +1325,12 @@ async fn start_server(
         // bearer token because it modifies live routing state (the registry and
         // CA-cert client map). Equivalent to sending SIGHUP but HTTP-accessible.
         .route("/vault/reload-services", post(handlers::reload_services))
+        // iter-53: in-process credential health audit — read-only, no vault
+        // mutations. Returns weak/reused password report. Gated behind the
+        // internal bearer token because it decrypts every vault password to
+        // compute HMAC fingerprints (sensitive operation even though no
+        // plaintext leaks in the response).
+        .route("/vault/audit/run", get(crate::audit::handle_audit_run))
         // Gate the entire sub-router behind the internal bearer token.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1414,9 +1420,13 @@ async fn start_server(
             .unwrap_or_else(|_| "/app/playwright/agent.py".to_string()),
         std::env::var("AUDIT_EGRESS_PROXY_URL").ok(),
     ));
+    // Issue (iter-53): Pass vault_folder to VwAdapter so the credential-audit
+    // scan is scoped to vault-proxy's own folder. This prevents the scan from
+    // fingerprinting or marking personal items outside vault_folder.
     let cred_audit_orch = std::sync::Arc::new(credential_audit::orchestrator::Orchestrator {
         vault: std::sync::Arc::new(credential_audit::vw_adapter::VwAdapter::new(
             vault_arc.clone(),
+            Some(args.vault_folder.clone()),
         )),
         engine: cred_audit_engine,
         marker: credential_audit::marker::Marker::new(vault_arc.clone()),
