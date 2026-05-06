@@ -71,14 +71,38 @@ pub struct AuditItem {
     pub username: Option<String>,
     pub item_type: String,
     pub password_strength: String, // "weak", "fair", "strong"
-    /// Human-readable reason for the `password_strength` classification.
+    /// Human-readable reason for the `password_strength` classification, or a
+    /// reuse description when the item appears in `reused_passwords`.
     ///
-    /// For `"weak"` items this explains *why* the password is weak so an
-    /// operator can take a targeted action (e.g. "fewer than 8 characters"
-    /// rather than a bare `"weak"` label).  For `"fair"` and `"strong"` items
-    /// the reason is still present so callers can display it in a summary view.
+    /// **In `weak_passwords`:** explains *why* the password is weak so an
+    /// operator can take a targeted action (e.g. `"fewer than 8 characters —
+    /// increase length to at least 8"`).  For `"fair"` and `"strong"` items
+    /// in `reused_passwords`, the strength reason is **overridden** (see below).
+    ///
+    /// **In `reused_passwords`:** the strength reason is replaced with a reuse
+    /// description: `"password shared with N other item(s): name1, name2, …"`.
+    /// Names are capped at `REUSE_NAME_DISPLAY_LIMIT` (5); larger groups append
+    /// `"... and N more"`.  This override is applied by the post-processing loop
+    /// in `run_audit()` (iter-69).
+    ///
+    /// **Cross-list items (weak AND reused):** an item with a short, reused
+    /// password appears in BOTH lists.  The `weak_passwords` entry retains the
+    /// strength reason; the `reused_passwords` entry carries the reuse reason.
+    /// Both are non-empty, non-identical strings.
+    ///
+    /// Always a non-empty string.  Use this field to display actionable guidance
+    /// to operators without requiring them to read source code.
+    ///
+    /// Possible formats:
+    ///   - `"fewer than 8 characters — increase length to at least 8"` (weak)
+    ///   - `"8–15 characters — increase to 16+ with mixed character classes…"` (fair)
+    ///   - `"16+ characters with 3 or more character classes…"` (strong)
+    ///   - `"password shared with N other item: name"` (N=1)
+    ///   - `"password shared with N other items: name1, name2, …"` (N≥2)
     ///
     /// iter-68: added to make audit output actionable without consulting source.
+    /// iter-69: reuse-reason override documented.
+    /// iter-71: cross-list and plural forms documented.
     pub reason: String,
 }
 
@@ -220,8 +244,13 @@ pub const WEAK_THRESHOLD: usize = 8;
 /// is appended.  This prevents unboundedly long reason strings in the JSON
 /// response.
 ///
+/// `pub(crate)` so unit tests can reference the constant directly rather than
+/// hard-coding the literal `5` — if the limit changes, tests automatically
+/// track the new value without a silent false-pass.
+///
 /// iter-70: added to cap reuse reason length.
-const REUSE_NAME_DISPLAY_LIMIT: usize = 5;
+/// iter-71: made pub(crate) so tests reference the constant, not a magic literal.
+pub(crate) const REUSE_NAME_DISPLAY_LIMIT: usize = 5;
 
 /// Run a full credential health audit against the vault.
 ///
@@ -334,17 +363,20 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
                     .map(|(_, item)| item.name.as_str())
                     .collect();
                 let total_others = other_names.len();
+                let item_word = if total_others == 1 { "item" } else { "items" };
                 let reason = if total_others <= REUSE_NAME_DISPLAY_LIMIT {
                     format!(
-                        "password shared with {} other item(s): {}",
+                        "password shared with {} other {}: {}",
                         total_others,
+                        item_word,
                         other_names.join(", ")
                     )
                 } else {
                     let shown = &other_names[..REUSE_NAME_DISPLAY_LIMIT];
                     format!(
-                        "password shared with {} other item(s): {}, ... and {} more",
+                        "password shared with {} other {}: {}, ... and {} more",
                         total_others,
+                        item_word,
                         shown.join(", "),
                         total_others - REUSE_NAME_DISPLAY_LIMIT
                     )
@@ -695,8 +727,9 @@ mod tests {
         );
 
         // Simulate the reused_passwords entry (reuse reason override, iter-69).
+        // iter-71: uses "1 other item" (singular) not "1 other item(s)".
         let mut reuse_item = weak_item.clone();
-        reuse_item.reason = "password shared with 1 other item(s): Other Item".to_string();
+        reuse_item.reason = "password shared with 1 other item: Other Item".to_string();
         assert!(
             reuse_item.reason.contains("shared with"),
             "reused_passwords entry must have reuse reason"
@@ -729,17 +762,20 @@ mod tests {
         let total_others = other_names.len(); // 7
 
         // Replicate the truncation logic from run_audit().
+        let item_word = if total_others == 1 { "item" } else { "items" };
         let reason = if total_others <= REUSE_NAME_DISPLAY_LIMIT {
             format!(
-                "password shared with {} other item(s): {}",
+                "password shared with {} other {}: {}",
                 total_others,
+                item_word,
                 other_names.join(", ")
             )
         } else {
             let shown = &other_names[..REUSE_NAME_DISPLAY_LIMIT];
             format!(
-                "password shared with {} other item(s): {}, ... and {} more",
+                "password shared with {} other {}: {}, ... and {} more",
                 total_others,
+                item_word,
                 shown.join(", "),
                 total_others - REUSE_NAME_DISPLAY_LIMIT
             )
@@ -747,7 +783,7 @@ mod tests {
 
         // Should show 7 total others, first 5 names, then "... and 2 more".
         assert!(
-            reason.contains("7 other item(s)"),
+            reason.contains("7 other items"),
             "reason must report the full count (7), got: {reason}"
         );
         assert!(
@@ -773,27 +809,30 @@ mod tests {
     /// exclusive, not inclusive).
     #[test]
     fn reuse_reason_not_truncated_at_exactly_five_names() {
-        let other_names = vec!["A", "B", "C", "D", "E"]; // exactly 5
+        let other_names = ["A", "B", "C", "D", "E"]; // exactly 5
         let total_others = other_names.len();
 
+        let item_word = if total_others == 1 { "item" } else { "items" };
         let reason = if total_others <= REUSE_NAME_DISPLAY_LIMIT {
             format!(
-                "password shared with {} other item(s): {}",
+                "password shared with {} other {}: {}",
                 total_others,
+                item_word,
                 other_names.join(", ")
             )
         } else {
             let shown = &other_names[..REUSE_NAME_DISPLAY_LIMIT];
             format!(
-                "password shared with {} other item(s): {}, ... and {} more",
+                "password shared with {} other {}: {}, ... and {} more",
                 total_others,
+                item_word,
                 shown.join(", "),
                 total_others - REUSE_NAME_DISPLAY_LIMIT
             )
         };
 
         assert!(
-            reason.contains("5 other item(s)"),
+            reason.contains("5 other items"),
             "reason must report 5 others, got: {reason}"
         );
         assert!(

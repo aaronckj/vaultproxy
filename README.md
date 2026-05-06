@@ -318,14 +318,14 @@ Returns a JSON object:
         "username": "user@example.com",
         "item_type": "login",
         "password_strength": "fair",
-        "reason": "password shared with 1 other item(s): Site B"
+        "reason": "password shared with 1 other item: Site B"
       },
       {
         "name": "Site B",
         "username": "user@example.com",
         "item_type": "login",
         "password_strength": "fair",
-        "reason": "password shared with 1 other item(s): Site A"
+        "reason": "password shared with 1 other item: Site A"
       }
     ]
   ],
@@ -337,7 +337,7 @@ Returns a JSON object:
 
 - `total_items`: count of vault items that were scanned. The in-process audit (`src/audit.rs`) scans every item in `vault_folder` with no cap — `total_items` is the true vault count for that folder. (The engine-sidecar audit path in `src/credential_audit/vw_adapter.rs` enforces `SCAN_ITEM_CAP = 1_000`; that cap does not apply here.)
 - `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, `password_strength` (`"weak"`), and `reason` (human-readable explanation, e.g. `"fewer than 8 characters — increase length to at least 8"`). Only items scored `"weak"` appear here; `"fair"` and `"strong"` items are excluded.
-- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`. The `reason` field for reuse-group items is overridden to describe the reuse: `"password shared with N other item(s): name1, name2, …"` (names capped at 5; `"... and N more"` suffix appended when the group is larger — iter-70).
+- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`. The `reason` field for reuse-group items is overridden to describe the reuse: `"password shared with N other item: name"` (N=1, singular) or `"password shared with N other items: name1, name2, …"` (N≥2, plural). Names are capped at 5; `"... and N more"` suffix is appended when the group exceeds 5 other items (iter-70, iter-71).
 - **Cross-list items (weak AND reused):** An item with a short password that is also shared with other items will appear in **both** `weak_passwords` and in a `reused_passwords` group — for two different reasons. The `weak_passwords` entry carries the strength reason (`"fewer than 8 characters…"`); the `reused_passwords` entry carries the reuse reason (`"password shared with N other item(s)…"`). This is intentional: both problems are independent and both need to be resolved. Do not deduplicate these when displaying results — seeing the same item name in both lists correctly signals that the item has two distinct security issues.
 - `AuditItem.reason`: human-readable explanation of the `password_strength` classification or, for items in `reused_passwords`, a description of which other items share the same password. Always a non-empty string. Use this field to display actionable guidance to operators without requiring them to read source code.
 - `fair_passwords_count`: count of vault items whose password scored `"fair"` (8–15 characters, or 16+ characters with fewer than 3 character classes). `"fair"` items are NOT included in `weak_passwords` but are above the minimum length floor. An operator whose entire vault scores `"fair"` would otherwise see `weak_passwords: []` and might incorrectly conclude all credentials are strong. Added iter-68.
