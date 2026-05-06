@@ -3275,9 +3275,20 @@ mod browser_rotate_guard_tests {
     use crate::vault::VaultManager;
     use axum::extract::State as AxumState;
     use axum::Json as AxumJson;
+    use axum::response::IntoResponse;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+
+    /// Extract the JSON body from an `impl IntoResponse` value (used after
+    /// iter-104 changed browser_rotate to return impl IntoResponse).
+    async fn extract_json_body(resp: impl IntoResponse) -> serde_json::Value {
+        let response = resp.into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body read failed");
+        serde_json::from_slice(&bytes).expect("body is not valid JSON")
+    }
 
     /// Build the minimal `AppState` needed to exercise `browser_rotate`.
     /// `browser_agent` is injected so each test can customise the field under
@@ -3335,11 +3346,11 @@ mod browser_rotate_guard_tests {
         let state = make_state_with_browser(Some(agent));
 
         let req = serde_json::json!({ "item_name": "my-vault-item" });
-        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+        let resp = extract_json_body(browser_rotate(AxumState(state), AxumJson(req)).await).await;
 
         let error_msg = resp
             .get("error")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &serde_json::Value| v.as_str())
             .expect("response must contain an 'error' field");
 
         assert!(
@@ -3349,24 +3360,22 @@ mod browser_rotate_guard_tests {
     }
 
     /// Guard (iter-48): when `BrowserAgent.model_name` is empty, `browser_rotate`
-    /// must return an error JSON directing the operator to set `VISION_MODEL`,
-    /// rather than sending `"model": ""` to LiteLLM (which routes to an
-    /// unexpected model or returns a cryptic 422).
+    /// must return an error JSON directing the operator to set `VISION_MODEL`.
     #[tokio::test]
     async fn browser_rotate_empty_model_name_returns_error() {
         let agent = Arc::new(BrowserAgent::new(
-            "http://mlbox.local:4000", // litellm_url is set
-            "",                        // api_key
-            "",                        // empty model_name — the path under test
+            "http://mlbox.local:4000",
+            "",
+            "",
         ));
         let state = make_state_with_browser(Some(agent));
 
         let req = serde_json::json!({ "item_name": "my-vault-item" });
-        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+        let resp = extract_json_body(browser_rotate(AxumState(state), AxumJson(req)).await).await;
 
         let error_msg = resp
             .get("error")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &serde_json::Value| v.as_str())
             .expect("response must contain an 'error' field");
 
         assert!(
@@ -3375,20 +3384,18 @@ mod browser_rotate_guard_tests {
         );
     }
 
-    /// Regression guard: `item_name` missing from the request body should still
-    /// return an error (the pre-existing guard from the initial implementation).
+    /// Regression guard: `item_name` missing from the request body should return an error.
     #[tokio::test]
     async fn browser_rotate_missing_item_name_returns_error() {
         let agent = Arc::new(BrowserAgent::new("http://mlbox.local:4000", "", "gpt-4o"));
         let state = make_state_with_browser(Some(agent));
 
-        // No `item_name` key — handler must catch this before the vision guards.
         let req = serde_json::json!({});
-        let AxumJson(resp) = browser_rotate(AxumState(state), AxumJson(req)).await;
+        let resp = extract_json_body(browser_rotate(AxumState(state), AxumJson(req)).await).await;
 
         let error_msg = resp
             .get("error")
-            .and_then(|v| v.as_str())
+            .and_then(|v: &serde_json::Value| v.as_str())
             .expect("response must contain an 'error' field");
 
         assert!(
