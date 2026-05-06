@@ -1778,12 +1778,29 @@ pub async fn write_env(
                 _ => {} // folder_id matches vault_folder — proceed
             }
         } else {
-            // vault_folder not found — fresh vault or folder renamed (iter-94).
+            // vault_folder not found — fresh vault or folder renamed (iter-95).
+            //
+            // write_env writes plaintext credentials to disk. Unlike read-only
+            // handlers (test_credential, list_items) that fall through permissively,
+            // proceeding here would let a caller extract ANY vault item's credentials
+            // to disk without folder-scope verification. Refuse rather than fall
+            // through; operator must fix the vault_folder name or resync first.
             tracing::warn!(
-                "write_env: vault_folder '{}' not found — folder-scope guard disabled \
-                 (fresh vault or folder renamed? verify --vault-folder, \
+                "write_env: vault_folder '{}' not found — refusing write to prevent \
+                 out-of-scope credential export (folder renamed? verify --vault-folder, \
                  then call POST /vault/resync)",
                 state.vault_folder
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "error": format!(
+                        "vault_folder '{}' not found — cannot verify item scope before \
+                         writing credentials to disk. Verify --vault-folder matches the \
+                         Vaultwarden folder name, then call POST /vault/resync.",
+                        state.vault_folder
+                    )
+                })),
             );
         }
     }
@@ -2002,18 +2019,36 @@ pub async fn delete_folder(
     // Deleting vault_folder would silently break all credential lookups —
     // list_items, update_item, delete_item, etc. all filter by vault_folder.
     // If the requested folder id matches vault_folder's id, refuse.
-    if let Some(vault_folder_id) = resolve_vault_folder_id(&state).await {
-        if req.id.trim() == vault_folder_id.as_str() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "error": format!(
-                        "cannot delete the vault-proxy folder ('{}') — \
-                         deleting it would break all credential lookups. \
-                         Move or reassign items first, then delete via Vaultwarden directly.",
-                        state.vault_folder
-                    )
-                })),
+    //
+    // Issue (iter-95): When resolve_vault_folder_id returns None (folder renamed
+    // or not yet created), the `if let Some(...)` arm is skipped entirely —
+    // the protection guard is silently disabled and any folder UUID can be deleted
+    // without the 403 check firing. Emit a warn! so operators see this in logs.
+    match resolve_vault_folder_id(&state).await {
+        Some(vault_folder_id) => {
+            if req.id.trim() == vault_folder_id.as_str() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": format!(
+                            "cannot delete the vault-proxy folder ('{}') — \
+                             deleting it would break all credential lookups. \
+                             Move or reassign items first, then delete via Vaultwarden directly.",
+                            state.vault_folder
+                        )
+                    })),
+                );
+            }
+        }
+        None => {
+            // vault_folder not found — fresh vault or folder renamed (iter-95).
+            // Self-protection guard is disabled: cannot verify the requested id
+            // does NOT match vault_folder's id. Warn so operators can act.
+            tracing::warn!(
+                "delete_folder: vault_folder '{}' not found — self-protection guard disabled \
+                 (fresh vault or folder renamed? verify --vault-folder, \
+                 then call POST /vault/resync)",
+                state.vault_folder
             );
         }
     }

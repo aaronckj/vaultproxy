@@ -3,6 +3,74 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.3] — iteration 95: delete_folder rename protection, write_env scope block
+
+### Fixes (iter-95)
+
+- **`delete_folder` self-protection guard silently disabled on folder rename (MEDIUM)** —
+  `src/vault/handlers.rs:2001`. Iter-19 added a guard that prevents deletion of the
+  vault_folder itself by comparing `req.id` against `vault_folder_id`. The guard used
+  `if let Some(vault_folder_id) = resolve_vault_folder_id(&state).await { ... }` with no
+  `else` branch. After a folder rename `resolve_vault_folder_id` returns `None`, the guard
+  body is never entered, and any folder UUID — including the vault-proxy folder under its
+  new name — can be deleted without the 403 response. The protection was silently disabled
+  with no log output at any level. Fix: convert to `match`, add an `else` arm that emits
+  `tracing::warn!` with the same rename scenario and `POST /vault/resync` remediation used
+  by all other handlers. The deletion still proceeds (consistent with the permissive fallback
+  model) but the operator sees an explicit warning rather than silent behaviour.
+
+- **`write_env` proceeds to write credentials on `None` folder (MEDIUM)** —
+  `src/vault/handlers.rs:1780`. When `resolve_vault_folder_id` returns `None` (folder
+  renamed), iter-94 added a `warn!` but continued execution through `decrypt_credentials_by_id`
+  and the disk-write path. Unlike read-only handlers that fall through permissively, `write_env`
+  writes plaintext credentials to disk. A caller could pass any vault item UUID — including
+  personal banking or SSH-key entries outside the vault-proxy folder — and the credentials
+  would be written without folder-scope verification. Fix: return `503 Service Unavailable`
+  with a descriptive error rather than falling through. The operator must fix `--vault-folder`
+  and call `POST /vault/resync` before writes are permitted.
+
+### Audit findings (iter-95) — no code changes required
+
+- **Rate-limiter GC-at-cap: GC runs before cap check (confirmed no bug)** —
+  `src/security/rate_limit.rs:212`. The `retain` sweep at lines 212–218 fires before the
+  `MAX_CALLER_ENTRIES` cap check at line 226. When the cap is hit, GC has already run (if
+  the interval elapsed). Stale entries are evicted on the same call that later rejects the
+  overflow caller. No code change required.
+
+- **Rate-limiter lock ordering: no deadlock risk (confirmed)** —
+  `src/security/rate_limit.rs`. `counters` (Mutex) is always acquired first at line 193;
+  `last_gc` (Mutex) is always acquired second at line 213 inside the GC block. No other
+  code path acquires them in the reverse order. The ordering is consistent and deadlock-free.
+
+- **`with_per_route_overrides` initializes `last_gc` (confirmed)** —
+  `src/security/rate_limit.rs:172`. Both constructors (`new` at line 149 and
+  `with_per_route_overrides` at line 172) initialize `last_gc` to `now − GC_MIN_INTERVAL`
+  so the first request always triggers an immediate GC sweep. Correct.
+
+- **Warning message wording: minor variation acceptable (noted)** —
+  `src/vault/handlers.rs`. All 11 handlers emit the handler name, folder name, rename
+  scenario, and `POST /vault/resync` remediation. `list_items` and `list_untracked_items`
+  say "not found in vault" vs. the shorter "not found" in other handlers. The two new
+  iter-95 handlers (`delete_folder`, `write_env`) use intentionally different wording
+  because they block rather than fall through. The variation is semantic, not a defect.
+
+- **v0.3.2 GitHub release absent (confirmed, cosmetic)** — `gh release view v0.3.2` returns
+  "release not found". v0.3.3 release created below.
+
+- **`post-v1.0:` count: 4 live items (unchanged)** —
+  `keystore.rs:333` (`unseal_private_key_from_tpm`),
+  `sync/cloud.rs:40` (`change_master_password` field),
+  `sync/cloud.rs:786` (`update_master_password` fn),
+  `proxy/unifi_session.rs:90` (`invalidate` rotation-UI path).
+
+### Quality gates (iter-95)
+
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings (default features)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 238 passed; 0 failed (236 unit + 2 integration)
+- `cargo test --all-targets --features browser,engine,dashboard` — 271 passed; 0 failed (269 unit + 2 integration)
+- `cargo fmt --check` — clean (0 diffs)
+
 ## [0.3.2] — iteration 94: vault folder warn all handlers, rate-limit GC amortized
 
 ### Fixes (iter-94)
