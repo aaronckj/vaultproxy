@@ -3,6 +3,84 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.11] — iteration 60 audit pass (no version bump — doc + test only)
+
+### Bug fixes (iter-60)
+
+- **README `apply` workflow still referenced old `_review-delete` folder name
+  (iter-60, LOW)**: The apply/undo documentation still said items are moved to
+  `_review-delete` — the pre-iter-58 name. Since iter-58 the folder is
+  `<vault_folder>-review-delete`. Fixed: updated both the description and the
+  undo instruction; added an explicit migration note for operators upgrading
+  from before iter-58 who have items stranded in the old folder name.
+
+### Tests added (iter-60)
+
+- **`health_version_tests` — `GET /vault/health` version field (iter-60)**:
+  Added two unit tests to `src/vault/handlers.rs` verifying that
+  `env!("CARGO_PKG_VERSION")` resolves to a non-empty semver triple (X.Y.Z)
+  and that the health response JSON shape matches what the handler emits
+  (`json!({ "version": env!("CARGO_PKG_VERSION") })`). These tests catch a
+  future `Cargo.toml` version bump where the binary was not rebuilt. Total
+  test count: 247 (245 unit + 2 integration).
+
+### Documentation (iter-60)
+
+- **Dockerfile `EXPOSE 3202` comment expanded (iter-60)**: Added an explicit
+  note that an operator running `docker run -p 3202:3202 ghcr.io/.../vaultproxy`
+  gets no dashboard and no error — the port is not bound because the feature
+  was not compiled. Directs operators to `--build-arg FEATURES=dashboard` for
+  the dashboard variant. The `EXPOSE` directive itself is retained as
+  documentation-only metadata per Docker convention.
+
+- **README: Docker build section added (iter-60)**: New "Docker" sub-section
+  under "Building" documents `docker build --build-arg FEATURES=dashboard`,
+  `--build-arg FEATURES=tpm`, and the combined `FEATURES=dashboard,tpm` form.
+  Includes a Docker Compose `build.args` example. Notes that
+  `--build-arg FEATURES=invalid-feature-name` produces a clear Cargo error
+  (expected, not a silent failure). Previously only `cargo build` invocations
+  were documented; Docker operators had no documented path to the dashboard.
+
+- **`docker-compose.example.yml`: headless default and dashboard variant
+  documented (iter-60)**: Added comments explaining that `build: .` produces
+  the headless default (no dashboard, no port 3202 binding), and showing the
+  `build.args: FEATURES: dashboard` + `ports` snippet for operators who want
+  the web UI.
+
+### Verification (iter-60)
+
+- `cargo test --all-targets`: 247 passed (245 unit + 2 integration), 0 failed.
+- `cargo build --release`: clean (0 errors, 0 warnings).
+
+### Findings — no code change required (iter-60)
+
+- **`EXPOSE 3202` removal considered (iter-60)**: Removing `EXPOSE 3202` from
+  the Dockerfile entirely was considered but rejected. Docker `EXPOSE` is
+  documentation metadata — it does not bind ports and cannot cause security
+  issues. Removing it would break `docker inspect` workflows that read declared
+  ports. The comment was expanded instead to make the headless behavior explicit.
+
+- **`vault_folder` with spaces/special chars (iter-60)**: `main.rs` (line
+  436–448) already validates `vault_folder` at startup: empty string, null
+  bytes, and `/` are rejected with a hard `bail!()`. Spaces are intentionally
+  permitted — Vaultwarden encrypts folder names and accepts any valid UTF-8
+  content. The resulting `"my folder-review-delete"` folder name is safely
+  transmitted to the Vaultwarden `/api/folders` API. No sanitization gap.
+
+- **`audit.rs` tests in `#[cfg(test)]` (iter-60)**: Confirmed. Line 238 of
+  `src/audit.rs` opens `#[cfg(test)] mod tests { ... }`. All five
+  password_strength tests are inside that block. No compilation issue.
+
+- **`from_config`/`from_vault` in integration tests (iter-60)**: `tests/`
+  contains only `secret_discipline.rs`, which does not reference either
+  function. Both are `#[cfg(test)]`-gated in `src/proxy/registry.rs` (lines
+  324 and 532). Integration tests compile separately and cannot see
+  `#[cfg(test)]` items from `src/` — confirmed no reference exists.
+
+- **CI v0.2.11 run (iter-60)**: Not auditable from local source (requires
+  GitHub Actions access). The commit pushed to main will trigger CI via the
+  `docker-publish.yml` workflow on the next tag push.
+
 ## [0.2.11] — iteration 59: version sync, headless Dockerfile, Unicode test, migration note
 
 ### Bug fixes (iter-59)
