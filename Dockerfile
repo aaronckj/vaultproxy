@@ -200,4 +200,14 @@ EXPOSE 3202
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://127.0.0.1:3201/vault/health || exit 1
 
+# OCI image labels — populated from build-time ARGs so `docker inspect` and
+# container registries (GHCR, Docker Hub) surface the correct version metadata.
+# iter-117: previously absent; `docker inspect` showed no version label.
+ARG IMAGE_VERSION="1.0.0"
+LABEL org.opencontainers.image.title="vaultproxy" \
+      org.opencontainers.image.description="Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.source="https://github.com/aaronckj/vaultproxy" \
+      org.opencontainers.image.licenses="MIT"
+
 ENTRYPOINT ["/usr/local/bin/vaultproxy"]

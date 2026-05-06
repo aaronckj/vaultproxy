@@ -100,7 +100,9 @@
         }
 
         try {
-            allItems = await api("/api/items");
+            var itemsResp = await api("/api/items");
+            // iter-117: /api/items now returns {"ok":true,"items":[...]} envelope.
+            allItems = Array.isArray(itemsResp) ? itemsResp : (itemsResp.items || []);
             renderItems(allItems);
         } catch(e) { /* redirect handled by api() */ }
 

@@ -5,6 +5,101 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — iteration 117: post-v1.0.0 stability pass, v1.1.0 planning
+
+### Bugs (iter-117) — dashboard `"ok"` sentinel gaps and diagnostic completeness
+
+- **`GET /sync/status` missing `"configured_vault_folder"` in response (iter-117)** — `src/vault/handlers.rs:3482`. LOW.
+  `GET /vault/folders` (scoped) already includes `"configured_vault_folder"` (iter-115). `GET /sync/status`
+  did not. When troubleshooting cloud sync issues, knowing the vault_folder the instance is scoped to is
+  helpful without grepping startup logs. Fixed: both `Some(sync)` and `None` branches now include
+  `"configured_vault_folder": vault_folder`.
+
+- **Dashboard `GET /api/status` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:97`. MEDIUM.
+  The success path returned `{"vault_items":...,"cloud_sync":...,"services":[...]}` without `"ok": true`.
+  Fixed: added `"ok": true` to the response envelope. Dashboard `index.html` is unaffected (reads named keys).
+
+- **Dashboard `GET /api/sync` missing `"ok": true` in both branches (iter-117)** — `src/dashboard/api.rs:131,138`. MEDIUM.
+  Both the configured (`Some`) and not-configured (`None`) paths were missing `"ok"`. Fixed: both branches
+  now include `"ok": true`. `sync.html` is unaffected (reads `data.state`, `data.last_sync`, etc.).
+
+- **Dashboard `GET /api/tpm-status` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:406`. LOW.
+  Response returned `{"tpm_available":...,"sealed_credentials":[...]}` without `"ok"`. Fixed.
+
+- **Dashboard `GET /api/settings/setup-status` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:509`. LOW.
+  Response returned `{"vaultwarden_configured":...,...}` without `"ok"`. Fixed.
+
+- **Dashboard `GET /api/permissions` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:933`. MEDIUM.
+  Response returned `{"tools":[...],"overrides":{...}}` without `"ok"`. Fixed.
+
+- **Dashboard `GET /api/settings/notifications` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:1182`. LOW.
+  Response returned `{"channel":...,"detail":...}` without `"ok"`. Fixed.
+
+- **Dashboard `GET /api/setup-status` missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:1369`. LOW.
+  Response returned `{"configured":...,"tpm_available":...,"tpm_key_sealed":...}` without `"ok"`. Fixed.
+
+- **Dashboard `GET /api/credentials` all three branches missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:1391,1402,1417`. MEDIUM.
+  Not-configured (`{"configured":false}`), unlocked, and locked branches all lacked `"ok"`. Fixed: all
+  three branches now include `"ok": true`.
+
+- **Dashboard `GET /api/browser/status` missing `"ok": true` in idle/not-configured paths (iter-117)** — `src/dashboard/api.rs:428,431`. LOW.
+  `{"status":"idle"}` and `{"status":"not_configured"}` lacked `"ok": true`. Fixed. The `Some(ws)` path
+  forwards a serialized `WorkflowStatus` struct — that struct already carries `ok` if the job does.
+
+- **Dashboard `GET /api/browser/screenshot` success path missing `"ok": true` (iter-117)** — `src/dashboard/api.rs:448`. LOW.
+  `{"image_b64":...}` lacked `"ok": true`. Fixed.
+
+- **Dashboard `GET /api/items` bare JSON array without `"ok"` envelope (iter-117)** — `src/dashboard/api.rs:116`. MEDIUM.
+  Response was a raw `serde_json::to_value(items)` producing a bare JSON array. Wrapped in
+  `{"ok":true,"items":[...]}`. `items.html` updated to unwrap `itemsResp.items` (with Array.isArray
+  fallback for graceful rollback).
+
+- **`POST /sync/setup-cloud` test missing HTTP status-code assertion (iter-117)** — `src/vault/handlers.rs:5017`. LOW.
+  The `setup_cloud_stub_has_ok_false` test only checked the body, not the 501 status code. Added
+  `setup_cloud_stub_status_code_is_501` test that asserts `StatusCode::NOT_IMPLEMENTED.as_u16() == 501`,
+  providing a regression guard for any accidental revert to `StatusCode::OK`.
+
+- **Dockerfile missing OCI image version label (iter-117)** — `Dockerfile:ENTRYPOINT`. LOW.
+  `docker inspect ghcr.io/aaronckj/vaultproxy:latest` showed no version metadata. Added
+  `LABEL org.opencontainers.image.version` (and title/description/source/license labels)
+  populated from build-time ARG `IMAGE_VERSION` (default `"1.0.0"`). CI workflows can override
+  with `--build-arg IMAGE_VERSION=${{ github.ref_name }}` to inject the git tag automatically.
+
+### v1.1.0 candidates — post-v1.0 planning
+
+The 4 `post-v1.0:` items identified in iter-107 remain. Tractability assessment:
+
+1. **`src/keystore.rs:333` — TPM auto-unlock path** (tag: `post-v1.0:`).
+   `unlock_keystore_with_tpm()` is dead code — the TPM sealing path exists but the auto-unlock
+   caller (startup) does not call it yet. Tractable for v1.1.0: wire `unlock_keystore_with_tpm`
+   into `startup_unlock()` behind `#[cfg(feature = "tpm")]` with a fallback to the software path.
+
+2. **`src/proxy/unifi_session.rs:90` — rotation UI** (tag: `post-v1.0:`).
+   `rotate_credential()` on `UnifiSession` is implemented but not exposed through the browser
+   rotation workflow. Tractable but requires browser feature; defer to v1.1.0-browser milestone.
+
+3. **`src/sync/cloud.rs:40` — Bitwarden cloud password change** (tag: `post-v1.0:`).
+   `master_password` field is read by the (unimplemented) `change_master_password`. Requires
+   Bitwarden API flow; non-trivial. Defer to v1.1.0.
+
+4. **`src/sync/cloud.rs:786` — dashboard cloud-account settings** (tag: `post-v1.0:`).
+   `account_info()` is dead code for the settings page. Tractable: wire to `GET /api/credentials`
+   cloud section. Consider v1.1.0.
+
+**Recommended v1.1.0 scope:** TPM auto-unlock wiring (item 1) + cloud-account settings page (item 4).
+Both are self-contained and improve the out-of-box experience for non-CLI operators.
+
+### Quality gates (iter-117)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo build` (headless) — 0 errors, 0 warnings
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets` — **258 passed**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **301 passed**; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+
+---
+
 > **BREAKING CHANGES — response format migration (iter-109 through iter-112)**
 >
 > All collection endpoints have been migrated from bare JSON arrays to

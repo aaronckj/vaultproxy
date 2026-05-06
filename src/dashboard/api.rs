@@ -95,6 +95,7 @@ pub async fn status(State(state): State<DashboardState>) -> Json<Value> {
     };
 
     Json(json!({
+        "ok": true,
         "vault_items": items.len(),
         "cloud_sync": cloud_sync,
         "services": services,
@@ -112,7 +113,8 @@ pub async fn items(State(state): State<DashboardState>) -> Json<Value> {
         Err(e) => return e,
     };
     let items = app.vault.list_items().await;
-    Json(serde_json::to_value(items).unwrap_or(json!([])))
+    let items_val = serde_json::to_value(items).unwrap_or(json!([]));
+    Json(json!({"ok": true, "items": items_val}))
 }
 
 // -------------------------------------------------------------------------- //
@@ -129,6 +131,7 @@ pub async fn sync_history(State(state): State<DashboardState>) -> Json<Value> {
         Some(sync) => {
             let st = sync.get_status().await;
             Json(json!({
+                "ok": true,
                 "state": st.state,
                 "last_sync": st.last_sync,
                 "items_synced": st.items_synced,
@@ -136,6 +139,7 @@ pub async fn sync_history(State(state): State<DashboardState>) -> Json<Value> {
             }))
         }
         None => Json(json!({
+            "ok": true,
             "state": "not_configured",
             "last_sync": null,
             "items_synced": 0,
@@ -404,6 +408,7 @@ pub async fn tpm_status(State(state): State<DashboardState>) -> Json<Value> {
         .collect();
 
     Json(serde_json::json!({
+        "ok": true,
         "tpm_available": tpm,
         "sealed_credentials": sealed,
     }))
@@ -425,10 +430,10 @@ pub async fn browser_status(State(state): State<DashboardState>) -> Json<Value> 
             let job = browser.current_job.read().await;
             match &*job {
                 Some(ws) => Json(serde_json::to_value(ws).unwrap_or_default()),
-                None => Json(json!({"status": "idle"})),
+                None => Json(json!({"ok": true, "status": "idle"})),
             }
         }
-        None => Json(json!({"status": "not_configured"})),
+        None => Json(json!({"ok": true, "status": "not_configured"})),
     }
 }
 
@@ -445,7 +450,7 @@ pub async fn browser_screenshot(State(state): State<DashboardState>) -> Json<Val
     match app.browser.as_ref() {
         Some(browser) => {
             let ss = browser.last_screenshot.read().await;
-            Json(json!({"image_b64": ss.as_deref()}))
+            Json(json!({"ok": true, "image_b64": ss.as_deref()}))
         }
         None => Json(json!({"ok": false, "error": "browser agent not configured"})),
     }
@@ -507,6 +512,7 @@ pub async fn setup_status(State(state): State<DashboardState>) -> Json<Value> {
     let configured = crate::keystore::is_configured(&state.config_dir);
 
     Json(json!({
+        "ok": true,
         "vaultwarden_configured": configured,
         "cloud_configured": configured,
         "tpm_available": crate::tpm::tpm_available(),
@@ -931,6 +937,7 @@ pub async fn get_permissions(State(state): State<DashboardState>) -> Json<Value>
         .collect();
 
     Json(json!({
+        "ok": true,
         "tools": tools,
         "overrides": perms.overrides.clone(),
     }))
@@ -1180,6 +1187,7 @@ pub async fn notification_status(State(state): State<DashboardState>) -> Json<Va
     };
     let notifier = &app.notifier;
     Json(json!({
+        "ok": true,
         "channel": notifier.channel_name(),
         "detail": notifier.channel_detail(),
     }))
@@ -1367,6 +1375,7 @@ pub async fn handle_setup_status(State(state): State<DashboardState>) -> Json<Va
     let tpm_available = crate::tpm::tpm_available();
     let has_tpm_key = crate::keystore::has_tpm_key(&state.config_dir);
     Json(json!({
+        "ok": true,
         "configured": configured,
         "tpm_available": tpm_available,
         "tpm_key_sealed": has_tpm_key,
@@ -1380,7 +1389,7 @@ pub async fn handle_setup_status(State(state): State<DashboardState>) -> Json<Va
 /// `GET /api/credentials` — view configured credentials (passwords masked).
 pub async fn get_credentials(State(state): State<DashboardState>) -> Json<Value> {
     if !crate::keystore::is_configured(&state.config_dir) {
-        return Json(json!({"configured": false}));
+        return Json(json!({"ok": true, "configured": false}));
     }
 
     // We need the setup password to decrypt. Try TPM first.
@@ -1392,6 +1401,7 @@ pub async fn get_credentials(State(state): State<DashboardState>) -> Json<Value>
 
     match creds {
         Some(c) => Json(json!({
+            "ok": true,
             "configured": true,
             "vaultwarden": {
                 "url": c.vaultwarden.url,
@@ -1407,6 +1417,7 @@ pub async fn get_credentials(State(state): State<DashboardState>) -> Json<Value>
             "tpm_key_sealed": crate::keystore::has_tpm_key(&state.config_dir),
         })),
         None => Json(json!({
+            "ok": true,
             "configured": true,
             "locked": true,
             "message": "credentials are encrypted — unlock required to view details",
