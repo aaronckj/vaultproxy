@@ -16,6 +16,47 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use zeroize::Zeroizing;
 
+/// Validate a VAULT_PROXY_PUBLIC_URL value.
+///
+/// Requirements:
+///   - Must start with `"http://"` or `"https://"`.
+///   - Must have a non-empty host component (rejects bare `"http://"` etc.).
+///   - Must NOT end with `'/'` — a trailing slash would produce double-slash paths
+///     (`"https://host//proxy"`) when smart MCP servers append `"/proxy"`.
+///
+/// Paths without trailing slashes are explicitly allowed (e.g.
+/// `"https://vault-proxy.example.com/vaultproxy"`) — operators behind a
+/// reverse proxy with a path prefix need them.
+///
+/// `pub(crate)` so `main.rs` can call this at startup (for an early WARN log)
+/// without duplicating the validation logic.
+pub(crate) fn validate_public_url(url: &str) -> std::result::Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!(
+            "VAULT_PROXY_PUBLIC_URL '{}' must start with 'http://' or 'https://'",
+            url
+        ));
+    }
+    // Strip scheme and check host is non-empty.
+    let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
+    let host = after_scheme.split('/').next().unwrap_or("");
+    if host.is_empty() {
+        return Err(format!(
+            "VAULT_PROXY_PUBLIC_URL '{}' has an empty host — \
+             use a full URL such as 'https://vault-proxy.example.com'",
+            url
+        ));
+    }
+    if url.ends_with('/') {
+        return Err(format!(
+            "VAULT_PROXY_PUBLIC_URL '{}' must not end with a trailing slash — \
+             use 'https://vault-proxy.example.com' not 'https://vault-proxy.example.com/'",
+            url
+        ));
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 struct McpServersFile {
     #[serde(default)]
@@ -393,33 +434,11 @@ pub async fn launch(
     // "https://vault-proxy.example.com/" would cause every smart server to call
     // "https://vault-proxy.example.com//proxy" — a subtle bug that produces
     // 404s on path-sensitive reverse proxies.
-    fn validate_public_url(url: &str) -> Result<(), String> {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(format!(
-                "VAULT_PROXY_PUBLIC_URL '{}' must start with 'http://' or 'https://'",
-                url
-            ));
-        }
-        // Strip scheme and check host is non-empty.
-        let after_scheme = url.trim_start_matches("http://").trim_start_matches("https://");
-        let host = after_scheme.split('/').next().unwrap_or("");
-        if host.is_empty() {
-            return Err(format!(
-                "VAULT_PROXY_PUBLIC_URL '{}' has an empty host — \
-                 use a full URL such as 'https://vault-proxy.example.com'",
-                url
-            ));
-        }
-        if url.ends_with('/') {
-            return Err(format!(
-                "VAULT_PROXY_PUBLIC_URL '{}' must not end with a trailing slash — \
-                 use 'https://vault-proxy.example.com' not 'https://vault-proxy.example.com/'",
-                url
-            ));
-        }
-        Ok(())
-    }
-
+    //
+    // Issue (iter-46): validate_public_url is pub(crate) so main.rs can call it
+    // at startup for early warning without duplicating the validation logic.
+    // Paths without trailing slashes (e.g. "https://host/subpath") are explicitly
+    // allowed — operators behind a reverse proxy with a path prefix need them.
     let vault_proxy_url = match std::env::var("VAULT_PROXY_PUBLIC_URL") {
         Ok(public_url) if !public_url.is_empty() => {
             // Validate before injecting so a misconfigured URL fails loudly here
