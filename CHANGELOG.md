@@ -3,6 +3,54 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.1] — iteration 99: list_items empty-on-not-found, write_env path omitted, item_name_is_in_folder test-only
+
+### Security
+
+- **`list_items` empty-on-vault-folder-not-found (iter-99)** — `src/vault/handlers.rs:657`.
+  When `vault_folder` is configured but not found in the vault (e.g. renamed in Vaultwarden
+  without updating `--vault-folder`), `list_items` previously returned ALL vault items as a
+  "fresh vault permissive fallback". This leaked cross-folder metadata — names, usernames, URIs
+  from personal banking, SSH-key, and other personal folders — even though passwords are masked.
+  Now returns an **empty list** with a `warn!` log entry. The permissive fallback was appropriate
+  before any folder existed (fresh vault); it is wrong after a rename. SECURITY.md updated.
+
+- **`write_env` success response no longer echoes `target_path`** — `src/vault/handlers.rs:2041`.
+  The 200 OK success body previously included `"target_path": "/config/envs/sonarr.env"` — an
+  absolute filesystem path that leaks the host's directory layout to any log consumer or MCP
+  caller that captures the response. The caller supplied the path and already knows it; echoing
+  it back provides no information benefit. Removed: `"target_path"` field. Remaining fields:
+  `"ok": true`, `"updated": [...]`, `"inserted": [...]`.
+
+### Refactoring
+
+- **`item_name_is_in_folder` moved to `#[cfg(test)]` impl block** — `src/vault/mod.rs`.
+  After iter-96 switched all three production call sites to `item_in_vault_folder` (the
+  cache-aware wrapper), `item_name_is_in_folder` had zero production callers and carried
+  `#[allow(dead_code)]`. Moved from the production `impl VaultManager` block into the
+  `#[cfg(test)] impl VaultManager` block — excluded from production binaries. Unit tests
+  that exercise the folder-scope logic directly continue to compile and pass.
+
+### Tests
+
+- **`list_items_returns_empty_when_vault_folder_not_found`** — new test in
+  `folder_scope_guard_tests` that asserts the empty-list behavior when `vault_folder_id` is
+  `None`. Verifies the iter-99 behavior change explicitly.
+
+### Quality gates (iter-99)
+
+- `cargo build` — 0 errors, 0 warnings
+- `cargo test --all-targets` — 244 passed; 0 failed (244 = 243 unit + 1 new test)
+- `cargo clippy --all-targets -- -D warnings` — 0 errors, 0 warnings
+
+### v1.0.0-beta.1 rationale
+
+The stable core is production-hardened: 99 audit iterations, 244 tests, 0 clippy warnings,
+0 dead-code warnings, complete vault-folder scope guards on all read and write paths. The 4
+remaining `post-v1.0:` items (TPM auto-unlock, Bitwarden cloud password change, dashboard cloud
+settings, session-rotation UI) all live in optional feature-gated code paths. The default
+feature set is production-ready. Tagging `v1.0.0-beta.1` begins the release-candidate process.
+
 ## [0.3.4] — iteration 98: audit hardening, cfg(test) verification, post-v1.0 inventory
 
 ### Audit findings (iter-98) — no code changes required

@@ -1517,38 +1517,6 @@ impl VaultManager {
     }
 
     /// Check whether the item with the given decrypted name belongs to the
-    /// folder with the given decrypted name. Returns `true` if:
-    ///   - the folder exists AND the item is found inside it, OR
-    ///   - the folder does not exist yet (fresh vault — permissive fallback).
-    ///
-    /// Returns `false` when the folder is known but the item is either absent
-    /// from the folder or has no folder at all. Used by the `decrypt_notes` and
-    /// `generate_totp` HTTP handlers (iter-19) to scope reads to `vault_folder`.
-    #[allow(dead_code)] // Public API; callers now use item_in_vault_folder (cache-aware, iter-96)
-    pub async fn item_name_is_in_folder(&self, item_name: &str, folder_name: &str) -> bool {
-        let folder_id = match self.folders.read().await.find_id_by_name(folder_name) {
-            Some(id) => id.to_string(),
-            // Folder not found — fresh vault; allow permissively so first-run works.
-            // Issue (iter-96): Emit a warn so operators see this path in logs after
-            // a vault_folder rename — otherwise every inject_creds/generate_totp/
-            // decrypt_notes call silently allows any item name through the scope guard.
-            None => {
-                tracing::warn!(
-                    item_name,
-                    folder_name,
-                    "item_name_is_in_folder: folder '{}' not found — \
-                     allowing item '{}' permissively (fresh vault or folder renamed? \
-                     verify --vault-folder, then call POST /vault/resync)",
-                    folder_name,
-                    item_name,
-                );
-                return true;
-            }
-        };
-        self.item_name_is_in_folder_id(item_name, &folder_id).await
-    }
-
-    /// Check whether the item with the given decrypted name belongs to the
     /// folder with the given folder UUID. Used by `item_in_vault_folder` in
     /// handlers.rs (iter-96 cache-aware wrapper) so the caller can supply a
     /// pre-resolved folder ID from `cached_folder_id` without re-scanning the

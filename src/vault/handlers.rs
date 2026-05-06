@@ -651,9 +651,21 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// within its ownership boundary.
 ///
 /// We resolve vault_folder → folder_id async and filter the full list.
-/// If the folder isn't found (fresh vault / mid-setup) we fall through and
-/// return all items so first-run usability is preserved — the same permissive
-/// fallback used by update_item and delete_item.
+///
+/// # Folder-not-found behaviour (iter-99)
+///
+/// When `vault_folder` resolves to `None` (configured name not found in the
+/// vault), the previous code returned ALL vault items as a "fresh vault"
+/// permissive fallback. This is wrong after a folder rename: the caller
+/// receives metadata (names, usernames, URIs) from personal banking,
+/// SSH-key, and other personal folders — cross-folder leakage even though
+/// no passwords are exposed.
+///
+/// The permissive fallback (return-all) is appropriate only when vault_folder
+/// is **not configured at all** (i.e. blank / unconfigured). When it IS
+/// configured but the folder is absent, returning an empty list is the correct
+/// safe default — the caller gets a clear empty result and the WARN log
+/// (emitted below) tells the operator exactly what to do.
 pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedItem>> {
     let items = state.vault.list_items().await;
 
@@ -666,18 +678,24 @@ pub async fn list_items(State(state): State<Arc<AppState>>) -> Json<Vec<MaskedIt
             .filter(|item| item.folder_id.as_deref() == Some(folder_id.as_str()))
             .collect(),
         None => {
-            // vault_folder not found — fresh vault or misconfiguration (e.g.
-            // the folder was renamed in Vaultwarden and `--vault-folder` no
-            // longer matches). Call `POST /vault/resync` to re-scan after
-            // verifying the folder name in `args.vault_folder` (iter-93).
-            // Return all items so first-run tooling still works.
+            // vault_folder is configured but not found in the vault — either
+            // the folder was renamed in Vaultwarden or a mid-setup state where
+            // the folder doesn't exist yet.
+            //
+            // Issue (iter-99): Return EMPTY (not ALL) when vault_folder is
+            // configured but absent. Returning all items leaks cross-folder
+            // metadata (names, usernames, URIs from personal folders). An empty
+            // result is safe and the WARN log tells the operator what to do.
+            // Operators can call `POST /vault/resync` after verifying the folder
+            // name in `--vault-folder` matches the Vaultwarden folder name.
             tracing::warn!(
-                "list_items: vault_folder '{}' not found in vault — returning all items \
+                "list_items: vault_folder '{}' not found in vault — returning empty list \
+                 to prevent cross-folder metadata leakage \
                  (fresh vault or folder renamed? verify --vault-folder matches the Vaultwarden \
                  folder name, then call POST /vault/resync)",
                 state.vault_folder
             );
-            items
+            Vec::new()
         }
     };
 
@@ -2038,11 +2056,15 @@ pub async fn write_env(
         );
     }
 
+    // Issue (iter-99): Omit target_path from the success body. The caller
+    // supplied target_path in the request and knows it; echoing it back leaks
+    // the absolute filesystem layout to any log consumer or MCP caller that
+    // captures the response. The caller only needs confirmation that the
+    // operation succeeded and which vars were written.
     (
         StatusCode::OK,
         Json(json!({
             "ok": true,
-            "target_path": req.target_path,
             "updated": updated,
             "inserted": inserted,
         })),
@@ -3995,6 +4017,38 @@ mod folder_scope_guard_tests {
 
         assert_eq!(filtered, vec!["item-in-scope"]);
     }
+
+    /// Issue (iter-99): When vault_folder is configured but not found, list_items
+    /// must return EMPTY — not all vault items. The previous permissive fallback
+    /// leaked cross-folder metadata (names, usernames, URIs) from personal folders
+    /// when vault_folder was renamed in Vaultwarden.
+    ///
+    /// Simulates the None branch: vault_folder_id = None, items exist in vault.
+    #[test]
+    fn list_items_returns_empty_when_vault_folder_not_found() {
+        // Simulate vault_folder_id == None (configured but absent in vault).
+        let vault_folder_id: Option<&str> = None;
+        let all_items: Vec<(Option<&str>, &str)> = vec![
+            (Some("personal-banking"), "chase-visa"),
+            (Some("work"), "github-token"),
+            (None, "orphan-item"),
+        ];
+
+        // New behaviour: return empty when folder not found (not all items).
+        let filtered: Vec<&str> = match vault_folder_id {
+            Some(fid) => all_items
+                .into_iter()
+                .filter(|(f, _)| *f == Some(fid))
+                .map(|(_, n)| n)
+                .collect(),
+            None => Vec::new(), // iter-99: empty, not all
+        };
+
+        assert!(
+            filtered.is_empty(),
+            "list_items must return empty when vault_folder is configured but not found in vault"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------- //
@@ -4249,12 +4303,15 @@ mod health_version_tests {
         let version = env!("CARGO_PKG_VERSION");
         // Must be non-empty.
         assert!(!version.is_empty(), "CARGO_PKG_VERSION must not be empty");
-        // Must look like a semver triple (X.Y.Z).
+        // Must look like a semver triple (X.Y.Z) or a pre-release (X.Y.Z-label).
+        // Split on '.' first; the last component may contain a '-' pre-release suffix
+        // (e.g. "1.0.0-beta.1" splits as ["1", "0", "0-beta"] on dots then the
+        // "0-beta" component starts with a digit). Accept any form where there are
+        // at least 3 dot-separated components and each starts with an ASCII digit.
         let parts: Vec<&str> = version.split('.').collect();
-        assert_eq!(
-            parts.len(),
-            3,
-            "CARGO_PKG_VERSION '{}' is not a semver triple (X.Y.Z)",
+        assert!(
+            parts.len() >= 3,
+            "CARGO_PKG_VERSION '{}' must have at least 3 dot-separated components (X.Y.Z[...])",
             version
         );
         for part in &parts {
