@@ -2907,18 +2907,24 @@ pub async fn reload_services(
                 // automatically instead of hammering the endpoint. The body already
                 // carries `retry_after_s` for callers that parse JSON; the header
                 // covers callers that only inspect HTTP headers.
+                //
+                // iter-66: reduced from 10 s to 5 s to match the audit/run endpoint
+                // (src/audit.rs handle_audit_run) and the actual mutex acquisition
+                // timeout above (also 5 s). Both endpoints use the same "mutex held
+                // by concurrent operation" scenario; using 5 s everywhere gives
+                // operators and monitoring tools a consistent retry window.
                 let mut headers = HeaderMap::new();
                 headers.insert(
                     axum::http::header::RETRY_AFTER,
-                    HeaderValue::from_static("10"),
+                    HeaderValue::from_static("5"),
                 );
                 return (
                     axum::http::StatusCode::SERVICE_UNAVAILABLE,
                     headers,
                     Json(json!({
                         "ok": false,
-                        "error": "another reload is in progress — retry after 10 s",
-                        "retry_after_s": 10,
+                        "error": "another reload is in progress — retry after 5 s",
+                        "retry_after_s": 5,
                     })),
                 )
                     .into_response();
@@ -3916,8 +3922,8 @@ mod reload_services_shape_tests {
     fn timeout_body() -> Value {
         json!({
             "ok": false,
-            "error": "another reload is in progress — retry after 10 s",
-            "retry_after_s": 10,
+            "error": "another reload is in progress — retry after 5 s",
+            "retry_after_s": 5,
         })
     }
 
@@ -3952,7 +3958,7 @@ mod reload_services_shape_tests {
         let body = timeout_body();
         assert_eq!(body["ok"], false);
         assert!(body["error"].as_str().is_some());
-        assert_eq!(body["retry_after_s"], 10);
+        assert_eq!(body["retry_after_s"], 5);
     }
 
     #[test]

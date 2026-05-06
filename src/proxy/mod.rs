@@ -2663,6 +2663,20 @@ vault_item  = "vault-proxy - Beta"
             body["scoring_note"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
             "audit/run 'scoring_note' must be a non-empty string; got: {body}"
         );
+        // iter-66: scoring_note must embed the actual WEAK_THRESHOLD value so we
+        // catch any future drift between the constant and the human-readable note.
+        // The format!() in run_audit() interpolates WEAK_THRESHOLD (currently 8)
+        // directly into the string; if WEAK_THRESHOLD changes and the format string
+        // is not updated, this assertion will catch the mismatch.
+        let threshold_str = crate::audit::WEAK_THRESHOLD.to_string();
+        assert!(
+            body["scoring_note"]
+                .as_str()
+                .map(|s| s.contains(threshold_str.as_str()))
+                .unwrap_or(false),
+            "audit/run 'scoring_note' must contain the WEAK_THRESHOLD value ('{}'); got: {body}",
+            threshold_str
+        );
     }
 
     /// iter-55 (b): GET /vault/audit/run must be rate-limited. This test wires

@@ -311,13 +311,15 @@ Returns a JSON object:
       {"name": "Site B", "username": "user@example.com", "item_type": "login", "password_strength": "fair"}
     ]
   ],
-  "weak_threshold_len": 8
+  "weak_threshold_len": 8,
+  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters)"
 }
 ```
 
 - `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, and `password_strength` (`"weak"`). Passwords scored `"fair"` (8–15 chars or lacking character-class diversity) are not surfaced here.
 - `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned).
 - `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
+- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65).
 - All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
 - Scoped to `vault_folder` — only items inside the configured folder are scanned.
 

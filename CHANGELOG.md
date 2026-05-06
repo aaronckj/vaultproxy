@@ -3,6 +3,81 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.13] — iteration 66 audit pass
+
+### Bug fixes (iter-66)
+
+- **`Retry-After` inconsistency between `reload_services` and `handle_audit_run`
+  (iter-66, LOW)**: `POST /vault/reload-services` still emitted `Retry-After: 10`
+  and `retry_after_s: 10` in its 503 mutex-timeout response after iter-65 reduced
+  `GET /vault/audit/run` to `Retry-After: 5`. Both endpoints use the same "mutex
+  held by concurrent operation" scenario with the same 5-second acquisition
+  timeout; operators and monitoring tools that hit both endpoints would see
+  different retry windows for the same underlying event.  Standardised
+  `reload_services` to `Retry-After: 5` and `retry_after_s: 5`. Updated the
+  `timeout_body` test helper and the `timeout_body_has_required_fields` assertion.
+  `src/vault/handlers.rs` `reload_services()` and `reload_services_shape_tests`.
+
+- **README `GET /vault/audit/run` response schema missing `scoring_note`
+  (iter-66, LOW)**: The in-process health scan section showed the JSON response
+  shape with only four fields (`total_items`, `weak_passwords`, `reused_passwords`,
+  `weak_threshold_len`). The `scoring_note` field added in iter-64 and changed to
+  `String` in iter-65 was absent from the example and from the field-by-field
+  description. Added `scoring_note` to the example JSON and added a bullet point
+  explaining its content (no-dictionary-check caveat, format!() embedding of
+  `weak_threshold_len`).
+  `README.md` credential audit section.
+
+- **Integration test `scoring_note` assertion too weak (iter-66, LOW)**: The
+  iter-65 assertion verified only that `scoring_note` is a non-empty string. It
+  did not check that the string embeds the actual `WEAK_THRESHOLD` value. If
+  `WEAK_THRESHOLD` changed from 8 to a different value, the format string in
+  `run_audit()` would automatically reflect that, but the note might drift from
+  the `weak_threshold_len` field if the format string were later edited.  Added a
+  second assertion that `scoring_note` contains the `WEAK_THRESHOLD.to_string()`
+  value so threshold drift is caught at test time.
+  `src/proxy/mod.rs` `audit_run_requires_bearer_token_and_returns_200_with_json_shape`.
+
+### Findings — no code change required (iter-66)
+
+- **`scoring_note` format string accuracy (iter-66, VERIFY OK)**: The format
+  string says "fewer than {} characters" where `{}` is `WEAK_THRESHOLD` (8).
+  `password_strength()` classifies `len < WEAK_THRESHOLD` as "weak". A password
+  with exactly 8 characters has `len == 8` which is NOT `< 8` — it passes the
+  threshold. "fewer than 8 characters" is therefore correct; the comparison is
+  `<`, not `<=`.
+
+- **`AuditResult` optional fields (iter-66, VERIFY OK)**: `AuditResult` has no
+  `Option<>` fields — `weak_passwords` and `reused_passwords` are `Vec<T>` and
+  always serialise (potentially empty). `weak_threshold_len` is `usize` and
+  `scoring_note` is `String`. No `#[serde(skip_serializing_if)]` needed.
+
+- **Background audit restart loop logs panic (iter-66, VERIFY OK)**: `src/main.rs`
+  line ~2177 emits `tracing::error!` on `JoinError::is_panic()` before the 5 s
+  sleep and respawn. Operator visibility is present.
+
+- **`AuditItem::username` sensitivity (iter-66, REVIEW NOTE)**: `username` is
+  `Option<String>` and is included in the `AuditItem` serialised to the caller.
+  The `GET /vault/audit/run` endpoint is gated behind the internal bearer token —
+  only callers who already have full vault access see this field. Exposure is
+  intentional and scoped correctly. No change required.
+
+- **HMAC outputs zeroized after use (iter-66, VERIFY OK)**: `group_by_hmac`
+  (now `reuse_map`) holds `String` HMAC digests, not `Vec<u8>` raw bytes.
+  `hmac_hex()` converts the bytes to a hex string before returning, so the raw
+  HMAC bytes are local to `hmac_hex()` and are dropped (stack-allocated) when
+  the function returns. The `String` digests in `reuse_map` are not sensitive
+  — they are keyed-MACs of passwords with an ephemeral key; they cannot be
+  inverted to recover the password. The ephemeral key itself is a `SecureBuffer`
+  dropped (and zeroized) before `AuditResult` is returned. No residual
+  plaintext-equivalent material persists in the heap after `drop(ephemeral_key)`.
+
+### Verification (iter-66)
+
+- `cargo test --all-targets`: 247 passed, 0 failed.
+- `cargo clippy -- -D warnings`: 0 warnings.
+- `cargo fmt --check`: clean.
+
 ## [0.2.12] — iteration 64 audit pass
 
 ### Bug fixes (iter-64)
