@@ -2449,6 +2449,12 @@ mod integration_tests {
             body["folders"].is_array(),
             "GET /vault/folders response must contain 'folders' array key; got: {body}"
         );
+        // iter-115: scoped response must include configured_vault_folder so
+        // operators can see what vault_folder value is being filtered for.
+        assert!(
+            body["configured_vault_folder"].is_string(),
+            "GET /vault/folders (scoped) must return 'configured_vault_folder' string; got: {body}"
+        );
     }
 
     // ---------------------------------------------------------------------- //

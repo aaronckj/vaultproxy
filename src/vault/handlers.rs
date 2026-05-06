@@ -894,7 +894,15 @@ pub async fn list_folders(
     }
 
     // iter-110: wrap in {"ok": true, "folders": [...]} for sentinel consistency.
-    Json(json!({ "ok": true, "folders": scoped }))
+    // iter-115: include "configured_vault_folder" so operators can confirm what
+    // vault_folder is configured when diagnosing a filtered (scoped) response.
+    // Without this field, an operator who sees `{"ok":true,"folders":[]}` has
+    // no way to know what --vault-folder value vault-proxy is filtering for.
+    Json(json!({
+        "ok": true,
+        "configured_vault_folder": state.vault_folder,
+        "folders": scoped,
+    }))
 }
 
 /// `GET /vault/items/untracked` — list vault items that have no entry in the

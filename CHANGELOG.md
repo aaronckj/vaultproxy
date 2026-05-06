@@ -24,6 +24,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-beta.8] — iteration 115: headless-flag warning, configured_vault_folder, CLI tests
+
+### Bugs (iter-115) — silent-ignore and diagnostic gaps
+
+- **`--persist-dashboard-cert` silently ignored in headless builds (iter-115)** — `src/main.rs:1153`. LOW.
+  The `--persist-dashboard-cert` flag is intentionally NOT gated with `#[cfg(feature = "dashboard")]`
+  at the `Args` struct-field level (gating it would cause clap to emit "unexpected argument" with no
+  hint about needing `--features dashboard`). However, in headless builds the value was silently
+  discarded with `let _ = args.persist_dashboard_cert` — an operator would pass the flag, see no
+  effect, and have no indication why. Fixed: added a `tracing::warn!` when `persist_dashboard_cert`
+  is `true` and the dashboard feature is absent, with explicit instruction to rebuild with
+  `--features dashboard`.
+
+### Enhancements (iter-115) — operator diagnostics
+
+- **`GET /vault/folders` scoped response includes `configured_vault_folder` (iter-115)** — `src/vault/handlers.rs:896`. MEDIUM.
+  When `include_all=false` (the default), `GET /vault/folders` filters to only folders whose name
+  matches `--vault-folder`. An operator who sees `{"ok":true,"folders":[]}` had no way to know what
+  value vault-proxy was filtering for — they had to check the process arguments or config. Fixed:
+  the scoped response now includes `"configured_vault_folder": "<name>"` alongside `"folders": [...]`.
+  The `include_all=true` path is unchanged (it returns the full list — the vault_folder filter is not
+  applied, so the field would be misleading there). The migration guide non-breaking section is updated.
+
+### Tests (iter-115) — CLI flag and folder response shape
+
+- **`persist_dashboard_cert_accepted_by_clap_in_all_builds` (iter-115)** — `src/main.rs` (new `cli_flag_tests` module).
+  Verifies that `--persist-dashboard-cert` is accepted by clap in all build configurations (headless
+  and dashboard). Unconditional — not feature-gated.
+
+- **`persist_dashboard_cert_defaults_to_false` (iter-115)** — `src/main.rs`.
+  Verifies that `persist_dashboard_cert` is `false` when the flag is not supplied.
+
+- **`list_folders_returns_ok_true_and_folders_array` updated (iter-115)** — `src/proxy/mod.rs`.
+  Added assertion that the scoped response contains `"configured_vault_folder"` as a string key.
+
+### Quality gates (iter-115)
+
+- `cargo build` (headless) — 0 errors, 0 warnings
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --all-targets` — **254 passed**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **297 passed**; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
+
+---
+
 ## [1.0.0-beta.7] — iteration 113: persist-dashboard-cert, migration guide, v1.0.0 readiness
 
 ### Features (iter-113) — persist dashboard TLS cert across restarts

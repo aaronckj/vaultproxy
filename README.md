@@ -677,6 +677,7 @@ Every success response now includes `"ok": true` and every error response includ
 - `GET /vault/items/untracked` — now returns `{"ok": true, "count": N, "items": [...]}` (was bare array). Key is `items`.
 - `GET /vault/audit/run` — response is `{"ok": true, "n_weak": N, "n_reused": N, ...}` (unchanged since v0.2.x, but documented here for completeness).
 - All mutation endpoints (`POST /vault/items`, `POST /vault/items/update`, etc.) now include `"ok": true` on success.
+- `GET /vault/folders` (scoped, default `include_all=false`) — now also returns `"configured_vault_folder": "<name>"` alongside `"folders": [...]`. Callers that only read `body.folders` are unaffected.
 
 ### New in v1.0.0-beta.7: `--persist-dashboard-cert`
 

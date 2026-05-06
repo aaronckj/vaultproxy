@@ -1151,7 +1151,22 @@ async fn start_server(
         certs.clone()
     };
     #[cfg(not(feature = "dashboard"))]
-    let _ = args.persist_dashboard_cert; // suppress unused-variable warning when dashboard is off
+    {
+        // iter-115: Warn when --persist-dashboard-cert is passed to a headless
+        // build. The flag is accepted by clap (it is NOT gated at the struct-
+        // field level, because gating it would cause "unexpected argument" errors
+        // that give no hint about needing --features dashboard). Instead we emit
+        // a startup warning so the operator sees a clear message rather than
+        // silently discovering the flag had no effect.
+        if args.persist_dashboard_cert {
+            tracing::warn!(
+                "--persist-dashboard-cert has no effect: this binary was compiled \
+                 without the dashboard feature. Rebuild with \
+                 `--features dashboard` to enable dashboard TLS cert persistence."
+            );
+        }
+        let _ = args.persist_dashboard_cert; // suppress unused-variable warning
+    }
 
     // Validate proxy_timeout: a value of 0 means every upstream request times
     // out immediately, making the proxy entirely non-functional. Enforce a
@@ -3624,6 +3639,60 @@ mod browser_status_tests {
             body.get("ok").and_then(|v| v.as_bool()),
             Some(true),
             "idle body must contain ok=true; got {body}"
+        );
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// CLI flag tests (unconditional — all build configurations)                   //
+// -------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod cli_flag_tests {
+    use super::Args;
+    use clap::Parser;
+
+    /// iter-115: `--persist-dashboard-cert` must be accepted by clap in ALL build
+    /// configurations, including headless builds where the `dashboard` feature is
+    /// absent.
+    ///
+    /// The field is intentionally NOT gated with `#[cfg(feature = "dashboard")]`
+    /// at the struct level. Gating it would cause clap to emit:
+    ///   "error: unexpected argument '--persist-dashboard-cert' found"
+    /// with no hint that the operator needs to rebuild with `--features dashboard`.
+    ///
+    /// Instead the flag is always present in the CLI. When the dashboard feature
+    /// is compiled out, the value is checked at startup and a `tracing::warn!` is
+    /// emitted if the operator passed the flag.
+    #[test]
+    fn persist_dashboard_cert_accepted_by_clap_in_all_builds() {
+        let args = Args::try_parse_from([
+            "vaultproxy",
+            "--persist-dashboard-cert",
+            "--config-dir",
+            "/tmp",
+        ]);
+        assert!(
+            args.is_ok(),
+            "--persist-dashboard-cert must be accepted by clap in all build configurations; \
+             clap returned: {:?}",
+            args.err()
+        );
+        assert!(
+            args.unwrap().persist_dashboard_cert,
+            "--persist-dashboard-cert must set persist_dashboard_cert=true"
+        );
+    }
+
+    /// iter-115: without `--persist-dashboard-cert`, the field must default to
+    /// `false` — no opt-in cert persistence unless explicitly requested.
+    #[test]
+    fn persist_dashboard_cert_defaults_to_false() {
+        let args = Args::try_parse_from(["vaultproxy", "--config-dir", "/tmp"])
+            .expect("minimal args must parse");
+        assert!(
+            !args.persist_dashboard_cert,
+            "--persist-dashboard-cert must default to false when not supplied"
         );
     }
 }
