@@ -88,6 +88,45 @@ pub async fn resolve_vault_folder_id(state: &Arc<AppState>) -> Option<String> {
     id
 }
 
+/// Cache-aware variant of `VaultState::item_name_is_in_folder`.
+///
+/// Issue (iter-96): The original `item_name_is_in_folder` on `VaultState` calls
+/// `find_folder_id_by_name_async` on every invocation — an O(n) folder scan
+/// that bypasses the `cached_folder_id` optimization added in iter-88. This
+/// wrapper reads the cached folder ID first (or populates it via the
+/// double-checked-locking path in `resolve_vault_folder_id`) and then checks
+/// item membership against that ID directly, making the common case O(1).
+///
+/// Semantics are identical to `item_name_is_in_folder`:
+///   - Returns `true` when the folder does not exist (fresh vault).
+///   - Returns `false` when the folder is known but the item is absent or
+///     belongs to a different folder.
+pub async fn item_in_vault_folder(state: &Arc<AppState>, item_name: &str) -> bool {
+    let folder_id = match resolve_vault_folder_id(state).await {
+        Some(id) => id,
+        None => {
+            // Folder not found — fresh vault or rename. Warn and allow
+            // permissively (consistent with item_name_is_in_folder semantics).
+            tracing::warn!(
+                item_name,
+                vault_folder = %state.vault_folder,
+                "item_in_vault_folder: vault_folder '{}' not found — \
+                 allowing item '{}' permissively (fresh vault or folder renamed? \
+                 verify --vault-folder, then call POST /vault/resync)",
+                state.vault_folder,
+                item_name,
+            );
+            return true;
+        }
+    };
+    // Use the ID-based variant to skip the folder-name scan that
+    // item_name_is_in_folder would perform (we already have the resolved ID).
+    state
+        .vault
+        .item_name_is_in_folder_id(item_name, &folder_id)
+        .await
+}
+
 // -------------------------------------------------------------------------- //
 // Request types                                                               //
 // -------------------------------------------------------------------------- //
@@ -758,6 +797,20 @@ pub async fn list_folders(
         .into_iter()
         .filter(|f| f.name == state.vault_folder.as_str())
         .collect();
+
+    // Issue (iter-96): When vault_folder has been renamed in Vaultwarden, the
+    // filter above produces an empty list. An operator querying GET /vault/folders
+    // and seeing [] has no indication that the folder was renamed. Emit a warn!
+    // so the logs surface the rename before the operator concludes the API is broken.
+    if scoped.is_empty() {
+        tracing::warn!(
+            "list_folders: no folder named '{}' found in vault — returning empty list \
+             (fresh vault or folder renamed? verify --vault-folder matches the Vaultwarden \
+             folder name, then call POST /vault/resync)",
+            state.vault_folder
+        );
+    }
+
     Json(scoped)
 }
 
@@ -2393,19 +2446,16 @@ pub async fn inject_creds(
     // Issue (iter-20): Scope inject_creds to vault_folder items only.
     // inject_creds looks up vault items by decrypted *name* (not UUID), so we
     // cannot use the get_cipher_by_id + folder_id check used by test_credential
-    // and write_env. Instead we use item_name_is_in_folder (the same helper
-    // used by generate_totp and decrypt_notes in iter-19). Without this guard
-    // a caller could supply any item name — including personal banking or
-    // SSH-key entries — and have their plaintext credentials submitted to an
+    // and write_env. Instead we use item_in_vault_folder (the cache-aware wrapper
+    // added in iter-96; previously item_name_is_in_folder which bypassed the
+    // cached_folder_id and re-scanned the folder index on every call). Without
+    // this guard a caller could supply any item name — including personal banking
+    // or SSH-key entries — and have their plaintext credentials submitted to an
     // arbitrary HA config-flow endpoint.
     //
     // Both vault_item (credential source) and ha_token_item (HA token source)
     // must be inside vault_folder.
-    if !state
-        .vault
-        .item_name_is_in_folder(&req.vault_item, &state.vault_folder)
-        .await
-    {
+    if !item_in_vault_folder(&state, &req.vault_item).await {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -2417,11 +2467,7 @@ pub async fn inject_creds(
             })),
         );
     }
-    if !state
-        .vault
-        .item_name_is_in_folder(&req.ha_token_item, &state.vault_folder)
-        .await
-    {
+    if !item_in_vault_folder(&state, &req.ha_token_item).await {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -2637,11 +2683,9 @@ pub async fn generate_totp(
     }
 
     // Folder scope guard: reject item names that don't belong to vault_folder.
-    if !state
-        .vault
-        .item_name_is_in_folder(item_name, &state.vault_folder)
-        .await
-    {
+    // Issue (iter-96): use cache-aware item_in_vault_folder instead of the
+    // direct item_name_is_in_folder to avoid an O(n) folder scan on every call.
+    if !item_in_vault_folder(&state, item_name).await {
         return Json(json!({
             "error": format!(
                 "item '{}' is not in the vault-proxy folder ('{}') — \
@@ -2714,11 +2758,9 @@ pub async fn decrypt_notes(
     // Issue (iter-19): Scope to vault_folder. Without this guard any local
     // caller can extract the full notes field of any vault item — including
     // API tokens, SSH keys, and recovery codes stored in personal entries.
-    if !state
-        .vault
-        .item_name_is_in_folder(item_name, &state.vault_folder)
-        .await
-    {
+    // Issue (iter-96): use cache-aware item_in_vault_folder instead of the
+    // direct item_name_is_in_folder to avoid an O(n) folder scan on every call.
+    if !item_in_vault_folder(&state, item_name).await {
         return Json(json!({
             "error": format!(
                 "item '{}' is not in the vault-proxy folder ('{}') — \
