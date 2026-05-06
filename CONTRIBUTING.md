@@ -11,10 +11,10 @@ All tests must pass before opening a PR. The CI workflow runs `cargo test --work
 ## Lint requirement
 
 ```bash
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
-The project treats every Clippy warning as an error. Fix all warnings before submitting — the CI build will fail if any remain.
+The project treats every Clippy warning as an error. `--all-targets` includes tests, benchmarks, and examples — not just the main library/binary. Fix all warnings before submitting — the CI build will fail if any remain.
 
 ## Adding a new auth type
 

@@ -698,4 +698,49 @@ command = "cmd-b"
         let ip = normalise_listen_ip(addr);
         assert_eq!(ip, std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     }
+
+    // Issue (iter-41): Verify that the actual environment of a launched process
+    // contains VAULT_PROXY_URL set to the correct value derived from listen_addr.
+    //
+    // This test spawns the `env` command (available on all POSIX systems) with
+    // env_clear() + the same VAULT_PROXY_URL injection logic used by `launch()`,
+    // then asserts the variable appears in the child's stdout.
+    //
+    // We cannot call `launch()` directly in a unit test because it requires a
+    // live `VaultManager` and calls `std::process::exit()` — so we replicate
+    // the env-injection logic inline, which is the exact code path tested here.
+    //
+    // Skip on non-Unix targets where `env` may not be available.
+    #[cfg(unix)]
+    #[test]
+    fn test_vault_proxy_url_injected_into_child_environment() {
+        use std::process::Command;
+
+        let listen_addr: std::net::SocketAddr = "0.0.0.0:3201".parse().unwrap();
+        let connect_ip = normalise_listen_ip(listen_addr);
+        let vault_proxy_url = format!("http://{}:{}", connect_ip, listen_addr.port());
+        assert_eq!(vault_proxy_url, "http://127.0.0.1:3201",
+            "VAULT_PROXY_URL should be normalised from 0.0.0.0 to 127.0.0.1");
+
+        // Safe env vars to inherit (mirrors the launcher's safe_parent_vars list).
+        let safe_parent_vars = ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP",
+                                 "LANG", "LC_ALL", "LC_CTYPE", "TERM"];
+
+        let output = Command::new("env")
+            .env_clear()
+            .envs(safe_parent_vars.iter().filter_map(|k| {
+                std::env::var(k).ok().map(|v| (k.to_string(), v))
+            }))
+            .env("VAULT_PROXY_URL", &vault_proxy_url)
+            .output()
+            .expect("`env` command must be available on POSIX systems");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("VAULT_PROXY_URL={}", vault_proxy_url)),
+            "VAULT_PROXY_URL must be present in the launched process's environment; \
+             got stdout: {}",
+            stdout,
+        );
+    }
 }

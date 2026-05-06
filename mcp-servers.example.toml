@@ -55,3 +55,34 @@ command = "uvx homeassistant-mcp@latest"
   var = "HA_TOKEN"
   vault_item = "vault-proxy - Home Assistant"
   field = "password"
+
+# ── Smart server example (native /proxy integration) ─────────────────────────
+# A "smart" MCP server that natively supports vault-proxy does NOT need any
+# [[mcp_server.env]] entries with vault_item — it discovers the proxy sidecar
+# at runtime via the VAULT_PROXY_URL environment variable (automatically
+# injected by --launch) and calls POST $VAULT_PROXY_URL/proxy to make
+# authenticated requests. Credentials never appear in its environment.
+#
+# This pattern provides stronger isolation than the "dumb" launcher examples
+# above: vault-proxy injects auth headers into the outbound request internally,
+# so the MCP server process only ever sees downstream service *responses*.
+#
+# To work correctly, the smart server's downstream service must be registered
+# in services.toml with the correct auth type.
+#
+# Internal vault-proxy endpoints (/vault/*, /audit/*, /rotate) require the
+# internal bearer token.  If your smart server needs to call these (not /proxy),
+# it must read $CONFIG_DIR/internal-token and include it as:
+#   Authorization: Bearer <token>
+# This token is written by vault-proxy at startup (mode 0600) and is separate
+# from any Vaultwarden credential.
+#
+# [[mcp_server]]
+# name = "my-smart-mcp"
+# command = "/usr/local/bin/my-smart-mcp"
+# # No [[mcp_server.env]] vault_item entries — this server uses VAULT_PROXY_URL.
+# # Static (non-secret) env vars are still fine:
+#
+#   [[mcp_server.env]]
+#   var = "MCP_SERVICE_NAME"
+#   value = "ha_home"          # the service name registered in services.toml

@@ -42,6 +42,20 @@ struct ServiceConfig {
     /// verification at all). A missing or unreadable file is a startup error
     /// for the affected service (the service is skipped with an error log).
     ca_cert: Option<String>,
+    /// Per-service request timeout in seconds.
+    ///
+    /// When set, this overrides the global `--proxy-timeout` for this service
+    /// only. Useful for services with predictably different latency profiles:
+    /// a Plex library scan may need 60 s while a Sonarr health check should
+    /// time out in 5 s.  `None` (the default, when the key is absent from
+    /// `services.toml`) falls back to the global `AppState::proxy_timeout`.
+    ///
+    /// Constraints (validated at load time):
+    ///   - Must be > 0 (a zero timeout makes every request fail immediately).
+    ///   - There is no hard upper bound, but values > 600 s (10 min) trigger
+    ///     a startup warning — extremely long timeouts can exhaust the rate-
+    ///     limit bucket and block other services.
+    timeout_secs: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -202,6 +216,15 @@ pub struct ServiceEntry {
     /// The client is built once at startup and stored in
     /// `AppState::ca_cert_clients` to preserve connection-pool reuse.
     pub ca_cert_path: Option<String>,
+    /// Per-service request timeout override in seconds.
+    ///
+    /// `None` means "use the global `--proxy-timeout` / `AppState::proxy_timeout`".
+    /// When set, `build_request` calls `.timeout()` on the `RequestBuilder` to
+    /// override the client-level timeout for this specific service's requests.
+    ///
+    /// Set this in `services.toml` as `timeout_secs = 30` on a `[[service]]`
+    /// block. The value must be > 0; zero is rejected at load time.
+    pub timeout_secs: Option<u64>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -332,6 +355,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -359,6 +383,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: true,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -387,6 +412,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -414,6 +440,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -442,6 +469,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -498,6 +526,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -519,6 +548,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: true,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -541,6 +571,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -561,6 +592,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -583,6 +615,7 @@ impl ServiceRegistry {
                     },
                     insecure_tls: false,
                     ca_cert_path: None,
+                    timeout_secs: None,
                 });
             }
         }
@@ -1131,12 +1164,49 @@ impl ServiceRegistry {
                     svc.name, base_url
                 );
             }
+
+            // Issue (iter-41): Validate per-service timeout_secs.
+            //
+            // A zero timeout makes every request to this service fail immediately
+            // (reqwest treats timeout=0 as "expire now"). Operators who set
+            // `timeout_secs = 0` almost certainly mean "no timeout" but the
+            // correct way to express that is to omit the key entirely (falls back
+            // to the global `--proxy-timeout`).
+            //
+            // Warn on values > 600 s (10 min): this is unusual for an API call and
+            // may indicate a misconfiguration (e.g. `timeout_secs = 3600` for a
+            // one-time Plex library scan that should just use a dedicated endpoint
+            // instead). Very long per-service timeouts can stall the rate-limit
+            // bucket for all other callers during a slow request.
+            let timeout_secs: Option<u64> = match svc.timeout_secs {
+                Some(0) => {
+                    tracing::error!(
+                        "service '{}': timeout_secs = 0 is not allowed — a zero timeout \
+                         makes every request fail immediately. Remove the key to use the \
+                         global --proxy-timeout, or set a positive value. Skipping.",
+                        svc.name
+                    );
+                    continue;
+                }
+                Some(t) if t > 600 => {
+                    tracing::warn!(
+                        "service '{}': timeout_secs = {} is unusually large (> 600 s). \
+                         Very long per-service timeouts can stall the rate-limit bucket. \
+                         Consider whether this service genuinely needs this timeout.",
+                        svc.name, t
+                    );
+                    Some(t)
+                }
+                other => other,
+            };
+
             registry.register(ServiceEntry {
                 name: svc.name,
                 base_url,
                 auth,
                 insecure_tls: svc.insecure_tls,
                 ca_cert_path,
+                timeout_secs,
             });
         }
 
@@ -1257,6 +1327,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         }),
         "sonarr" => Some(ServiceEntry {
             name,
@@ -1267,6 +1338,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         }),
         "radarr" => Some(ServiceEntry {
             name,
@@ -1277,6 +1349,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         }),
         "overseerr" => Some(ServiceEntry {
             name,
@@ -1287,6 +1360,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         }),
         "tautulli" => Some(ServiceEntry {
             name,
@@ -1297,6 +1371,7 @@ fn build_media_entry(name: String, svc_type: &str, url: String, vault_prefix: &s
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         }),
         _ => {
             tracing::warn!(svc_type, "unknown media service type — skipping");
@@ -2066,6 +2141,66 @@ ca_cert = "/nonexistent/path/to/ca.pem"
         assert!(
             registry.get("ca_missing").is_none(),
             "service with missing ca_cert file must be rejected at load time"
+        );
+    }
+
+    // Issue (iter-41): Per-service timeout_secs tests.
+
+    /// A valid timeout_secs is accepted and stored on the ServiceEntry.
+    #[test]
+    fn test_timeout_secs_accepted() {
+        let f = write_toml(r#"
+[[service]]
+name = "slow_plex"
+base_url = "http://192.0.2.1:32400"
+auth = "bearer"
+vault_item = "vault-proxy - Plex"
+timeout_secs = 60
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("slow_plex").expect("service should be registered");
+        assert_eq!(
+            svc.timeout_secs,
+            Some(60),
+            "timeout_secs = 60 should be stored on the ServiceEntry"
+        );
+    }
+
+    /// When timeout_secs is absent, it defaults to None (use global timeout).
+    #[test]
+    fn test_timeout_secs_absent_defaults_to_none() {
+        let f = write_toml(r#"
+[[service]]
+name = "sonarr"
+base_url = "http://192.0.2.1:8989/api/v3"
+auth = "header"
+header_name = "X-Api-Key"
+vault_item = "vault-proxy - Sonarr"
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("sonarr").expect("service should be registered");
+        assert_eq!(
+            svc.timeout_secs,
+            None,
+            "absent timeout_secs should default to None"
+        );
+    }
+
+    /// timeout_secs = 0 is rejected: a zero timeout makes every request fail.
+    #[test]
+    fn test_timeout_secs_zero_is_rejected() {
+        let f = write_toml(r#"
+[[service]]
+name = "zero_timeout"
+base_url = "http://192.0.2.1:8080"
+auth = "bearer"
+vault_item = "vault-proxy - ZeroTimeout"
+timeout_secs = 0
+"#);
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("zero_timeout").is_none(),
+            "service with timeout_secs = 0 must be rejected"
         );
     }
 }

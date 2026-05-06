@@ -378,6 +378,20 @@ command = "uvx unifi-network-mcp@latest"
 
 See `mcp-servers.example.toml` for all options. See `SECURITY.md` for the security tradeoffs between launcher mode and native `/proxy` integration.
 
+### Smart servers and `--launch`
+
+When a "smart" MCP server (one with native vault-proxy support) is launched via `--launch`, vault-proxy automatically injects `VAULT_PROXY_URL=http://127.0.0.1:3201` into the child's environment. The smart server uses this URL to call `POST $VAULT_PROXY_URL/proxy` — vault-proxy injects the credential internally and forwards the request. No vault items appear in the smart server's environment.
+
+**Calling `/proxy` from a launched smart server:** This is the intended flow. The smart server calls `POST /proxy` with `{"service": "my_service", "method": "GET", "path": "/..."}` and vault-proxy resolves the credential, applies auth, and forwards to the downstream service. The corresponding `[[service]]` block must exist in `services.toml`.
+
+**Calling `/vault/*` endpoints from a launched smart server:** Internal endpoints (`/vault/reload-services`, `/vault/connecterr-secrets`, `/rotate`, etc.) require the internal bearer token. If your smart server needs to call these endpoints, it must read `$CONFIG_DIR/internal-token` and include it as:
+
+```
+Authorization: Bearer <token>
+```
+
+The token file is written at vault-proxy startup (mode 0600, owner = vault-proxy process user). It is separate from all Vaultwarden credentials.
+
 ## `/proxy` API
 
 `POST http://127.0.0.1:3201/proxy`

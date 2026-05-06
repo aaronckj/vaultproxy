@@ -964,6 +964,21 @@ fn build_request(
     };
     let mut builder = client.request(method, url);
 
+    // Issue (iter-41): Per-service timeout override.
+    //
+    // The global `--proxy-timeout` is baked into the reqwest::Client at startup.
+    // For services that need a different timeout (e.g. a Plex library scan that
+    // legitimately takes 60 s, or a Sonarr health check that should fail fast at
+    // 5 s), `ServiceEntry::timeout_secs` lets operators set a per-service
+    // override without changing the global timeout for all other services.
+    //
+    // `RequestBuilder::timeout()` overrides the client-level timeout for this
+    // specific request only — the client's pool and TLS settings are unchanged.
+    // `None` means "no per-service override; use the client's global timeout".
+    if let Some(per_service_timeout) = entry.timeout_secs {
+        builder = builder.timeout(std::time::Duration::from_secs(per_service_timeout));
+    }
+
     // Extra query params supplied by the caller.
     //
     // Issue-6 (iter-4): Duplicate query key behaviour.
@@ -1794,6 +1809,7 @@ mod integration_tests {
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
 
         let state = make_state(registry);
@@ -1969,6 +1985,7 @@ mod integration_tests {
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
 
         let state = make_state(initial_registry);
@@ -2009,6 +2026,7 @@ mod integration_tests {
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
         new_registry.register(ServiceEntry {
             name: "service-beta".to_string(),
@@ -2019,6 +2037,7 @@ mod integration_tests {
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
 
         // Perform the three-lock swap (same order as SIGHUP handler).
@@ -2062,6 +2081,7 @@ mod integration_tests {
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
 
         let state = make_state(initial_registry);
@@ -2205,6 +2225,7 @@ vault_item  = "vault-proxy - Beta"
             },
             insecure_tls: false,
             ca_cert_path: None,
+            timeout_secs: None,
         });
 
         let mut state = (*make_state(initial_registry)).clone();
