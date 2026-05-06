@@ -92,13 +92,11 @@ fn walk_path_inner<'a>(
 /// output JSON. Duplicate item names also produce a warning; per
 /// `build_secrets_json`'s contract the second occurrence's fields will
 /// overwrite the first's at any colliding leaf key.
-//
-// TODO(perf): the current loop calls list_field_names (decrypts every field
-// name) and then decrypt_field per name (which walks fields and decrypts
-// each name again to compare) — O(n²) in fields per item. Acceptable at
-// expected sizes (boot-time, ~10 items, 2-5 fields each). Refactor to a
-// single VaultManager::list_field_pairs(item) -> Vec<(name, SecureBuffer)>
-// pass if profiling shows a real cost or if folder ever grows.
+///
+/// Performance: uses `VaultManager::list_field_pairs` which locks the vault
+/// items map once and decrypts both field names and values in a single pass —
+/// O(n) in fields per item. The previous O(n²) pattern (list_field_names +
+/// decrypt_field per name) that was deferred in iter-36 is now eliminated.
 pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<Value> {
     // Issue-7 (iter-4): Distinguish "folder does not exist" from "folder
     // exists but is empty". `list_items_in_folder` returns an empty Vec for
@@ -148,13 +146,12 @@ pub async fn aggregate(vault: &Arc<VaultManager>, folder_name: &str) -> Result<V
             tracing::warn!(item = %name, "duplicate item name in folder; later fields overwrite earlier");
         }
 
-        let field_names = vault.list_field_names(&name).await
-            .with_context(|| format!("list fields for '{}'", name))?;
+        // Single-pass O(n): decrypt all field names and values together.
+        let field_pairs = vault.list_field_pairs(&name).await
+            .with_context(|| format!("list field pairs for '{}'", name))?;
 
         let mut field_map = Map::new();
-        for fname in field_names {
-            let buf = vault.decrypt_field(&name, &fname)
-                .with_context(|| format!("decrypt field '{}' on '{}'", fname, name))?;
+        for (fname, buf) in field_pairs {
             let s = buf.as_str()
                 .map_err(|_| anyhow::anyhow!("field '{}' on '{}' is not valid UTF-8", fname, name))?
                 .to_string();

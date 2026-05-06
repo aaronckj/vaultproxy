@@ -2,6 +2,12 @@
 name = "vaultproxy"
 version = "0.2.2"
 edition = "2021"
+# MSRV is not declared here because transitive dependencies (cookie_store,
+# time, icu_* crates) currently require recent stable releases and their
+# minimum versions change with each `cargo update`. The CI workflow pins a
+# specific stable toolchain version in .github/workflows/docker-publish.yml;
+# a formal `rust-version` field should be added once dependency churn settles
+# and the true floor is stable across a lockfile update cycle.
 description = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents"
 license = "MIT"
 repository = "https://github.com/aaronckj/vaultproxy"

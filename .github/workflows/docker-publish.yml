@@ -40,8 +40,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain (version from rust-toolchain.toml)
+        # dtolnay/rust-toolchain reads rust-toolchain.toml automatically when
+        # the `toolchain` input is omitted — CI and local development then use
+        # the same channel. The channel is "stable" (see rust-toolchain.toml);
+        # update that file when a specific minimum release becomes required.
+        uses: dtolnay/rust-toolchain@master
 
       - name: Run tests
         # iter-43: --all-targets ensures tests in [[bench]], [[example]], and

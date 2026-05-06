@@ -973,4 +973,25 @@ command = "cmd-b"
         assert!(validate_public_url_test("http://127.0.0.1:3201/").is_err(),
             "trailing slash on loopback URL must also be rejected");
     }
+
+    // Issue (iter-47): path-with-trailing-slash was not covered.
+    // `https://host/subpath` must be accepted (operators behind a reverse proxy
+    // with a path prefix need it). `https://host/subpath/` must be rejected
+    // (trailing slash produces double-slash paths when smart MCP servers append
+    // "/proxy": `https://host/subpath//proxy`).
+    #[test]
+    fn test_vault_proxy_public_url_subpath() {
+        assert!(validate_public_url_test("https://vault-proxy.example.com/vaultproxy").is_ok(),
+            "path without trailing slash must be valid (reverse-proxy subpath)");
+        assert!(validate_public_url_test("https://vault-proxy.example.com/sub/path").is_ok(),
+            "multi-segment path without trailing slash must be valid");
+
+        let e = validate_public_url_test("https://vault-proxy.example.com/subpath/");
+        assert!(e.is_err(), "path WITH trailing slash must be rejected");
+        assert!(e.unwrap_err().contains("trailing slash"),
+            "error message must name trailing slash for subpath case");
+
+        assert!(validate_public_url_test("https://vault-proxy.example.com/a/b/c/").is_err(),
+            "deep path with trailing slash must be rejected");
+    }
 }

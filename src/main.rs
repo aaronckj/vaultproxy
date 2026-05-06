@@ -75,9 +75,11 @@ struct Args {
     #[arg(long, env = "LITELLM_API_KEY", default_value = "")]
     litellm_api_key: String,
 
-    /// Vision model name (must be served by LiteLLM). Default routes
-    /// to the MLbox `vision` profile (Qwen3-VL-32B-FP8).
-    #[arg(long, env = "VISION_MODEL", default_value = "qwen3-vl-32b")]
+    /// Vision model name served by LiteLLM (browser rotation feature).
+    /// Must be set to the name of a vision-capable model in your LiteLLM
+    /// deployment (e.g. `"gpt-4o"` or a local model alias). Empty = browser
+    /// rotation is disabled even when `--litellm-url` is set.
+    #[arg(long, env = "VISION_MODEL", default_value = "")]
     vision_model: String,
 
     /// ntfy.sh topic URL for push notifications (e.g. `"https://ntfy.sh/connecterr-alerts"`).

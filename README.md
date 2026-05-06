@@ -240,7 +240,7 @@ cargo build --release --features tpm
 | `--notify-email` | `NOTIFY_EMAIL` | — | Email address for notifications when `--notify-channel=email` (queued to `/config/notification-queue.json`). |
 | `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
 | `--litellm-api-key` | `LITELLM_API_KEY` | — | LiteLLM Bearer API key. Prefer the env var over CLI — CLI args are visible in `/proc/<pid>/cmdline`. |
-| `--vision-model` | `VISION_MODEL` | `qwen3-vl-32b` | Vision model name served by LiteLLM (browser rotation feature). |
+| `--vision-model` | `VISION_MODEL` | `""` | Vision model name served by LiteLLM (browser rotation feature). Must be set to the name of a vision-capable model in your LiteLLM deployment (e.g. `"gpt-4o"`). Empty = browser rotation disabled. |
 | `--allow-root` | — | — | Suppress the root-user security warning (see below) |
 | `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
 | `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. Setting `VAULT_REFRESH_INTERVAL_SECS=""` (empty string) is an error and vault-proxy will exit with a parse error. |

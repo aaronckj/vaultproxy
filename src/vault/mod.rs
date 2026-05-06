@@ -1732,6 +1732,76 @@ impl VaultManager {
         }
         Ok(names)
     }
+
+    /// Decrypt all custom fields on `item_name` in a single pass over the
+    /// cipher's field list, returning `(field_name, value_buffer)` pairs.
+    ///
+    /// This is the O(n) replacement for calling `list_field_names` followed by
+    /// `decrypt_field` per name: the old pattern locked the items map twice and
+    /// iterated the field list twice (once to collect names, once to find and
+    /// decrypt each named field), giving O(n²) in field count per item.
+    ///
+    /// This method locks the items map once, iterates the field list once, and
+    /// decrypts both name and value in the same loop — O(n) in fields.
+    ///
+    /// # Errors
+    /// - Item not found in vault.
+    /// - Any field's name or value fails to decrypt (hard error, matching
+    ///   `list_field_names`'s fatal-on-failure contract).
+    pub async fn list_field_pairs(
+        &self,
+        item_name: &str,
+    ) -> Result<Vec<(String, SecureBuffer)>> {
+        let items = self.items.read().await;
+        let cipher = items
+            .values()
+            .find(|(n, _)| n.as_str() == item_name)
+            .map(|(_, c)| c)
+            .ok_or_else(|| anyhow!("item not found: {}", item_name))?;
+
+        let Some(fields) = cipher.fields.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        let mut pairs = Vec::with_capacity(fields.len());
+        for f in fields {
+            let enc_name = match &f.name {
+                Some(n) => n.as_str(),
+                None => continue, // unnamed field — skip
+            };
+
+            // Decrypt the field name.
+            let field_name = decrypt_to_string(
+                Some(enc_name),
+                self.enc_key.as_bytes(),
+                self.mac_key.as_bytes(),
+            )
+            .ok_or_else(|| {
+                anyhow!("failed to decrypt field name on item '{}'", item_name)
+            })?;
+
+            // Decrypt the field value in the same pass.
+            let value_cs = f
+                .value
+                .as_deref()
+                .ok_or_else(|| anyhow!("field '{}' on '{}' has no value", field_name, item_name))?;
+
+            let value_buf = decrypt_cipher_string(
+                value_cs,
+                self.enc_key.as_bytes(),
+                self.mac_key.as_bytes(),
+            )
+            .with_context(|| {
+                format!(
+                    "failed to decrypt field '{}' on item '{}'",
+                    field_name, item_name
+                )
+            })?;
+
+            pairs.push((field_name, value_buf));
+        }
+        Ok(pairs)
+    }
 }
 
 // =========================================================================== //
