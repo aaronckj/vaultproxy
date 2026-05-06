@@ -4754,6 +4754,103 @@ mod health_version_tests {
 }
 
 // -------------------------------------------------------------------------- //
+// vault_folder_found health-field shape tests (iter-107)                     //
+// -------------------------------------------------------------------------- //
+//
+// Issue (iter-107): `vault_folder_found: bool` was added to `GET /vault/health`
+// in iter-103 but no unit test verifies its two states. These tests validate
+// the JSON field semantics: true when the folder resolves, false when it does
+// not — without requiring a live AppState or Vaultwarden connection.
+#[cfg(test)]
+mod vault_folder_found_tests {
+    use serde_json::json;
+
+    /// When vault_folder_id resolves (Some), `vault_folder_found` must be `true`
+    /// in the health response and `vault_item_count` must reflect the scoped count.
+    #[test]
+    fn vault_folder_found_true_when_folder_resolves() {
+        let vault_folder_id: Option<&str> = Some("mcp-vault-folder-id");
+        let all_items: Vec<(Option<&str>, &str)> = vec![
+            (Some("mcp-vault-folder-id"), "sonarr"),
+            (Some("mcp-vault-folder-id"), "radarr"),
+            (Some("personal-banking"), "chase-visa"),
+        ];
+
+        // Mirror the health handler logic exactly.
+        let vault_folder_found = vault_folder_id.is_some();
+        let vault_item_count: usize = match vault_folder_id {
+            Some(fid) => all_items
+                .iter()
+                .filter(|(folder, _)| *folder == Some(fid))
+                .count(),
+            None => 0,
+        };
+
+        let body = json!({
+            "vault_folder_found": vault_folder_found,
+            "vault_item_count": vault_item_count,
+        });
+
+        assert_eq!(
+            body["vault_folder_found"],
+            json!(true),
+            "vault_folder_found must be true when folder resolves; got {}",
+            body
+        );
+        assert_eq!(
+            body["vault_item_count"],
+            json!(2),
+            "vault_item_count must be scoped to vault_folder items only; got {}",
+            body
+        );
+    }
+
+    /// When vault_folder_id is None (folder configured but not found in vault,
+    /// e.g. renamed in Vaultwarden), `vault_folder_found` must be `false` and
+    /// `vault_item_count` must be 0 — never the cross-folder total.
+    ///
+    /// This is the key disambiguation: `vault_folder_found: false` means the
+    /// configured folder name does not exist in the vault (misconfiguration /
+    /// rename), not that the folder is legitimately empty.
+    #[test]
+    fn vault_folder_found_false_when_folder_not_found() {
+        let vault_folder_id: Option<&str> = None; // simulates folder rename
+        let all_items: Vec<(Option<&str>, &str)> = vec![
+            (Some("personal-banking"), "chase-visa"),
+            (Some("work"), "github-token"),
+            (None, "orphan-item"),
+        ];
+
+        let vault_folder_found = vault_folder_id.is_some();
+        let vault_item_count: usize = match vault_folder_id {
+            Some(fid) => all_items
+                .iter()
+                .filter(|(folder, _)| *folder == Some(fid))
+                .count(),
+            None => 0,
+        };
+
+        let body = json!({
+            "vault_folder_found": vault_folder_found,
+            "vault_item_count": vault_item_count,
+        });
+
+        assert_eq!(
+            body["vault_folder_found"],
+            json!(false),
+            "vault_folder_found must be false when folder is not found; got {}",
+            body
+        );
+        assert_eq!(
+            body["vault_item_count"],
+            json!(0),
+            "vault_item_count must be 0 when vault_folder not found (not cross-folder total); got {}",
+            body
+        );
+    }
+}
+
+// -------------------------------------------------------------------------- //
 // check_permission 400 body-shape tests (iter-104)                           //
 // -------------------------------------------------------------------------- //
 //

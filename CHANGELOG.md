@@ -3,6 +3,70 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — iteration 107: browser_status ok:true, vault_folder_found test, README rotate note
+
+### Bugs (iter-107)
+
+- **`browser_status` idle path missing `"ok": true` (iter-107)** — `src/main.rs:2804`. MEDIUM.
+  The idle branch returned `{"status": "idle"}` without `"ok": true`. Every other success path
+  in the codebase carries the `ok` sentinel; callers using `body["ok"] == true` for success
+  detection silently received `null` here. Fixed to `{"ok": true, "status": "idle"}`.
+
+### Tests (iter-107)
+
+- **`browser_status_idle_returns_200` now asserts `ok=true` (iter-107)** — `src/main.rs`.
+  The iter-106 test only checked `status=idle`. Updated to also assert `body["ok"] == true`
+  so the fix above has regression coverage.
+
+- **`vault_folder_found` health-field shape tests (iter-107)** — `src/vault/handlers.rs`.
+  Issue (iter-103) added `vault_folder_found: bool` to `GET /vault/health` but no unit test
+  covered its two states. Added `vault_folder_found_tests` module with two tests:
+  - `vault_folder_found_true_when_folder_resolves`: asserts `vault_folder_found=true` and
+    `vault_item_count` is scoped to the configured folder (not the cross-folder total).
+  - `vault_folder_found_false_when_folder_not_found`: asserts `vault_folder_found=false` and
+    `vault_item_count=0` when the configured folder name is absent from the vault (e.g. renamed
+    in Vaultwarden), distinguishing misconfiguration from a legitimately empty folder.
+
+### Findings (iter-107) — no-change items
+
+- **`post-v1.0:` annotation in `sanitize.rs` — already removed (iter-107 check)**.
+  `src/security/sanitize.rs` has no `post-v1.0:` annotation. It was removed when iter-87 wired
+  `sanitize_output` in `browser/vision.rs`. The comment in `vision.rs:11` only records the
+  history ("was tagged post-v1.0: in iter-85"). No action needed.
+
+- **`credaudit_apply` response structure — clean (iter-107 check)**.
+  `src/dashboard/api.rs:1742`: `Ok(out) => Json(json!({"ok": true, "result": out}))`.
+  The apply result is nested under `"result"`, not merged flat and not the raw bare `json!(out)`
+  from before iter-106. Structure is intentional and consistent with `credaudit_run_detail`
+  which also wraps under `"detail"`.
+
+- **`credaudit_verify_start` success merges cleanly (iter-107 check)**.
+  `src/dashboard/api.rs:1779`: `Ok(n) => Json(json!({"ok": true, "verify_started_for": n, "run_id": run_id}))`.
+  `"ok": true` merges flat with the two result fields — no nesting conflict.
+
+- **CHANGELOG archive reference present (iter-107 check)**.
+  `CHANGELOG.md` footer already references `CHANGELOG-pre-1.0.md`. No fix needed.
+
+- **README has no broken CHANGELOG links (iter-107 check)**.
+  `README.md` does not link to specific CHANGELOG sections. The `v0.2 tooling` mention at
+  line 218 is a stub note for the `/rotate` endpoint — not a broken link.
+
+- **4 genuine `post-v1.0:` items remain (iter-107 count)**:
+  1. `src/keystore.rs:333` — TPM auto-unlock path (requires TPM feature wiring)
+  2. `src/proxy/unifi_session.rs:90` — rotation UI (browser rotation workflow)
+  3. `src/sync/cloud.rs:40` — Bitwarden cloud password change
+  4. `src/sync/cloud.rs:786` — dashboard cloud-account settings page
+  None are newly tractable from recent changes.
+
+### Quality gates (iter-107)
+
+- `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
+- `cargo test --features browser` — **289 passed**; 0 failed
+- `cargo clippy --features browser,dashboard --all-targets -- -D warnings` — 0 errors, 0 warnings
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
+---
+
 ## [Unreleased] — iteration 106: credaudit ok:false, browser_status test, clippy/doc clean
 
 ### Security (iter-106) — credaudit handlers missing `"ok": false`

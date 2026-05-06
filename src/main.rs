@@ -2801,7 +2801,11 @@ async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> axum::res
     let job = browser.current_job.read().await;
     match &*job {
         Some(ws) => AxumJson(serde_json::to_value(ws).unwrap_or_default()).into_response(),
-        None => AxumJson(serde_json::json!({"status": "idle"})).into_response(),
+        // Issue (iter-107): idle path was missing `"ok": true`. Every other
+        // success path in the codebase includes the ok sentinel; callers that
+        // check `body["ok"] == true` for success detection would have failed
+        // to detect the idle state as a clean response.
+        None => AxumJson(serde_json::json!({"ok": true, "status": "idle"})).into_response(),
     }
 }
 
@@ -3527,7 +3531,11 @@ mod browser_status_tests {
     }
 
     /// When a browser agent is configured but idle (no current job),
-    /// `browser_status` must return HTTP 200 with `{"status": "idle"}`.
+    /// `browser_status` must return HTTP 200 with `{"ok": true, "status": "idle"}`.
+    ///
+    /// Issue (iter-107): the idle path previously returned `{"status": "idle"}`
+    /// without `"ok": true`, inconsistent with every other success body in the
+    /// codebase. Fixed in handler; this test now also verifies `ok=true`.
     #[tokio::test]
     async fn browser_status_idle_returns_200() {
         let agent = Arc::new(BrowserAgent::new("http://mlbox.local:4000", "", "gpt-4o"));
@@ -3543,6 +3551,12 @@ mod browser_status_tests {
             body.get("status").and_then(|v| v.as_str()),
             Some("idle"),
             "body must contain status=idle; got {body}"
+        );
+        // iter-107: ok=true must be present in the idle response.
+        assert_eq!(
+            body.get("ok").and_then(|v| v.as_bool()),
+            Some(true),
+            "idle body must contain ok=true; got {body}"
         );
     }
 }
