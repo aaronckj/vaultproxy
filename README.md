@@ -355,10 +355,12 @@ curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
   -H 'Content-Type: application/json' \
   -d '{"run_id": "'$RUN_ID'", "dry_run": false, "confirm_bulk": true}'
 ```
-`apply` moves each flagged vault item into a Vaultwarden folder named `_review-delete` and appends an audit marker block to its notes field. The folder is created automatically if it does not exist. The `confirm_bulk: true` flag is required when applying to more than 50 items without specifying `item_ids`, as a safeguard against accidental bulk operations.
+`apply` moves each flagged vault item into a Vaultwarden folder named `<vault_folder>-review-delete` (e.g. `vault-proxy-review-delete` when `VAULT_FOLDER=vault-proxy`) and appends an audit marker block to its notes field. The folder is created automatically if it does not exist. Deployments with no `vault_folder` configured use the legacy name `_review-delete`. The `confirm_bulk: true` flag is required when applying to more than 50 items without specifying `item_ids`, as a safeguard against accidental bulk operations.
 
 **Undo an apply:**
-`apply` does not delete items — it only moves them. To undo, open Vaultwarden and move the items from `_review-delete` back to their original folder (or `No Folder`). The audit marker block in the notes field is inert and can be deleted manually if desired. There is no automated undo endpoint.
+`apply` does not delete items — it only moves them. To undo, open Vaultwarden and move the items from `<vault_folder>-review-delete` back to their original folder (or `No Folder`). The audit marker block in the notes field is inert and can be deleted manually if desired. There is no automated undo endpoint.
+
+**Migration note (iter-58 upgrade):** If you ran a credential-audit scan before upgrading to iter-58+, flagged items were placed in the old `_review-delete` folder. The `apply` endpoint now looks for `<vault_folder>-review-delete` and will not find those items. To recover: in Vaultwarden, rename `_review-delete` to `<your_vault_folder>-review-delete` (or move items manually). Deployments with `vault_folder = None` (unconfigured) are unaffected.
 
 ## Operator runbook
 
@@ -421,6 +423,8 @@ docker run --rm -v ./config:/config vaultproxy --launch <name>  # run interactiv
 
 ## Building
 
+### Cargo (local / bare metal)
+
 ```bash
 # Headless — recommended for Docker/server deployments
 cargo build --release
@@ -431,6 +435,39 @@ cargo build --release --features tpm
 # With web dashboard — adds management UI on 127.0.0.1:3202
 cargo build --release --features dashboard
 ```
+
+### Docker
+
+The published image (`ghcr.io/aaronckj/vaultproxy:latest`) is built **headless** — no dashboard, no TPM. Port 3202 is not bound.
+
+```bash
+# Headless (default) — matches the published image
+docker build -t vaultproxy:latest .
+
+# Dashboard build — enables the web UI on 127.0.0.1:3202
+docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .
+
+# TPM build — requires TSS2 libraries; add libssl-dev in Dockerfile if needed
+docker build --build-arg FEATURES=tpm -t vaultproxy:tpm .
+
+# Dashboard + TPM
+docker build --build-arg FEATURES=dashboard,tpm -t vaultproxy:full .
+```
+
+To run the dashboard build with Docker Compose, add a `build` section and the `FEATURES` arg:
+
+```yaml
+services:
+  vaultproxy:
+    build:
+      context: .
+      args:
+        FEATURES: dashboard
+    ports:
+      - "127.0.0.1:3202:3202"   # expose dashboard (only meaningful for dashboard builds)
+```
+
+> **Note:** passing `--build-arg FEATURES=invalid-feature-name` causes `cargo build --features invalid-feature-name` to fail with a Cargo error (unknown feature). This is expected — Cargo reports the unknown feature clearly in the build log.
 
 ## Launching MCP servers (wrapper mode)
 

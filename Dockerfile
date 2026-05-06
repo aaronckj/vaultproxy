@@ -165,7 +165,11 @@ USER vaultproxy
 EXPOSE 3201
 # Dashboard port (HTTPS, localhost-only).
 # Only relevant when the image is built with --build-arg FEATURES=dashboard.
-# The headless default image does not start a dashboard listener on this port.
+# The headless default image (and the published ghcr.io image) does NOT start a
+# listener on this port — EXPOSE 3202 is documentation-only metadata here.
+# An operator running `docker run -p 3202:3202 ghcr.io/aaronckj/vaultproxy:latest`
+# will get no dashboard (the feature was not compiled in) and no error.
+# To get the dashboard, build locally: docker build --build-arg FEATURES=dashboard .
 EXPOSE 3202
 
 # Issue (iter-12): Add a HEALTHCHECK so `docker run` deployments get container

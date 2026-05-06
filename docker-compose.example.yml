@@ -27,11 +27,23 @@
 
 services:
   vaultproxy:
-    # Build from source (recommended until a published image exists for your version).
+    # Build from source (recommended for version-specific or feature builds).
     # The CI workflow (.github/workflows/docker-publish.yml) publishes
     # ghcr.io/aaronckj/vaultproxy:<tag> on each version tag push.
-    # Once a published image exists, replace `build: .` with:
+    #
+    # The published image is HEADLESS (no dashboard, no TPM).
+    # Port 3202 is not bound by the published image.
+    #
+    # To use the published image:
     #   image: ghcr.io/aaronckj/vaultproxy:latest
+    #
+    # To build with the web dashboard (port 3202):
+    #   build:
+    #     context: .
+    #     args:
+    #       FEATURES: dashboard
+    #   ports:
+    #     - "127.0.0.1:3202:3202"
     build: .
     restart: unless-stopped
     network_mode: host          # Required: proxy must bind to 127.0.0.1:3201 on the host
