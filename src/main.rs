@@ -2861,9 +2861,12 @@ pub(crate) async fn require_internal_token(
             "require_internal_token: rejected request to {} — missing or invalid Bearer token",
             req.uri().path()
         );
+        // Issue (iter-103): 401 body was missing "ok": false, inconsistent with
+        // all other non-200 responses in the codebase.
         return (
             StatusCode::UNAUTHORIZED,
             AxumJson(serde_json::json!({
+                "ok": false,
                 "error": "unauthorized — internal endpoint requires Authorization: Bearer <token>",
                 "hint": "read the token from $CONFIG_DIR/internal-token"
             })),
@@ -2932,9 +2935,10 @@ pub(crate) async fn dns_rebinding_guard(
             // missing Host is either a protocol violation or an attacker
             // bypassing the rebinding guard by omitting the header entirely.
             tracing::warn!("DNS rebinding guard: missing Host header — request blocked");
+            // Issue (iter-103): 403 body was missing "ok": false.
             return (
                 StatusCode::FORBIDDEN,
-                AxumJson(serde_json::json!({"error": "request blocked — missing host header"})),
+                AxumJson(serde_json::json!({"ok": false, "error": "request blocked — missing host header"})),
             )
                 .into_response();
         }
@@ -2942,9 +2946,12 @@ pub(crate) async fn dns_rebinding_guard(
             let host_part = host.split(':').next().unwrap_or(host);
             if host_part != "127.0.0.1" && host_part != "localhost" && host_part != "[::1]" {
                 tracing::warn!("DNS rebinding blocked: Host={}", host);
+                // Issue (iter-103): 403 body was missing "ok": false.
                 return (
                     StatusCode::FORBIDDEN,
-                    AxumJson(serde_json::json!({"error": "request blocked — invalid host"})),
+                    AxumJson(
+                        serde_json::json!({"ok": false, "error": "request blocked — invalid host"}),
+                    ),
                 )
                     .into_response();
             }

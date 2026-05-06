@@ -3,7 +3,93 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0-beta.2] — iteration 101: 503 body consistency, empty-on-notfound tests, dead_code labels
+## [1.0.0-beta.2] — iterations 101–103: 503/409/207 body correctness, vault_folder_found, ok:false audit
+
+### Security (iter-103)
+
+- **`scan_start` return type trap (iter-103)** — `src/credential_audit/handlers.rs:28`. CRITICAL.
+  Return type was `Result<Json<Value>, StatusCode>`. Bare `StatusCode` on the Err path produced
+  a response with the correct HTTP status (409/503/500) but an **empty body** — no `"ok": false`,
+  no `"error"` field. Any caller parsing the JSON body received an empty string. Changed to
+  `axum::response::Response` so all branches emit a full JSON body. Addresses the TODO added in
+  iter-34 which correctly identified the problem but could not fix it without a signature change.
+  Severity: CRITICAL — this was the same `Json<Value>` return-type trap fixed in iter-102 for
+  vault handlers, now propagated to the credential audit subsystem.
+
+- **`review_pending` and `apply` missing `"ok": false` (iter-103)** — `src/credential_audit/handlers.rs:68,90`.
+  Both handlers returned error tuples `(StatusCode, Json<Value>)` with correct status codes but
+  bodies missing `"ok": false`. Every other non-200 response in the codebase includes `"ok": false`;
+  callers using `body["ok"] == false` for status detection would not detect these errors.
+  Added `"ok": false` to all error JSON bodies in `review_pending` (404, 500) and `apply` (404, 400).
+
+- **`require_internal_token` 401 missing `"ok": false` (iter-103)** — `src/main.rs:2865`.
+  The 401 body returned `{"error": "...", "hint": "..."}` without `"ok": false`. Added for
+  consistency. All internal-endpoint callers (dashboard, Connecterr) use `ok` as the success signal.
+
+- **`dns_rebinding_guard` 403 bodies missing `"ok": false` (iter-103)** — `src/main.rs:2936,2946`.
+  Both 403 paths (missing Host, invalid Host) returned `{"error": "..."}` without `"ok": false`.
+  Added for consistency with the 87 other `"ok": false` occurrences in the codebase.
+
+- **Dashboard fallback 404 missing `"ok": false` (iter-103)** — `src/dashboard/mod.rs:204`.
+  The `.fallback()` handler returned `{"error": "not found"}` without `"ok": false`. Fixed.
+
+- **`require_session` 401 missing `"ok": false` (iter-103)** — `src/dashboard/mod.rs:614`.
+  The dashboard API session-guard middleware returned `{"error": "authentication required"}`
+  without `"ok": false`. Fixed. Dashboard JS checks `response.ok` via fetch, but API callers
+  using the JSON body were getting an inconsistent shape.
+
+- **`vault_folder_found: bool` added to `GET /vault/health` (iter-103)** — `src/vault/handlers.rs`.
+  `vault_item_count: 0` was ambiguous: it could mean a legitimately empty folder or that the
+  configured `vault_folder` name was not found in the vault (e.g. renamed in Vaultwarden UI).
+  Monitoring that alerts on `vault_item_count == 0` would fire on a folder rename even though
+  no data was lost. New field `vault_folder_found: bool` disambiguates:
+  - `vault_folder_found: true, vault_item_count: 0` → folder exists but is empty (legitimate).
+  - `vault_folder_found: false` → folder name not found → alert on misconfiguration, not data loss.
+
+### Security (iter-102) — 7 critical `Json<Value>` return-type fixes
+
+- **`handshake` 409 replay prevention (iter-102)** — `src/vault/handlers.rs:1328`. CRITICAL.
+  `GET /handshake` returned HTTP 200 on replay (second call after handshake completed) with the
+  *same cert material* rather than 409 Conflict. Return type changed from `Json<Value>` to
+  `impl IntoResponse`; replay now returns 409 with `{"ok": false, "error": "..."}`. The 503 path
+  (certs unavailable) was similarly silently returning 200 — now returns 503 with `"ok": false`.
+
+- **`check_permission` 400 on missing tool param (iter-102)** — `src/vault/handlers.rs:3037`. CRITICAL.
+  `GET /vault/check-permission?tool=` returned HTTP 200 with an error body when the required `tool`
+  param was missing. Changed return type to `impl IntoResponse`; missing/empty param now returns
+  HTTP 400 with `{"ok": false, "error": "tool query param required"}`.
+
+- **`sync_trigger` 503/503 silent 200 (iter-102)** — `src/vault/handlers.rs:3443`. CRITICAL.
+  `POST /sync/trigger` returned HTTP 200 for sync failures and for "cloud sync not configured".
+  Return type changed from `Json<Value>` to `impl IntoResponse`; failure paths now return 503.
+
+- **`sync_init` 409/503/502/207 silent 200 (iter-102)** — `src/vault/handlers.rs:3508`. CRITICAL.
+  `POST /sync/init` returned HTTP 200 for all error paths: already-active (now 409), keystore
+  unlock failure (now 503), auth failure (now 502), initial sync failure partial (now **207 Multi-Status**).
+  HTTP 207 signals partial success: authenticated OK but initial sync failed — the cloud sync
+  is initialized and subsequent `POST /sync/trigger` or the background scheduler will complete it.
+  Callers receiving 207 should log a warning and retry sync; 207 is NOT a failure.
+
+- **`provide_totp` 503/503/401/207 silent 200 (iter-102)** — `src/vault/handlers.rs:3698`. CRITICAL.
+  `POST /sync/totp` returned HTTP 200 for all error paths: keystore unlock failure (now 503),
+  no cloud credentials (now 503), TOTP auth failure (now 401), partial sync (now 207 Multi-Status).
+
+- **`sync_check_password` 503 `"ok": false` missing (iter-102)** — `src/vault/handlers.rs:3683`.
+  The 503 path in `sync_check_password` was missing `"ok": false` in the body, inconsistent
+  with all other 503 paths. Added.
+
+- **`sync_restart` 503 `"ok": false` missing (iter-102)** — `src/vault/handlers.rs:3871`.
+  Same issue as `sync_check_password` — 503 body was missing `"ok": false`. Added.
+
+### HTTP 207 Multi-Status — callers must handle partial success
+
+`POST /sync/init` and `POST /sync/totp` may return **HTTP 207 Multi-Status** when:
+- Authentication succeeded (cloud credentials validated, device token stored), AND
+- The initial sync run failed (network error, vault timeout, etc.).
+
+HTTP 207 is not an error; it signals that the cloud sync is **initialized but not yet synced**.
+The scheduler or a manual `POST /sync/trigger` will complete the sync. Callers MUST NOT treat
+207 as a success (200) or a failure (5xx). Check `body["result"] == "partial"` to confirm.
 
 ### Security (iter-101)
 
@@ -44,8 +130,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `GET /vault/health` should be aware that a drop to `0` reflects a folder rename (vault_folder
   configured but absent) rather than data loss. The startup log warns when vault_folder is
   not found; `POST /vault/resync` re-resolves after an operator corrects the folder name.
+  See iter-103 fix: `vault_folder_found: bool` now makes this explicit in the health response.
 
-### Quality gates (iter-101)
+### Quality gates (iter-103)
 
 - `cargo build --features browser,engine,dashboard` — 0 errors, 0 warnings
 - `cargo test --all-targets --features browser,engine,dashboard` — **280 passed** (278 lib + 2 integration); 0 failed

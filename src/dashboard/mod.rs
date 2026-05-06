@@ -201,7 +201,13 @@ pub fn router(state: DashboardState) -> Router {
         .merge(page_routes)
         .layer(axum::middleware::from_fn(csrf_origin_check))
         .layer(axum::middleware::from_fn(security_headers))
-        .fallback(|| async { (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))) })
+        // Issue (iter-103): 404 body was missing "ok": false.
+        .fallback(|| async {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": "not found"})),
+            )
+        })
         .with_state(state)
 }
 
@@ -610,9 +616,10 @@ async fn require_session(
     next: Next,
 ) -> Response {
     if !check_session(&state, req.headers()).await {
+        // Issue (iter-103): 401 body was missing "ok": false.
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "authentication required" })),
+            Json(json!({ "ok": false, "error": "authentication required" })),
         )
             .into_response();
     }

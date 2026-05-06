@@ -510,6 +510,14 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     // list_items handler: resolve vault_folder → filter. When vault_folder is
     // not found, report 0 items (consistent with list_items empty-on-not-found).
     let vault_folder_id = resolve_vault_folder_id(&state).await;
+    // Issue (iter-103): `vault_folder_found` disambiguates `vault_item_count: 0`
+    // (zero items in the folder) from `vault_folder_id: None` (configured folder
+    // name not found in vault — e.g. renamed in Vaultwarden). Without this field,
+    // monitoring that alerts on `vault_item_count == 0` fires on a folder rename
+    // even though no data was lost. A consumer can now check:
+    //   vault_folder_found == true && vault_item_count == 0  → legitimately empty folder
+    //   vault_folder_found == false                          → folder rename / misconfiguration
+    let vault_folder_found = vault_folder_id.is_some();
     let vault_item_count = {
         let all_items = state.vault.list_items().await;
         match vault_folder_id {
@@ -555,6 +563,10 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "vault_item_count": vault_item_count,
         "vault_folder": state.vault_folder,
+        // iter-103: disambiguates vault_item_count: 0 (empty folder) from folder
+        // not found (rename / misconfiguration). false → alert on misconfiguration,
+        // not data loss. Monitoring should gate item-count alerts on this being true.
+        "vault_folder_found": vault_folder_found,
         "service_count": service_count,
         "services": services,
         "cloud_sync": cloud_sync_status,

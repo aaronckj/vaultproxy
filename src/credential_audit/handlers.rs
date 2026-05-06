@@ -25,41 +25,58 @@ fn default_dry_run() -> bool {
     true
 }
 
-pub async fn scan_start(
-    State(orch): State<SharedOrch>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    // TODO(iter-8): The blanket CONFLICT status is wrong for non-conflict errors.
-    // `start_scan` returns Err for at least three distinct cases:
-    //   - another scan already running  → 409 CONFLICT  (correct)
+pub async fn scan_start(State(orch): State<SharedOrch>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Issue (iter-103): Return type was `Result<Json<Value>, StatusCode>`. Bare
+    // `StatusCode` on the Err path produces an HTTP response with the correct
+    // status code but an **empty body** — no `"ok": false`, no `"error"` field.
+    // Callers and monitoring that parse the JSON body (e.g. checking `ok`) would
+    // receive an empty string and panic or silently discard the error.
+    // Changed to `axum::response::Response` so every branch returns a full body.
+    //
+    // Three distinct error cases:
+    //   - another scan already running  → 409 CONFLICT
     //   - engine unreachable            → 503 SERVICE_UNAVAILABLE
-    //   - DB failure                    → 500 INTERNAL_SERVER_ERROR
-    // Distinguish them by matching on the error message or by introducing a typed
-    // error enum so callers can act appropriately (e.g. retry on 503, not on 409).
+    //   - DB failure / other            → 500 INTERNAL_SERVER_ERROR
     match orch.start_scan().await {
-        Ok(run_id) => Ok(Json(serde_json::json!({"run_id": run_id}))),
+        Ok(run_id) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "run_id": run_id})),
+        )
+            .into_response(),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("another audit run is in progress") {
                 // 409 Conflict — caller should poll the existing run_id.
-                Err(StatusCode::CONFLICT)
+                (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": "another audit run is already in progress — poll the existing run_id",
+                    })),
+                )
+                    .into_response()
             } else if msg.contains("engine is not reachable") {
-                // iter-34: 503 with an actionable body. A plain StatusCode
-                // return carries no body, so the caller gets a cryptic empty
-                // response. Return JSON with a help message instead.
-                //
-                // Note: the return type is Result<Json<Value>, StatusCode> so
-                // we cannot return a body on the Err path without changing the
-                // signature. Emit a structured warning that shows up in logs,
-                // and return the 503 status. Operators should check logs or
-                // the CRED_AUDIT_ENGINE_URL env var.
+                // iter-34 / iter-103: 503 with an actionable body.
                 tracing::warn!(
                     "credaudit: scan/start rejected — credential audit engine is not reachable. \
                      Set CRED_AUDIT_ENGINE_URL to the engine's base URL (default http://127.0.0.1:8765). \
                      If the engine is not deployed, this endpoint will always return 503."
                 );
-                Err(StatusCode::SERVICE_UNAVAILABLE)
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": "credential audit engine is not reachable — set CRED_AUDIT_ENGINE_URL",
+                    })),
+                )
+                    .into_response()
             } else {
-                Err(StatusCode::INTERNAL_SERVER_ERROR)
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"ok": false, "error": msg})),
+                )
+                    .into_response()
             }
         }
     }
@@ -69,19 +86,23 @@ pub async fn review_pending(
     State(orch): State<SharedOrch>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Vec<ItemResult>>, (StatusCode, Json<serde_json::Value>)> {
+    // Issue (iter-103): Error bodies were missing `"ok": false`. Every other
+    // non-200 response in the codebase includes `"ok": false`; callers that
+    // check `body["ok"] == false` would not detect these errors.
     orch.list_pending(&run_id).map(Json).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
             (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
+                    "ok": false,
                     "error": format!("run_id '{}' not found — no scan has been started with this ID", run_id)
                 })),
             )
         } else {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": msg})),
+                Json(serde_json::json!({"ok": false, "error": msg})),
             )
         }
     })
@@ -91,6 +112,8 @@ pub async fn apply(
     State(orch): State<SharedOrch>,
     Json(body): Json<ApplyBody>,
 ) -> Result<Json<ApplyOutcome>, (StatusCode, Json<serde_json::Value>)> {
+    // Issue (iter-103): Error bodies were missing `"ok": false`. Added for
+    // consistency with all other non-200 responses in the codebase.
     orch.apply(&body.run_id, body.item_ids, body.dry_run, body.confirm_bulk)
         .await
         .map(Json)
@@ -100,6 +123,7 @@ pub async fn apply(
                 (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({
+                        "ok": false,
                         "error": format!(
                             "run_id '{}' not found — start a scan with POST /audit/credaudit/scan/start first",
                             body.run_id
@@ -109,7 +133,7 @@ pub async fn apply(
             } else {
                 (
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": msg})),
+                    Json(serde_json::json!({"ok": false, "error": msg})),
                 )
             }
         })
