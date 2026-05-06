@@ -2710,6 +2710,17 @@ async fn browser_rotate(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // iter-124: Optional UniFi service name. When the rotated item is a UniFi
+    // service, callers pass the registry service name (e.g. "unifi_home") so
+    // that the cached session cookie is invalidated on a successful rotation.
+    // Without this, the old session cookie continues to authenticate subsequent
+    // proxy calls against the controller until UDM's own session TTL expires,
+    // which defeats the rotation's intent.  This is `None` for non-UniFi items.
+    let unifi_service_name: Option<String> = req
+        .get("unifi_service_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
     if item_name.is_empty() {
         return (
@@ -2817,6 +2828,9 @@ async fn browser_rotate(
     let model_name = browser.model_name.clone();
     let browser_ref = Arc::clone(&browser);
     let item_name_response = item_name.clone();
+    // iter-124: Clone the session cache so the spawn can invalidate it on
+    // successful rotation.  The Arc clone is cheap — no data is copied.
+    let unifi_sessions = Arc::clone(&state.unifi_sessions);
 
     tokio::spawn(async move {
         let pw = match crate::browser::playwright::PlaywrightProcess::spawn().await {
@@ -2839,6 +2853,22 @@ async fn browser_rotate(
         *browser_ref.current_job.write().await = Some(workflow.state.clone());
         if let Some(ref screenshot) = workflow.state.last_screenshot_b64 {
             *browser_ref.last_screenshot.write().await = Some(screenshot.clone());
+        }
+
+        // iter-124: Invalidate the UniFi session cache on successful rotation
+        // so the next proxy call picks up the new credential instead of
+        // continuing to authenticate with the old (now-rotated) session cookie.
+        // This call is a no-op when `unifi_service_name` is None (non-UniFi
+        // items) or when the service has no cached session (first rotation).
+        if success {
+            if let Some(ref svc) = unifi_service_name {
+                tracing::info!(
+                    service = %svc,
+                    item = %item_name,
+                    "rotation succeeded — invalidating UniFi session cache for service"
+                );
+                unifi_sessions.invalidate(svc);
+            }
         }
 
         notifier.notify_rotation(&item_name, success).await;

@@ -5,6 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — iteration 124: UniFi session invalidation on rotation, ProxyError service-name audit
+
+### Features (iter-124)
+
+- **`browser_rotate` — UniFi session invalidated on successful rotation (iter-124)** — `src/main.rs`. MEDIUM.
+  After a successful browser-based credential rotation, the old UniFi session cookie remained cached in
+  `UnifiSessionCache` indefinitely — subsequent proxy calls would continue authenticating with the
+  pre-rotation session until UDM's own session TTL expired, defeating the rotation's intent.
+  Fixed: `browser_rotate` now accepts an optional `unifi_service_name` field in the request body.
+  When `success == true` and `unifi_service_name` is set, `state.unifi_sessions.invalidate(svc)` is
+  called inside the `tokio::spawn` so the next proxy call performs a fresh login with the new credential.
+  The call is a no-op for non-UniFi items (field absent) or services without a cached session.
+
+### Audited (iter-124) — no further action required
+
+1. **`approvals.html` `renderError()` implementation** — PASS. Renders to `#queue-container` via
+   `div.textContent` (XSS-safe). User-visible. No `innerHTML`.
+2. **`browser_rotate` `ok===false` check** — PASS. `workflow.run()` returns a `bool`; invalidation
+   is gated on `success == true`, so a failed rotation leaves the cache untouched (no stale None).
+3. **`ProxyError` service name echo** — PASS. `"unknown service"` message does not include `req.service`.
+   Enumeration via trial-and-error is not possible from the error body.
+4. **Dashboard session cookie `Domain` attribute** — PASS. Cookie strings at `mod.rs:390,442` and
+   `api.rs:1370` have no `Domain` attribute — defaults to exact origin `127.0.0.1`. Not broadened.
+5. **CI v1.0.2 run** — PASS. Latest run: tag `v1.0.2`, status `success`.
+6. **`approvals.html` `return` after `renderError()`** — PASS. Line 259: explicit `return` prevents
+   `renderApprovals()` and `renderEmpty()` from overwriting the error state.
+7. **`rotation.html` session cache invalidation** — FIXED (see Features above).
+8. **`CHANGELOG.md [1.0.2]` iter-123 coverage** — PASS. Section covers all four iter-123 fixes.
+9. **Test count** — 317 tests (main binary) + 2 tests (secret_discipline integration) = 319 total.
+   Two binaries. All pass.
+
 ## [1.0.2] — iterations 122–123: approvals silent-error, null fallback hardening, shape test gaps
 
 ### Bugs (iter-123)
