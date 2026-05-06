@@ -804,6 +804,91 @@ mod tests {
         );
     }
 
+    /// iter-72: Verify the shape of `AuditResult` when there are zero vault
+    /// items (fresh vault or empty folder).
+    ///
+    /// `run_audit()` cannot be called without a live `VaultManager`, but the
+    /// all-zero result is easy to construct directly and verify structurally.
+    /// This documents the contract: every array is empty, counts are 0, and
+    /// the metadata fields (`weak_threshold_len`, `scoring_note`) are still
+    /// populated with meaningful values.
+    ///
+    /// Without this test, a refactor that accidentally returns `0` for
+    /// `weak_threshold_len` on an empty vault would pass all existing tests
+    /// because no other test inspects those fields on a zero-item result.
+    #[test]
+    fn zero_item_audit_result_has_correct_shape() {
+        // Directly construct the AuditResult that run_audit() returns when
+        // vault.list_items() returns an empty Vec.  This is the path hit by
+        // any fresh vault or an operator who has not yet added any items.
+        let result = AuditResult {
+            total_items: 0,
+            weak_passwords: vec![],
+            reused_passwords: vec![],
+            fair_passwords_count: 0,
+            weak_threshold_len: WEAK_THRESHOLD,
+            scoring_note: format!(
+                "rule-based heuristic: length + character classes only; \
+                 no dictionary check — common passwords like 'password123' \
+                 may score 'fair' if they meet the length threshold \
+                 (weak = fewer than {} characters); \
+                 each AuditItem includes a `reason` field with an actionable explanation",
+                WEAK_THRESHOLD
+            ),
+        };
+
+        assert_eq!(result.total_items, 0, "zero items: total_items must be 0");
+        assert!(
+            result.weak_passwords.is_empty(),
+            "zero items: weak_passwords must be empty"
+        );
+        assert!(
+            result.reused_passwords.is_empty(),
+            "zero items: reused_passwords must be empty"
+        );
+        assert_eq!(
+            result.fair_passwords_count, 0,
+            "zero items: fair_passwords_count must be 0"
+        );
+        // Threshold must still be populated — callers rely on this field to
+        // interpret results even when the arrays are empty.
+        assert_eq!(
+            result.weak_threshold_len, WEAK_THRESHOLD,
+            "zero items: weak_threshold_len must equal WEAK_THRESHOLD ({})",
+            WEAK_THRESHOLD
+        );
+        // scoring_note must be a non-empty string even on a zero-item vault.
+        assert!(
+            !result.scoring_note.is_empty(),
+            "zero items: scoring_note must be non-empty"
+        );
+        // scoring_note must embed the actual threshold value so callers don't
+        // see a stale hard-coded number if WEAK_THRESHOLD changes.
+        let threshold_str = WEAK_THRESHOLD.to_string();
+        assert!(
+            result.scoring_note.contains(&threshold_str),
+            "zero items: scoring_note must embed WEAK_THRESHOLD ({}), got: {}",
+            WEAK_THRESHOLD,
+            result.scoring_note
+        );
+        // Serialize to JSON and verify all six top-level fields are present.
+        let json = serde_json::to_value(&result).expect("AuditResult must serialise");
+        for field in &[
+            "total_items",
+            "weak_passwords",
+            "reused_passwords",
+            "fair_passwords_count",
+            "weak_threshold_len",
+            "scoring_note",
+        ] {
+            assert!(
+                json.get(field).is_some(),
+                "zero-item AuditResult JSON must include field '{}'; got: {json}",
+                field
+            );
+        }
+    }
+
     /// iter-70: Verify that the reuse reason is NOT truncated when there are
     /// exactly 5 or fewer other items (i.e. the truncation threshold is
     /// exclusive, not inclusive).

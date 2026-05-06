@@ -210,6 +210,10 @@ struct Args {
     /// password once, so on large vaults (500+ items) choose a generous interval
     /// (e.g. 3600 s / 1 hour) to avoid sustained CPU use.
     ///
+    /// MINIMUM INTERVAL: values below 60 s are accepted but trigger a startup
+    /// warning.  Sub-60 s intervals cause sustained CPU load on large vaults;
+    /// the recommended minimum is 60 s.  For most homelabs, 3600 (hourly) is ideal.
+    ///
     /// FIRST-TICK BEHAVIOUR: the first background audit fires after one full
     /// interval, NOT immediately at startup.  This avoids a double-decrypt
     /// on startup (the vault is freshly loaded) and gives the vault time to
@@ -217,6 +221,10 @@ struct Args {
     /// an immediate baseline, call `GET /vault/audit/run` manually once after
     /// startup.  Compare: `--vault-refresh-interval-secs` also skips the first
     /// tick for the same reason.
+    ///
+    /// NOTIFICATIONS: when `--notify-channel` / `--ntfy-url` is configured,
+    /// the background task sends a push notification when weak or reused
+    /// passwords are found (priority 4 — high).  Clean runs do not notify.
     ///
     /// Set to 0 (the default) to disable the background audit entirely and
     /// rely on on-demand calls to `GET /vault/audit/run`.
@@ -2083,6 +2091,14 @@ async fn start_server(
     //     second full-vault decryption pass at the same time.
     //   - Log verbosity: only log at INFO/WARN when issues are found; log at
     //     DEBUG for clean runs to avoid hundreds of identical INFO lines per day.
+    //
+    // iter-72: CancellationToken created unconditionally so the signal handler
+    // (below) can always call `audit_shutdown_token.cancel()` regardless of
+    // whether the background audit task was actually spawned.  When the interval
+    // is 0 (disabled), the token is created but never cloned into a task — the
+    // cancel() call in the signal handler is a no-op.
+    let audit_shutdown_token = tokio_util::sync::CancellationToken::new();
+
     if args.audit_interval_secs > 0 {
         // iter-62: warn operators who set an aggressively short interval.
         const AUDIT_MIN_INTERVAL_SECS: u64 = 60;
@@ -2103,6 +2119,32 @@ async fn start_server(
         // In a multi-instance deployment (prod/staging both writing to the same
         // log stream) the vault_folder distinguishes which instance's audit fired.
         let audit_vault_folder = args.vault_folder.clone();
+        // iter-72: capture notifier so the background task can push alerts when
+        // weak or reused passwords are found.  Previously the task only logged at
+        // WARN, so operators using ntfy.sh/email never received a push notification
+        // without also watching structured logs.  With this change, every audit
+        // run that finds issues fires a priority-4 notification via the configured
+        // channel.  Clean runs do not notify (avoids alert fatigue).
+        let audit_notifier = state.notifier.clone();
+        // iter-72: CancellationToken shutdown integration.
+        //
+        // The audit task is a detached `tokio::spawn` — it continues running after
+        // the TCP listener closes during graceful shutdown.  If an audit is in
+        // progress at SIGTERM time, it would keep decrypted password buffers live
+        // in mlocked memory until the OS SIGKILL (10 s later on Docker).  The
+        // token lets the outer restart-loop exit cleanly once shutdown is signalled,
+        // and the `tokio::select!` inside the inner tick-loop exits the current
+        // audit iteration via the abort path (inner task abort propagates as
+        // JoinError::is_cancelled, which the outer loop does NOT restart on).
+        //
+        // Shutdown sequence:
+        //   1. SIGTERM/Ctrl-C fires → audit_shutdown_token.cancel() (in signal handler)
+        //   2. Outer loop checks is_cancelled() and returns (no restart).
+        //   3. inner `tokio::select!` picks up cancellation on the next tick
+        //      and returns — all SecureBuffers are dropped (zeroized) promptly.
+        //   4. The outer tokio::spawn future exits; the graceful-shutdown drain
+        //      window (10 s) completes with no decrypted buffers in flight.
+        let audit_shutdown_child = audit_shutdown_token.clone();
         // iter-64: wrap the audit task in the same panic-restart loop used by
         // the policy scheduler (iter-23).  Without the outer loop, a panic inside
         // `run_audit()` — however unlikely — silently kills the background task:
@@ -2117,6 +2159,8 @@ async fn start_server(
                 let inner_vault = audit_vault.clone();
                 let inner_mutex = audit_mutex.clone();
                 let inner_folder = audit_vault_folder.clone();
+                let inner_notifier = audit_notifier.clone();
+                let inner_shutdown = audit_shutdown_child.clone();
                 let inner = tokio::spawn(async move {
                     tracing::info!(
                         vault_folder = %inner_folder,
@@ -2133,7 +2177,22 @@ async fn start_server(
                     // need an immediate baseline can call `GET /vault/audit/run` manually.
                     interval.tick().await;
                     loop {
-                        interval.tick().await;
+                        // iter-72: exit cleanly when shutdown is signalled instead of
+                        // waiting for the next interval tick.  `tokio::select!` races
+                        // the next tick against the cancellation token; whichever fires
+                        // first wins.  On cancellation the inner task returns normally
+                        // (not a panic), which the outer loop treats as a clean exit and
+                        // does NOT restart.
+                        tokio::select! {
+                            _ = interval.tick() => {}
+                            _ = inner_shutdown.cancelled() => {
+                                tracing::debug!(
+                                    vault_folder = %inner_folder,
+                                    "credential audit background task: shutdown signalled — exiting"
+                                );
+                                return;
+                            }
+                        }
                         tracing::debug!("credential audit background: running in-process audit");
                         // iter-62: hold audit_mutex to prevent a concurrent HTTP audit
                         // from running a second full-vault decryption pass simultaneously.
@@ -2151,6 +2210,22 @@ async fn start_server(
                                 reuse_groups = n_reuse,
                                 "credential audit background: issues found — review GET /vault/audit/run"
                             );
+                            // iter-72: send push notification via configured channel
+                            // (ntfy.sh or email queue).  Priority 4 (high) so the alert
+                            // surfaces above INFO-level noise in ntfy.sh UIs.
+                            // Rate-limited internally by Notifier (5 per 5 min) — a
+                            // very short audit interval cannot flood the notification channel.
+                            let title = format!(
+                                "Vault audit: {} weak, {} reuse group(s) — {}",
+                                n_weak, n_reuse, inner_folder
+                            );
+                            let body = format!(
+                                "vault-proxy credential audit found issues in '{}': \
+                                 {} weak password(s), {} reuse group(s) (total {} items scanned). \
+                                 Review with: GET /vault/audit/run",
+                                inner_folder, n_weak, n_reuse, result.total_items
+                            );
+                            inner_notifier.send(&title, &body, 4).await.ok();
                         } else {
                             // Clean run — log at DEBUG to avoid 288 identical INFO lines
                             // per day when no issues exist (e.g. 300 s interval, 0 weak).
@@ -2167,8 +2242,16 @@ async fn start_server(
 
                 match inner.await {
                     Ok(_) => {
-                        // The inner loop never returns normally; if it does,
-                        // restart it after a brief delay.
+                        // iter-72: a clean return from the inner task means the
+                        // shutdown token was cancelled.  Exit the outer loop without
+                        // restarting so the task terminates cleanly.
+                        if audit_shutdown_child.is_cancelled() {
+                            tracing::debug!(
+                                "credential audit background task: shutdown complete"
+                            );
+                            return;
+                        }
+                        // Otherwise the inner loop exited unexpectedly — restart.
                         tracing::warn!(
                             "credential audit background task exited unexpectedly — restarting in 5s"
                         );
@@ -2181,6 +2264,14 @@ async fn start_server(
                         );
                     }
                     Err(e) => {
+                        // iter-72: abort (from cancellation) also arrives here as
+                        // JoinError::is_cancelled().  Exit cleanly; do not restart.
+                        if e.is_cancelled() {
+                            tracing::debug!(
+                                "credential audit background task: cancelled during audit — shutdown complete"
+                            );
+                            return;
+                        }
                         tracing::warn!(
                             "credential audit background task ended ({:?}) — restarting in 5s",
                             e
@@ -2202,6 +2293,12 @@ async fn start_server(
     let shutdown_handle = server_handle.clone();
 
     // Spawn the signal watcher — triggers graceful shutdown on SIGTERM or Ctrl-C.
+    //
+    // iter-72: also cancel the audit shutdown token so the background audit task
+    // exits cleanly within the 10-second drain window.  Without this, an in-flight
+    // audit would keep decrypted SecureBuffers live in mlocked memory until the
+    // OS SIGKILL fires (10 s after SIGTERM on Docker).  Cancelling the token lets
+    // the audit's `tokio::select!` exit early and drop all buffers promptly.
     tokio::spawn(async move {
         let sigterm_fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = {
             #[cfg(unix)]
@@ -2229,6 +2326,9 @@ async fn start_server(
                 tracing::info!("received Ctrl-C — draining in-flight requests before exit");
             }
         }
+        // iter-72: signal the audit background task to stop so it zeroizes any
+        // in-flight decrypted buffers before the process exits.
+        audit_shutdown_token.cancel();
         // Allow up to 10 s for in-flight requests to complete before hard-kill.
         shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
     });
