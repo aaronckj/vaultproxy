@@ -687,6 +687,7 @@ async fn apply_auth_and_send(
                 path: &path_with_prefix,
                 body: req.body.as_ref(),
                 query: &query_pairs,
+                timeout_secs: service.timeout_secs,
             };
             let resp = unifi_handle_request(
                 &state.unifi_sessions,
@@ -829,13 +830,40 @@ async fn session_login(
         login_path
     );
 
+    // Issue (iter-42): Apply the per-service timeout_secs to the login request.
+    //
+    // Previously, session_login() used `state.http.post(...)` directly, which
+    // is the global client with the global --proxy-timeout baked in. A service
+    // with `timeout_secs = 5` would wait up to 120 s (the global default) on
+    // the login round-trip even though the operator intended a 5-second budget.
+    //
+    // We look up the ServiceEntry while we already have the registry read lock
+    // (the base_url scan above) and carry the timeout_secs out alongside it.
+    // Applying it via RequestBuilder::timeout() mirrors how build_request()
+    // applies it for the real API call.
+    let timeout_secs: Option<u64> = {
+        let reg = state.registry.read().await;
+        let names = reg.list();
+        names.iter().find_map(|name| {
+            let entry = reg.get(name)?;
+            if let AuthPattern::Session { vault_item: vi, .. } = &entry.auth {
+                if vi == vault_item {
+                    return Some(entry.timeout_secs);
+                }
+            }
+            None
+        })
+        .flatten()
+    };
+
     // Build the login body using the configured login_include_username flag.
     let login_body = build_session_login_body(state, vault_item, login_include_username)?;
 
-    let resp = state
-        .http
-        .post(&login_url)
-        .json(&login_body)
+    let mut login_req = state.http.post(&login_url).json(&login_body);
+    if let Some(secs) = timeout_secs {
+        login_req = login_req.timeout(std::time::Duration::from_secs(secs));
+    }
+    let resp = login_req
         .send()
         .await
         .map_err(|e| anyhow::anyhow!("session login request failed: {}", e))?

@@ -167,15 +167,22 @@ pub type QueryPairs<'a> = &'a [(&'a str, String)];
 ///
 /// Separating these from `UnifiDualAuthCtx` keeps the auth credentials
 /// (`username`, `password`, `login_path`) distinct from the routing details
-/// (`base_url`, `method`, `path`, `body`, `query`), which improves call-site
-/// clarity: callers construct the ctx once per vault-item and the req once
-/// per HTTP call.
+/// (`base_url`, `method`, `path`, `body`, `query`, `timeout_secs`), which
+/// improves call-site clarity: callers construct the ctx once per vault-item
+/// and the req once per HTTP call.
+///
+/// `timeout_secs` — per-service timeout override from `ServiceEntry::timeout_secs`.
+/// When `Some(n)`, both the API-key attempt and the session login POST use an
+/// `n`-second timeout instead of the hardcoded 30-second client default. `None`
+/// keeps the 30-second fallback.
 pub struct UnifiRequestCtx<'a> {
     pub base_url: &'a str,
     pub method: Method,
     pub path: &'a str,
     pub body: Option<&'a Value>,
     pub query: QueryPairs<'a>,
+    /// Per-service timeout override. `None` → use the 30 s built-in default.
+    pub timeout_secs: Option<u64>,
 }
 
 /// Forward a UniFi request, attempting `X-API-Key` first and falling back to
@@ -193,11 +200,16 @@ pub async fn handle_request(
     let query = req.query;
     let target = build_url(base_url, path);
 
+    // Issue (iter-42): Use the per-service timeout when provided; fall back to
+    // 30 s so short-timeout services (e.g. timeout_secs = 5) don't hang for 30
+    // seconds on the API-key probe or the session login POST.
+    let effective_timeout = req.timeout_secs.unwrap_or(30);
+
     // --- Attempt 1: X-API-Key via a bare (no cookie jar) client. ---
     // UDM serves a self-signed TLS cert; accept it.
     let bare = Client::builder()
         .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(effective_timeout))
         .build()
         .map_err(|e| anyhow!("build bare reqwest client: {e}"))?;
 
@@ -236,7 +248,7 @@ pub async fn handle_request(
     }
 
     if guard.is_none() {
-        let mut new_session = login(base_url, auth_ctx).await?;
+        let mut new_session = login(base_url, auth_ctx, effective_timeout).await?;
         new_session.cred_fingerprint = current_fp.clone();
         *guard = Some(new_session);
     }
@@ -257,7 +269,7 @@ pub async fn handle_request(
     // If the retry itself looks like auth failure, relogin once and retry.
     if is_auth_failure(retry.status, &retry.headers, &retry.json) {
         tracing::warn!(service, "session expired, re-logging in once");
-        let mut refreshed = login(base_url, auth_ctx).await?;
+        let mut refreshed = login(base_url, auth_ctx, effective_timeout).await?;
         refreshed.cred_fingerprint = current_fp.clone();
         *guard = Some(refreshed);
         let session = guard.as_ref().expect("session just refreshed");
@@ -339,11 +351,11 @@ async fn send_once(
     Ok(SentResponse { status, headers, json })
 }
 
-async fn login(base_url: &str, ctx: &UnifiDualAuthCtx) -> Result<SessionState> {
+async fn login(base_url: &str, ctx: &UnifiDualAuthCtx, timeout_secs: u64) -> Result<SessionState> {
     let client = Client::builder()
         .cookie_store(true)
         .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| anyhow!("build unifi session client: {e}"))?;
 
@@ -567,6 +579,7 @@ mod tests {
             path: http_path,
             body,
             query,
+            timeout_secs: None,
         };
         handle_request(cache, service, &req, auth_ctx).await
     }
@@ -883,6 +896,7 @@ mod tests {
                     path: "/api/self/sites",
                     body: None,
                     query: &[],
+                    timeout_secs: None,
                 };
                 handle_request(&cache, "unifi_home", &req, &auth_ctx).await
             }));

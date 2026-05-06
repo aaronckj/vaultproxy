@@ -1847,8 +1847,12 @@ async fn start_server(
             }
         });
     } else {
-        tracing::debug!(
-            "vault background refresh disabled \
+        // Issue (iter-42): Emit at info! not debug! so operators running with
+        // the default INFO filter see a positive confirmation that background
+        // refresh is intentionally disabled, rather than having to infer it
+        // from the absence of the "task started" message.
+        tracing::info!(
+            "vault background refresh: disabled \
              (set VAULT_REFRESH_INTERVAL_SECS=300 to enable 5-minute auto-sync)"
         );
     }

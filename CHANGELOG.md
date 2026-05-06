@@ -3,6 +3,55 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] — iteration-42: per-service timeout completeness
+
+### Bugs fixed
+
+- **`session_login()` used global client timeout (iter-42, MEDIUM)**: The
+  `session_login()` function posted to the service's `login_path` using
+  `state.http` directly — the global client with `--proxy-timeout` (default
+  120 s) baked in. A service with `timeout_secs = 5` would hang for up to 120
+  seconds on the login round-trip even though the operator intended a 5-second
+  budget. Fixed: `session_login()` now looks up `ServiceEntry::timeout_secs`
+  from the registry (same lock acquisition already needed for `base_url`) and
+  applies it via `RequestBuilder::timeout()` on the login POST.
+
+- **UniFi dual-auth used hardcoded 30 s timeout (iter-42, MEDIUM)**: Both the
+  API-key probe client and the session login client in `unifi_session.rs` were
+  built with `Duration::from_secs(30)` regardless of `ServiceEntry::timeout_secs`.
+  `UnifiRequestCtx` now carries a `timeout_secs: Option<u64>` field. The
+  `effective_timeout` (`timeout_secs.unwrap_or(30)`) is used for both the bare
+  API-key client and the `login()` function so short-timeout UniFi services
+  (e.g. `timeout_secs = 5`) no longer hang for 30 seconds on auth failures.
+
+- **`vault background refresh: disabled` logged at DEBUG (iter-42, LOW)**: When
+  `VAULT_REFRESH_INTERVAL_SECS=0` (the default), the "refresh disabled" message
+  was emitted at `tracing::debug!`. Operators running with the default `INFO`
+  filter had no positive confirmation that the background task was intentionally
+  absent. Changed to `tracing::info!` so the "disabled" line appears in
+  production logs at the same visibility level as the "task started" message.
+
+### Documentation / quality
+
+- **`TIMEOUT_SECS_WARN_THRESHOLD` named constant (iter-42)**: The magic number
+  `600` in the per-service timeout validation in `registry.rs` is now a named
+  constant `TIMEOUT_SECS_WARN_THRESHOLD` with inline rationale (homelab API
+  scan budget, rate-limit starvation risk). The warning message now references
+  the constant name and explains how to express "no timeout" (`None` / omit key).
+
+- **`services.example.toml` documents `timeout_secs` (iter-42)**: The new
+  optional field was missing from the example file. Added a documented comment
+  in the Optional fields section and an inline commented example on the `plex`
+  block (the canonical "slow service" use-case).
+
+- **Wiremock timeout behavior test (iter-42)**: Added
+  `per_service_timeout_fires_on_slow_upstream` to `registry.rs` tests. It mounts
+  a wiremock handler with a 2-second delay, applies a 1-second
+  `RequestBuilder::timeout()` override, and asserts the request fails with
+  `is_timeout() == true` in under 1.8 s. This closes the gap identified in
+  iter-41 where the 3 existing tests only verified registry parsing, not actual
+  HTTP timeout behavior.
+
 ## [0.2.0] — iterations 36–37: concurrent reload guard, background vault refresh, hard service cap
 
 ### Security / correctness fixes (iteration 37)

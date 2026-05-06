@@ -62,6 +62,21 @@ fn default_true() -> bool {
     true
 }
 
+/// Maximum per-service timeout before a startup warning is emitted.
+///
+/// 600 s (10 minutes) is chosen because:
+///   - It covers the longest legitimate single API call we know of in homelab
+///     use (a Plex library scan of ~50 000 items typically finishes in < 5 min).
+///   - Values above this are almost certainly misconfigured (e.g. `timeout_secs
+///     = 3600` intended as "no timeout" but not how it works — `None` is the
+///     correct way to express "use the global timeout").
+///   - Very long per-service timeouts can hold a connection open and stall the
+///     rate-limit bucket for other callers for the full timeout window.
+///
+/// This is a warning threshold, not a hard cap — the value is still accepted and
+/// applied. The warning gives operators a visible signal to verify the intent.
+const TIMEOUT_SECS_WARN_THRESHOLD: u64 = 600;
+
 // -------------------------------------------------------------------------- //
 // AuthPattern                                                                  //
 // -------------------------------------------------------------------------- //
@@ -1188,12 +1203,13 @@ impl ServiceRegistry {
                     );
                     continue;
                 }
-                Some(t) if t > 600 => {
+                Some(t) if t > TIMEOUT_SECS_WARN_THRESHOLD => {
                     tracing::warn!(
-                        "service '{}': timeout_secs = {} is unusually large (> 600 s). \
+                        "service '{}': timeout_secs = {} exceeds the {} s warn threshold. \
                          Very long per-service timeouts can stall the rate-limit bucket. \
-                         Consider whether this service genuinely needs this timeout.",
-                        svc.name, t
+                         Consider whether this service genuinely needs this timeout. \
+                         To express 'no timeout', omit the key entirely (uses global --proxy-timeout).",
+                        svc.name, t, TIMEOUT_SECS_WARN_THRESHOLD
                     );
                     Some(t)
                 }
@@ -2201,6 +2217,82 @@ timeout_secs = 0
         assert!(
             registry.get("zero_timeout").is_none(),
             "service with timeout_secs = 0 must be rejected"
+        );
+    }
+
+    /// Issue (iter-42): Verify that `RequestBuilder::timeout()` actually enforces
+    /// the per-service timeout at the HTTP request level.
+    ///
+    /// This test validates the mechanism that `build_request` uses when applying
+    /// `ServiceEntry::timeout_secs`: mount a wiremock handler with a 2-second
+    /// artificial delay, build a request via a client + `RequestBuilder::timeout(1s)`,
+    /// and assert that the request returns a timeout error within ~2 seconds rather
+    /// than hanging for the full 2-second upstream delay.
+    ///
+    /// This is the lowest-level test that confirms `Duration::from_secs(n)` passed
+    /// to `RequestBuilder::timeout()` actually overrides the client-level timeout.
+    /// Without this test, the per-service timeout could be stored in `ServiceEntry`
+    /// and passed to `build_request` but silently never applied — the 3 existing
+    /// iter-41 tests only verify registry parsing, not actual request behavior.
+    #[tokio::test]
+    async fn per_service_timeout_fires_on_slow_upstream() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Mount a handler that sleeps for 2 seconds before responding.
+        // The test request will have a 1-second timeout, so the sleep
+        // should never complete — the timeout fires first.
+        Mock::given(method("GET"))
+            .and(path("/slow"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({"ok": true})),
+            )
+            .mount(&server)
+            .await;
+
+        // Build a client with a 30-second client-level timeout (would never fire
+        // before the 2-second handler responds normally). The per-request
+        // override of 1 second is what we expect to actually fire.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = client
+            .get(format!("{}/slow", server.uri()))
+            // Apply a 1-second per-request timeout — should override the 30s client timeout.
+            .timeout(std::time::Duration::from_secs(1))
+            .send()
+            .await;
+
+        let elapsed = start.elapsed();
+
+        // The request must have failed (timeout error), not succeeded.
+        assert!(
+            result.is_err(),
+            "expected a timeout error but got a response: {:?}",
+            result
+        );
+
+        // The timeout error must have been a reqwest::Error with is_timeout() == true.
+        let err = result.unwrap_err();
+        assert!(
+            err.is_timeout(),
+            "expected reqwest timeout error (is_timeout() == true), got: {}",
+            err
+        );
+
+        // The whole call must finish well under 2 seconds (the server's delay).
+        // We allow up to 1.8 s to avoid flakiness on slow CI runners.
+        assert!(
+            elapsed < std::time::Duration::from_millis(1800),
+            "timeout should have fired in ~1 s but elapsed was {:?}",
+            elapsed
         );
     }
 }

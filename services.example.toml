@@ -40,6 +40,12 @@
 # Optional:
 #   insecure_tls = true   — skip TLS cert verification (only for self-signed LAN services)
 #   ca_cert = "/path"     — path to a PEM CA cert for services with a private CA
+#   timeout_secs = 60     — per-service request timeout in seconds, overrides global
+#                           --proxy-timeout (default 120 s) for this service only.
+#                           Useful when one service is legitimately slow (e.g. a Plex
+#                           library scan) or should fail fast (e.g. a health-check call
+#                           that should give up in 5 s). Must be > 0; values > 600 s
+#                           emit a startup warning. Omit entirely to use the global timeout.
 #
 # Auth-specific required fields (see README for full reference):
 #   header:       header_name (e.g. "X-Api-Key")
@@ -147,9 +153,12 @@ vault_item = "vault-proxy - UniFi"
 login_path = "/api/auth/login"
 
 # ── Plex (X-Plex-Token header) ───────────────────────────────────────────────
+# Plex library scans can take minutes; set timeout_secs to allow for that.
+# Omit timeout_secs (or remove the line) to use the global --proxy-timeout.
 [[service]]
 name = "plex"
 base_url = "http://plex.local:32400"
 auth = "header"
 header_name = "X-Plex-Token"
 vault_item = "vault-proxy - Plex"
+# timeout_secs = 300   # optional: 5-minute budget for slow library scans
