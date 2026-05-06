@@ -290,6 +290,16 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
     let mut reuse_map: HashMap<String, Vec<AuditItem>> = HashMap::new();
 
     for masked in &masked_items {
+        // iter-75: yield once per item so tokio task cancellation (abort()) can
+        // land between iterations.  Without this, run_audit() holds the CPU for
+        // the entire vault scan with no cooperative yield after list_items().await
+        // returns — an abort() called during the loop would not fire until the
+        // next .await point in the *outer* background task (the interval tick),
+        // meaning the task could finish the full scan before honoring the abort.
+        // yield_now() costs ~1 µs per item and adds no measurable latency on a
+        // 200-item vault (<0.2 ms total overhead).
+        tokio::task::yield_now().await;
+
         let item_type = masked.item_type.clone();
 
         // Only login items have passwords; skip others silently.

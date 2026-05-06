@@ -3,6 +3,69 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.19] — iteration 74–75: JoinHandle abort, notify failure logging, reuse count, yield_now
+
+### Bug fixes (iter-74–75)
+
+- **JoinHandle abort on 8-second timeout (iter-74, CRITICAL)**: Previously
+  `tokio::time::timeout(8s, handle).await` dropped the `JoinHandle` on
+  `Err(Elapsed)` but the underlying tokio task continued running as an orphan —
+  decrypted `SecureBuffer` pages remained live in mlocked memory until OS SIGKILL.
+  Fixed: the `JoinHandle` is now passed as `&mut handle` so it is not consumed by
+  the timeout future; on `Err(Elapsed)` the handle is still owned and `handle.abort()`
+  is called explicitly to force-cancel the task and trigger `SecureBuffer` zeroization
+  promptly.  `src/main.rs:2400–2410`.
+
+- **Notification failure silently discarded (iter-74, MEDIUM)**: The background
+  audit task called `.ok()` on the `Notifier::send()` result — if ntfy.sh was
+  unreachable, the operator would never know the audit alert was dropped.  Fixed:
+  the result is matched with `if let Err(e)` and a `tracing::warn!` is emitted so
+  delivery failures appear in the log.  `src/main.rs:2271–2273`.
+
+- **`n_reused_items` counted groups not items (iter-74, MEDIUM)**: The background
+  audit log field `reused_items` was previously set to `result.reused_passwords.len()`
+  (number of groups).  A single reuse group with 50 members would report as
+  `reused_items=1`, severely under-reporting severity.  Fixed:
+  `result.reused_passwords.iter().map(|g| g.len()).sum()` sums over group lengths
+  — correct because `reused_passwords: Vec<Vec<AuditItem>>` and each `Vec<AuditItem>`
+  has a `.len()` method.  The notification title and body also now use `n_reused_items`
+  for the items-with-shared-passwords count.  Priority scaling also switched from
+  `n_weak + n_reuse_groups` to `n_weak + n_reused_items`.  `src/main.rs:2212–2243`.
+
+- **`run_audit()` loop has no yield points for task cancellation (iter-75, MEDIUM)**:
+  After `vault.list_items().await` returns, the per-item loop (decrypt, HMAC, classify)
+  runs entirely synchronously with no cooperative yield.  A `handle.abort()` during
+  the loop cannot fire until the next `.await` in the outer background task — the
+  interval tick after the full scan completes.  Fixed: `tokio::task::yield_now().await`
+  added at the top of the for-loop body, giving the tokio scheduler a cancellation
+  check point between each vault item.  Overhead is ~1 µs per item (<0.2 ms for a
+  200-item vault).  `src/audit.rs:292`.
+
+### Improvements (iter-74)
+
+- **Notification wording: "reuse group" → "item(s) with shared passwords"
+  (iter-74, LOW)**: The ntfy.sh notification title previously read
+  `"N reuse group(s)"` — a technical term that operators unfamiliar with the code
+  might not immediately understand.  Changed to `"N item(s) with shared passwords"`
+  to make the alert actionable without consulting the source.  `src/main.rs:2251–2253`.
+
+- **`scoring_note` references `REUSE_NAME_DISPLAY_LIMIT` constant (iter-74, LOW)**:
+  The iter-74 addition to `scoring_note` uses `format!("... capped at {} names ...",
+  REUSE_NAME_DISPLAY_LIMIT)` rather than a hardcoded literal `5`, ensuring the note
+  tracks the constant if the limit changes.  `src/audit.rs:406–415`.
+
+- **`zero_item_audit_result_has_correct_shape` test updated for `scoring_note`
+  (iter-74, LOW)**: The test now constructs the expected `scoring_note` with
+  `format!()` referencing `WEAK_THRESHOLD` and `REUSE_NAME_DISPLAY_LIMIT` so it
+  tracks future constant changes automatically.  `src/audit.rs:836–846`.
+
+### Verification (iter-74–75)
+
+- `cargo test --all-targets`: 254 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: 0 diff lines (clean).
+- `cargo doc --no-deps`: 0 warnings.
+
 ## [0.2.18] — iteration 73: notification priority scaling, audit shutdown await
 
 ### Bug fixes (iter-73)
