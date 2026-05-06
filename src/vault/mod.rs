@@ -984,6 +984,8 @@ impl VaultManager {
     /// site has the new credential while the vault still holds the old one.
     ///
     /// Errors on: item not found, encryption failure, update API failure.
+    // iter-81: used by browser/workflow.rs (feature = "browser"). Dead in default builds.
+    #[allow(dead_code)]
     pub async fn update_password_for_item(
         &self,
         item_name: &str,
@@ -1027,6 +1029,8 @@ impl VaultManager {
     /// `Ok(None)` if the cipher exists but has no notes, or the decrypted
     /// notes as a `SecureBuffer`. Errors if the cipher id is not in the
     /// vault map or decryption fails.
+    // iter-81: used by credential_audit/marker.rs (feature = "engine"). Dead in default builds.
+    #[allow(dead_code)]
     pub fn decrypt_notes_by_id(&self, item_id: &str) -> Result<Option<SecureBuffer>> {
         let map = self
             .items
@@ -1053,6 +1057,8 @@ impl VaultManager {
     /// Re-encrypt and update only the notes field of a cipher (by VW id).
     /// Pulls the current cipher from the cached map, sets `notes`, and
     /// pushes via `update_cipher`. The rest of the cipher stays unchanged.
+    // iter-81: used by credential_audit/marker.rs (feature = "engine"). Dead in default builds.
+    #[allow(dead_code)]
     pub async fn update_notes_by_id(&self, item_id: &str, new_notes: &str) -> Result<()> {
         let cipher = {
             let map = self.items.read().await;
@@ -1712,6 +1718,8 @@ impl VaultManager {
     ///
     /// Async + `read().await` (vs `try_read`) avoids spurious "vault busy"
     /// errors when the aggregator races a concurrent `sync()` write lock.
+    // iter-81: used by credential_audit/vw_adapter.rs (feature = "engine"). Dead in default builds.
+    #[allow(dead_code)]
     pub async fn list_field_names(&self, item_name: &str) -> Result<Vec<String>> {
         let items = self.items.read().await;
         // Scan values (items are id-keyed now); first name match wins.

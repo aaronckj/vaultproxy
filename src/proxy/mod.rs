@@ -12,6 +12,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+#[cfg(feature = "browser")]
 use crate::browser::BrowserAgent;
 use crate::sync::SyncManager;
 use crate::vault::VaultManager;
@@ -104,9 +105,21 @@ pub struct AppState {
     /// Optional cloud sync manager (enabled when CLOUD_EMAIL is set).
     pub cloud_sync: Option<Arc<SyncManager>>,
     /// 2FA approval queue — pending requests from automated workflows.
+    /// Used by dashboard (approval management) and browser workflow (2FA handling).
+    /// Dead in default builds (no dashboard, no browser feature).
+    #[allow(dead_code)]
     pub approval_queue: Arc<tokio::sync::RwLock<VecDeque<ApprovalRequest>>>,
     /// Browser agent for automated password rotation.
+    /// Only present when the `browser` feature is enabled.
+    /// Dead in default builds (no browser feature) — the field exists for AppState
+    /// construction uniformity but is never read when browser routes are absent.
+    #[allow(dead_code)]
+    #[cfg(feature = "browser")]
     pub browser: Option<Arc<BrowserAgent>>,
+    /// Placeholder when browser feature is disabled — always None.
+    #[allow(dead_code)]
+    #[cfg(not(feature = "browser"))]
+    pub browser: Option<()>,
     /// Tool permissions configuration. Wrapped in RwLock so the dashboard
     /// `POST /api/permissions` handler can hot-reload the live in-memory
     /// copy without requiring a container restart — before this change,
@@ -2471,6 +2484,7 @@ vault_item  = "vault-proxy - Beta"
     /// and an `EngineClient` pointed at a port where nothing is listening.
     /// `start_scan` normalises the reqwest connection-refused error to
     /// `"engine is not reachable"` (iter-34 fix). The handler maps that to 503.
+    #[cfg(feature = "engine")]
     #[tokio::test]
     async fn credaudit_scan_start_returns_503_when_engine_unreachable() {
         use crate::credential_audit::{

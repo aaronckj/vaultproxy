@@ -27,6 +27,9 @@ pub enum Pass2Verdict {
     NoLoginForm,
 }
 
+// Pass2Result is serialized in pass2.rs worker output; construction will be
+// added when the Pass-2 worker result-collection path is fully wired.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct Pass2Result {
     pub item_id: String,

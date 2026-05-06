@@ -1,13 +1,13 @@
-// iter-50: scaffold module — PlaywrightProcess and Pass-2 vision workflow are
-// not fully wired to all production call sites yet.
+// iter-81: this module is only compiled when `--features browser` is passed.
+// The feature gate in main.rs (`#[cfg(feature = "browser")] mod browser;`)
+// means rustc never sees this code when the feature is off — no dead-code
+// suppression is needed, and none is present.
 //
-// TODO(v1.0): Remove `#![allow(dead_code)]` once the following are complete:
-//   - `PlaywrightProcess` used directly from browser_rotate background task
-//   - `VisionModel` wired into the workflow for all screenshot-analysis steps
-//   - `WorkflowState` exposed via the dashboard status endpoint
-//   There is no separate milestone ticket yet; track under the v1.0 label in
-//   the project issue tracker.
-#![allow(dead_code)]
+// When the feature IS on, all items here are reachable via the /browser/*
+// routes in main.rs, so no dead-code warnings are expected in that build either.
+// If a new helper is added to playwright/vision/workflow without wiring it to a
+// route, rustc will correctly flag it — fix by wiring it or adding a targeted
+// `#[allow(dead_code)]` at item level with a comment explaining why.
 
 pub mod playwright;
 pub mod profiles;

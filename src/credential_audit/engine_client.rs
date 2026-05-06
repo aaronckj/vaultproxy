@@ -140,8 +140,12 @@ pub struct EngineDedupKey {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EngineRunResponse {
+    // run_id and telemetry_summary are present in the engine JSON response
+    // and may be consumed by future dashboard telemetry integrations.
+    #[allow(dead_code)]
     pub run_id: String,
     pub items: Vec<EngineItemResult>,
+    #[allow(dead_code)]
     pub telemetry_summary: serde_json::Value,
 }
 

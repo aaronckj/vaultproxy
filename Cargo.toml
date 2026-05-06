@@ -1,13 +1,12 @@
 [package]
 name = "vaultproxy"
-version = "0.2.23"
+version = "0.2.24"
 edition = "2021"
-# MSRV is not declared here because transitive dependencies (cookie_store,
-# time, icu_* crates) currently require recent stable releases and their
-# minimum versions change with each `cargo update`. The CI workflow pins a
-# specific stable toolchain version in .github/workflows/docker-publish.yml;
-# a formal `rust-version` field should be added once dependency churn settles
-# and the true floor is stable across a lockfile update cycle.
+# MSRV: 1.87 — inferred from the highest minimum version declared by direct
+# dependencies (tokio-util 0.7 requires 1.70+; axum 0.8 requires 1.75+;
+# rustls 0.23 requires 1.75+; the `let-chains` usage in this crate requires
+# 1.87 which is the effective floor).  Verified with `cargo check` on 1.87.
+rust-version = "1.87"
 description = "Secure credential sidecar for MCP servers — injects auth from Vaultwarden without exposing secrets to AI agents"
 license = "MIT"
 repository = "https://github.com/aaronckj/vaultproxy"
@@ -83,8 +82,9 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "s
 
 [features]
 # `default` = no optional features. This is the recommended build for Docker/server
-# deployments — it includes all proxy, vault, launcher, and browser-rotation
-# functionality but omits the web dashboard and TPM hardware binding.
+# deployments — it includes all proxy, vault, launcher, and audit functionality
+# but omits the web dashboard, TPM hardware binding, browser rotation, and the
+# credential-audit engine sidecar path.
 default = []
 
 # Enable hardware-backed keystore sealing via TPM 2.0 (requires TSS2 system
@@ -100,14 +100,46 @@ tpm = ["tss-esapi"]
 # Build: cargo build --release --features dashboard
 dashboard = []
 
+# Enable the browser-based automated credential rotation subsystem.
+#
+# This feature compiles in the `browser` module (PlaywrightProcess, VisionModel,
+# RotationWorkflow) and wires up the /browser/* HTTP routes. It requires:
+#   - A LiteLLM-compatible vision model endpoint (LITELLM_URL + VISION_MODEL)
+#   - Playwright/agent.py mounted at /app/playwright/agent.py (or PLAYWRIGHT_AGENT_PATH)
+#
+# When this feature is OFF (the default), the /browser/* routes are absent from
+# the router and the `browser` field is absent from AppState. The binary is
+# smaller and has no dependency on the vision workflow scaffold code.
+#
+# Build: cargo build --release --features browser
+# Docker: docker build --build-arg FEATURES=browser -t vaultproxy:browser .
+#         docker build --build-arg FEATURES=dashboard,browser -t vaultproxy:full .
+browser = []
+
+# Enable the credential-audit engine sidecar path.
+#
+# This feature compiles in the external-engine modules of `credential_audit`:
+#   - engine_client  (HTTP client for the /audit/run and /judge_login endpoints)
+#   - orchestrator   (scan coordination, DB writes, engine health checks)
+#   - pass2          (per-item login-attempt worker, rate limiting, blacklisting)
+#
+# It also wires up the /audit/credaudit/* HTTP routes.
+#
+# The in-process credential health audit (`src/audit.rs` + GET /vault/audit/run)
+# is NOT gated — it is part of the stable core and always compiled.
+#
+# When this feature is OFF (the default), the engine sidecar routes are absent.
+# Operators who do not run a credential-audit engine sidecar (most deployments)
+# get a smaller binary with no scaffold code.
+#
+# Build: cargo build --release --features engine
+# Docker: docker build --build-arg FEATURES=engine -t vaultproxy:engine .
+engine = []
+
 # NOTE: There is intentionally no "minimal" feature flag to strip subsystems
-# (cloud sync, browser rotation, launcher, etc.) from Docker builds.
-# All of these subsystems are compile-time zero-cost unless explicitly invoked
-# at runtime — they add no measurable startup time or memory overhead when idle.
-# The binary size difference between a "full" and "minimal" build is ~1-2 MB
-# on stripped release builds, which is not worth maintaining a parallel feature
-# matrix. If binary size becomes a concern, consider profiling with `bloat` and
-# stripping specific heavy dependencies (tokio-tungstenite, rcgen) via features.
+# (cloud sync, launcher, etc.) from Docker builds. Those subsystems are
+# compile-time zero-cost unless explicitly invoked at runtime — they add no
+# measurable startup time or memory overhead when idle.
 #
 # The largest single contributor to binary size is `rusqlite` with `bundled`
 # (embeds a full SQLite build). If you do not use the credential-audit subsystem,

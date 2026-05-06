@@ -251,6 +251,8 @@ impl Notifier {
     ///
     /// For the `Disabled` channel nothing is sent, so the item name is never
     /// transmitted externally.
+    // iter-81: called from browser/rotate handler (feature = "browser"). Dead in default builds.
+    #[allow(dead_code)]
     pub async fn notify_rotation(&self, item: &str, success: bool) {
         let (title, msg) = if success {
             (

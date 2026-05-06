@@ -58,11 +58,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 # FEATURES build-arg controls which Cargo features are compiled in.
-# Default = empty string (headless, no dashboard, no TPM).
-# Pass --build-arg FEATURES=dashboard to enable the web UI on port 3202.
-# Pass --build-arg FEATURES=dashboard,tpm for dashboard + TPM sealing.
+# Default = empty string (headless, no dashboard, no TPM, no browser, no engine sidecar).
+# Available features (combinable with commas):
+#   dashboard — web management UI on port 3202
+#   browser   — browser-based credential rotation (/browser/* routes; requires
+#               Playwright/agent.py and a LiteLLM vision model)
+#   engine    — credential-audit engine sidecar (/audit/credaudit/* routes;
+#               requires CRED_AUDIT_ENGINE_URL)
+#   tpm       — hardware-backed keystore sealing via TPM 2.0 (requires TSS2 libs)
+#
+# Examples:
+#   docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .
+#   docker build --build-arg FEATURES=dashboard,browser -t vaultproxy:full .
+#   docker build --build-arg FEATURES=browser -t vaultproxy:browser .
+#   docker build --build-arg FEATURES=dashboard,tpm -t vaultproxy:tpm .
+#
 # iter-59: Changed default from `--features dashboard` to headless so the
 # published image does not expose port 3202 without operator opt-in.
+# iter-81: browser and engine features added (previously always compiled in).
 ARG FEATURES=""
 
 # Cache dependency build: copy manifests first, compile a dummy main, then

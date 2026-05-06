@@ -41,6 +41,8 @@ pub struct DashboardState {
     pub unlock_password: Arc<tokio::sync::RwLock<Option<zeroize::Zeroizing<String>>>>,
     /// None in setup/locked mode (vault not yet unlocked); Some once the vault
     /// is operational. Credential audit requires a live vault connection.
+    /// Only populated when both `dashboard` and `engine` features are enabled.
+    #[cfg(feature = "engine")]
     pub cred_audit_orch: Option<
         Arc<
             crate::credential_audit::orchestrator::Orchestrator<
@@ -48,6 +50,9 @@ pub struct DashboardState {
             >,
         >,
     >,
+    /// Placeholder when the `engine` feature is disabled.
+    #[cfg(not(feature = "engine"))]
+    pub cred_audit_orch: Option<()>,
 }
 
 // -------------------------------------------------------------------------- //
@@ -71,7 +76,8 @@ pub fn router(state: DashboardState) -> Router {
         .route("/static/{*path}", get(serve_static));
 
     // Authenticated API routes — require a valid session cookie.
-    let api_routes = Router::new()
+    // Build the base routes first, then conditionally merge feature-gated routes.
+    let api_routes_base = Router::new()
         .route("/api/status", get(api::status))
         .route("/api/items", get(api::items))
         .route("/api/sync", get(api::sync_history))
@@ -105,10 +111,6 @@ pub fn router(state: DashboardState) -> Router {
             "/api/settings/notifications/test",
             post(api::notification_test),
         )
-        .route("/api/browser/status", get(api::browser_status))
-        .route("/api/browser/screenshot", get(api::browser_screenshot))
-        .route("/api/browser/rotate", post(api::browser_rotate))
-        .route("/api/browser/abort", post(api::browser_abort))
         .route("/api/profiles", get(api::list_profiles))
         .route("/api/profiles", post(api::save_profiles_handler))
         .route("/api/permissions", get(api::get_permissions))
@@ -134,26 +136,47 @@ pub fn router(state: DashboardState) -> Router {
         .route(
             "/api/credentials/cloud/apikey",
             post(api::connect_cloud_apikey),
-        )
-        .route("/api/credaudit/runs", get(api::credaudit_runs_list))
-        .route(
-            "/api/credaudit/runs/{run_id}",
-            get(api::credaudit_run_detail),
-        )
-        .route("/api/credaudit/scan_start", post(api::credaudit_scan_start))
-        .route("/api/credaudit/apply", post(api::credaudit_apply))
-        .route(
-            "/api/credaudit/telemetry/{run_id}",
-            get(api::credaudit_telemetry),
-        )
-        .route(
-            "/api/credaudit/verify_start",
-            post(api::credaudit_verify_start),
-        )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_session,
-        ));
+        );
+
+    // iter-81: merge browser API routes only when the `browser` feature is on.
+    // When off, the /api/browser/* paths return 404 (routes absent from router).
+    #[cfg(feature = "browser")]
+    let api_routes_base = {
+        let browser_api = Router::new()
+            .route("/api/browser/status", get(api::browser_status))
+            .route("/api/browser/screenshot", get(api::browser_screenshot))
+            .route("/api/browser/rotate", post(api::browser_rotate))
+            .route("/api/browser/abort", post(api::browser_abort));
+        api_routes_base.merge(browser_api)
+    };
+
+    // iter-81: merge credaudit API routes only when the `engine` feature is on.
+    // When off, the /api/credaudit/* paths return 404 (routes absent from router).
+    #[cfg(feature = "engine")]
+    let api_routes_base = {
+        let credaudit_api = Router::new()
+            .route("/api/credaudit/runs", get(api::credaudit_runs_list))
+            .route(
+                "/api/credaudit/runs/{run_id}",
+                get(api::credaudit_run_detail),
+            )
+            .route("/api/credaudit/scan_start", post(api::credaudit_scan_start))
+            .route("/api/credaudit/apply", post(api::credaudit_apply))
+            .route(
+                "/api/credaudit/telemetry/{run_id}",
+                get(api::credaudit_telemetry),
+            )
+            .route(
+                "/api/credaudit/verify_start",
+                post(api::credaudit_verify_start),
+            );
+        api_routes_base.merge(credaudit_api)
+    };
+
+    let api_routes = api_routes_base.layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_session,
+    ));
 
     // Authenticated page routes — middleware redirects to /login on missing session.
     let page_routes = Router::new()

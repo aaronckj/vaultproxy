@@ -3,6 +3,69 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.24] — iteration 81: browser + engine feature gates, MSRV 1.87, dead-code hygiene
+
+### Architecture (iter-81)
+
+- **`browser = []` feature gate** — The entire `browser` module (PlaywrightProcess,
+  VisionModel, RotationWorkflow, BrowserAgent) and its HTTP routes (`/browser/*`,
+  `/api/browser/*` in dashboard) are now compiled only when `--features browser` is
+  passed. Default builds omit the module entirely — no dead-code suppression needed
+  and the binary is smaller. Operators who want browser rotation:
+  `cargo build --release --features browser` or
+  `docker build --build-arg FEATURES=browser`.
+  `src/browser/mod.rs`, `src/main.rs`, `src/proxy/mod.rs`, `src/dashboard/mod.rs`,
+  `src/dashboard/api.rs`.
+
+- **`engine = []` feature gate** — The external credential-audit engine sidecar
+  modules (`engine_client`, `orchestrator`, `pass2`) and their HTTP routes
+  (`/audit/credaudit/*`, `/api/credaudit/*` in dashboard) are now compiled only
+  when `--features engine` is passed. The in-process audit (`src/audit.rs` +
+  `GET /vault/audit/run`) is NOT gated — it remains in the stable core.
+  `src/credential_audit/mod.rs`, `src/main.rs`, `src/dashboard/mod.rs`,
+  `src/dashboard/api.rs`.
+
+- **`rust-version = "1.87"` MSRV declared** — Inferred from the highest-floor
+  transitive dependency and `let-chains` usage in the codebase. `Cargo.toml`.
+
+- **`#![allow(dead_code)]` removed** from `src/browser/mod.rs` and
+  `src/credential_audit/mod.rs` — the feature gates make this suppression
+  unnecessary. Feature-on builds have no dead code; feature-off builds don't
+  compile the module at all.
+
+### Dead-code hygiene (iter-81)
+
+- Targeted `#[allow(dead_code)]` added to items that are reachable only when a
+  specific feature is enabled:
+  - `VaultManager::update_password_for_item` (browser)
+  - `VaultManager::decrypt_notes_by_id`, `update_notes_by_id` (engine)
+  - `VaultManager::list_field_names` (engine)
+  - `Notifier::notify_rotation` (browser)
+  - `AppState::approval_queue`, `AppState::browser` (used by dashboard/browser)
+  - `EngineRunResponse::run_id`, `telemetry_summary` (future dashboard wiring)
+  - `credential_audit::types::Pass2Result` (pass2 result collection, not yet wired)
+
+- Pre-existing dashboard dead-code fixed (were previously hidden by the module-level
+  `#![allow(dead_code)]`):
+  - `ChangePasswordRequest` fields annotated (handler returns 503 pending implementation)
+  - `generate_password` annotated (pending UI wiring)
+  - `TokenResp::two_factor_token` annotated (parsed for completeness)
+  - `save_permissions`: replaced `let mut perms = default(); perms.field = x;`
+    pattern with struct literal + `..default()` (clippy `field_assignment_outside_initializer`)
+
+### Dockerfile (iter-81)
+
+- **`FEATURES` build-arg documentation updated** — Added explicit examples for
+  `browser`, `engine`, and combined builds. Operators who previously relied on
+  browser rotation being always-on must now add `--build-arg FEATURES=browser`.
+
+### Verification (iter-81)
+
+- `cargo test --all-targets`: 230 passed (228 lib + 2 integration), 0 failed.
+- `cargo test --all-targets --features browser,engine,dashboard`: 258 passed, 0 failed.
+- `cargo clippy --all-targets -- -D warnings`: 0 errors (default features).
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+
 ## [0.2.23] — iteration 79-80 (close-out): iter-79 config_file_exists test, iter-80 permissions read-guard clone, docstring path, permissions_source field
 
 ### Bug fixes (iter-79–80)

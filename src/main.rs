@@ -2,21 +2,23 @@
 // per-module attributes on the scaffold modules only.  This means production
 // modules (proxy, vault, keystore, security, etc.) receive normal dead-code
 // warnings, so a newly-written but never-called function in those modules will
-// be flagged by `cargo clippy -- -D warnings` in CI.  Only the listed scaffold
-// modules continue to suppress the lint until they are fully wired for v1.0.
+// be flagged by `cargo clippy -- -D warnings` in CI.
 //
-// Scaffold modules with per-module suppression (remove each when wired):
-//   - audit        (audit log — schema only, no consumer yet)
-//   - browser      (PlaywrightProcess, Pass-2 vision workflow — not fully wired)
-//   - credential_audit (scan/review/apply — engine not deployed in most setups)
+// iter-81: The `browser` and `credential_audit` (engine sidecar path) modules
+// are now feature-gated instead of suppressing dead-code warnings. When the
+// feature flag is off, the modules are entirely absent from the build — no
+// dead code remains because the code is never compiled.
+//
+// Remaining per-module suppression (remove each when wired):
+//   - audit (audit log — schema only, no consumer yet)
 //
 // All other modules (proxy, vault, keystore, tpm, notify, setup, sync, etc.)
-// now get full dead-code checking.  If CI fails on a dead-code warning after
-// this commit, the fix is to either wire the function or add a targeted
-// `#[allow(dead_code)]` at the item level with a comment explaining why.
+// receive full dead-code checking.
 
 mod audit;
+#[cfg(feature = "browser")]
 mod browser;
+#[cfg(feature = "engine")]
 mod credential_audit;
 #[cfg(feature = "dashboard")]
 mod dashboard;
@@ -88,12 +90,14 @@ struct Args {
     cloud_kdf_iterations: Option<u32>,
 
     /// LiteLLM (OpenAI-compatible) base URL for vision model inference.
-    /// Defaults to the MLbox local stack so screenshots/credentials never
-    /// leave the homelab network.
+    /// Only used when the `browser` feature is enabled.
+    #[cfg(feature = "browser")]
     #[arg(long, env = "LITELLM_URL", default_value = "")]
     litellm_url: String,
 
     /// LiteLLM API key (Bearer auth). Empty = no auth header.
+    /// Only used when the `browser` feature is enabled.
+    #[cfg(feature = "browser")]
     #[arg(long, env = "LITELLM_API_KEY", default_value = "")]
     litellm_api_key: String,
 
@@ -101,6 +105,8 @@ struct Args {
     /// Must be set to the name of a vision-capable model in your LiteLLM
     /// deployment (e.g. `"gpt-4o"` or a local model alias). Empty = browser
     /// rotation is disabled even when `--litellm-url` is set.
+    /// Only used when the `browser` feature is enabled.
+    #[cfg(feature = "browser")]
     #[arg(long, env = "VISION_MODEL", default_value = "")]
     vision_model: String,
 
@@ -452,6 +458,7 @@ async fn main() -> anyhow::Result<()> {
     // credential (sent to LiteLLM over the network); the others are URLs or
     // account emails that have a lower sensitivity. We do NOT reject the flag —
     // Docker / compose users often have no choice but to use CLI args.
+    #[cfg(feature = "browser")]
     if !args.litellm_api_key.is_empty() {
         // Only warn if the value looks like it was passed on the command line
         // (i.e. not sourced from the env var, which is the safer channel).
@@ -1196,7 +1203,8 @@ async fn start_server(
         map
     };
 
-    // Initialize browser agent.
+    // Initialize browser agent (only when the `browser` feature is enabled).
+    #[cfg(feature = "browser")]
     let browser_agent = Arc::new(browser::BrowserAgent::new(
         &args.litellm_url,
         &args.litellm_api_key,
@@ -1299,7 +1307,10 @@ async fn start_server(
         client_certs: Some(certs),
         cloud_sync: cloud_sync_arc.clone(),
         approval_queue: Arc::new(tokio::sync::RwLock::new(std::collections::VecDeque::new())),
+        #[cfg(feature = "browser")]
         browser: Some(browser_agent),
+        #[cfg(not(feature = "browser"))]
+        browser: None,
         permissions,
         audit_log,
         notifier,
@@ -1361,7 +1372,8 @@ async fn start_server(
     // iter-23: added POST /vault/notes (decrypt_notes) here — it was previously
     // on the open router despite returning raw decrypted notes (API tokens, SSH
     // keys, recovery codes). See TODO(public-release) in handlers.rs.
-    let internal_router = Router::new()
+    // Build the core internal router (always-on internal endpoints).
+    let internal_router_base = Router::new()
         .route("/handshake", get(handlers::handshake))
         .route(
             "/vault/connecterr-secrets",
@@ -1373,10 +1385,6 @@ async fn start_server(
                 .layer(DefaultBodyLimit::max(512 * 1024)),
         )
         .route("/rotate", post(rotate::handle_rotate))
-        .route("/browser/rotate", post(browser_rotate))
-        .route("/browser/status", get(browser_status))
-        .route("/browser/screenshot", get(browser_screenshot))
-        .route("/browser/abort", post(browser_abort))
         // iter-23: decrypt_notes returns full plaintext notes (API tokens, SSH
         // keys, recovery codes). Gate it behind the internal bearer token.
         .route("/vault/notes", post(handlers::decrypt_notes))
@@ -1395,7 +1403,21 @@ async fn start_server(
         // Gated behind the internal bearer token — the permissions map reveals
         // which tools are allowed/blocked/logged, which is security-relevant
         // configuration an unauthenticated caller should not see.
-        .route("/vault/permissions", get(handle_get_permissions))
+        .route("/vault/permissions", get(handle_get_permissions));
+
+    // iter-81: merge browser routes only when the `browser` feature is on.
+    // /browser/* requests return 404 when the feature is off (routes absent).
+    #[cfg(feature = "browser")]
+    let internal_router_base = {
+        let browser_routes = Router::new()
+            .route("/browser/rotate", post(browser_rotate))
+            .route("/browser/status", get(browser_status))
+            .route("/browser/screenshot", get(browser_screenshot))
+            .route("/browser/abort", post(browser_abort));
+        internal_router_base.merge(browser_routes)
+    };
+
+    let internal_router = internal_router_base
         // Gate the entire sub-router behind the internal bearer token.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1458,52 +1480,62 @@ async fn start_server(
         .with_state(state.clone());
 
     // Construct credential_audit orchestrator + router and merge into app.
-    let cred_audit_db_path = format!("{}/credential_audit.sqlite", config_dir);
-    let cred_audit_conn =
-        credential_audit::db::open_db(&cred_audit_db_path).expect("open credential_audit db");
-    credential_audit::db::run_migrations(&cred_audit_conn)
-        .expect("run credential_audit migrations");
-    // Sweep any audit_runs that were `running` when the previous orchestrator
-    // process exited (or was killed mid-scan). Without this, start_scan would
-    // forever refuse new runs with "another audit run is in progress".
-    match credential_audit::db::cleanup_orphaned_runs(&cred_audit_conn) {
-        Ok(0) => {}
-        Ok(n) => tracing::warn!(
-            count = n,
-            "credaudit: swept orphaned `running` audit_runs from a prior process"
-        ),
-        Err(e) => tracing::error!(error = %e, "credaudit: orphan cleanup failed"),
-    }
+    // iter-81: gated behind the `engine` feature — the external-sidecar modules
+    // (engine_client, orchestrator, pass2) are only compiled when this feature
+    // is enabled. The in-process audit (audit.rs + GET /vault/audit/run) is
+    // always available and is NOT gated.
+    #[cfg(feature = "engine")]
+    let cred_audit_orch = {
+        let cred_audit_db_path = format!("{}/credential_audit.sqlite", config_dir);
+        let cred_audit_conn =
+            credential_audit::db::open_db(&cred_audit_db_path).expect("open credential_audit db");
+        credential_audit::db::run_migrations(&cred_audit_conn)
+            .expect("run credential_audit migrations");
+        // Sweep any audit_runs that were `running` when the previous orchestrator
+        // process exited (or was killed mid-scan). Without this, start_scan would
+        // forever refuse new runs with "another audit run is in progress".
+        match credential_audit::db::cleanup_orphaned_runs(&cred_audit_conn) {
+            Ok(0) => {}
+            Ok(n) => tracing::warn!(
+                count = n,
+                "credaudit: swept orphaned `running` audit_runs from a prior process"
+            ),
+            Err(e) => tracing::error!(error = %e, "credaudit: orphan cleanup failed"),
+        }
 
-    let cred_audit_engine = credential_audit::engine_client::EngineClient::new(
-        std::env::var("CRED_AUDIT_ENGINE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string()),
-    );
-    let cred_audit_pass2 = std::sync::Arc::new(credential_audit::pass2::Pass2Engine::new(
-        std::sync::Arc::new(cred_audit_engine.clone()),
-        std::env::var("CRED_AUDIT_AGENT_PATH")
-            .unwrap_or_else(|_| "/app/playwright/agent.py".to_string()),
-        std::env::var("AUDIT_EGRESS_PROXY_URL").ok(),
-    ));
-    // Issue (iter-53): Pass vault_folder to VwAdapter so the credential-audit
-    // scan is scoped to vault-proxy's own folder. This prevents the scan from
-    // fingerprinting or marking personal items outside vault_folder.
-    let cred_audit_orch = std::sync::Arc::new(credential_audit::orchestrator::Orchestrator {
-        vault: std::sync::Arc::new(credential_audit::vw_adapter::VwAdapter::new(
-            vault_arc.clone(),
-            Some(args.vault_folder.clone()),
-        )),
-        engine: cred_audit_engine,
-        marker: credential_audit::marker::Marker::new(
-            vault_arc.clone(),
-            Some(args.vault_folder.clone()),
-        ),
-        conn: std::sync::Arc::new(std::sync::Mutex::new(cred_audit_conn)),
-        pass2: cred_audit_pass2,
-    });
+        let cred_audit_engine = credential_audit::engine_client::EngineClient::new(
+            std::env::var("CRED_AUDIT_ENGINE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8765".to_string()),
+        );
+        let cred_audit_pass2 = std::sync::Arc::new(credential_audit::pass2::Pass2Engine::new(
+            std::sync::Arc::new(cred_audit_engine.clone()),
+            std::env::var("CRED_AUDIT_AGENT_PATH")
+                .unwrap_or_else(|_| "/app/playwright/agent.py".to_string()),
+            std::env::var("AUDIT_EGRESS_PROXY_URL").ok(),
+        ));
+        // Issue (iter-53): Pass vault_folder to VwAdapter so the credential-audit
+        // scan is scoped to vault-proxy's own folder. This prevents the scan from
+        // fingerprinting or marking personal items outside vault_folder.
+        std::sync::Arc::new(credential_audit::orchestrator::Orchestrator {
+            vault: std::sync::Arc::new(credential_audit::vw_adapter::VwAdapter::new(
+                vault_arc.clone(),
+                Some(args.vault_folder.clone()),
+            )),
+            engine: cred_audit_engine,
+            marker: credential_audit::marker::Marker::new(
+                vault_arc.clone(),
+                Some(args.vault_folder.clone()),
+            ),
+            conn: std::sync::Arc::new(std::sync::Mutex::new(cred_audit_conn)),
+            pass2: cred_audit_pass2,
+        })
+    };
 
-    let cred_audit_router = credential_audit::router(cred_audit_orch.clone());
-    let app = app.merge(cred_audit_router);
+    #[cfg(feature = "engine")]
+    let app = {
+        let cred_audit_router = credential_audit::router(cred_audit_orch.clone());
+        app.merge(cred_audit_router)
+    };
 
     // Spawn policy scheduler — checks rotation policies every hour.
     //
@@ -1749,7 +1781,12 @@ async fn start_server(
             config_dir: config_dir.to_string(),
             pending_password: Arc::new(tokio::sync::RwLock::new(None)),
             unlock_password: Arc::new(tokio::sync::RwLock::new(None)),
+            // iter-81: cred_audit_orch only exists when both `engine` and
+            // `dashboard` features are enabled. When `engine` is off, pass None.
+            #[cfg(feature = "engine")]
             cred_audit_orch: Some(cred_audit_orch.clone()),
+            #[cfg(not(feature = "engine"))]
+            cred_audit_orch: None,
         };
         // Spawn periodic session cleanup — purges expired sessions every
         // 15 minutes to prevent memory leaks from abandoned sessions.
@@ -2553,9 +2590,10 @@ pub(crate) async fn handle_get_permissions(
 }
 
 // -------------------------------------------------------------------------- //
-// Browser agent handlers                                                      //
+// Browser agent handlers (feature = "browser" only)                          //
 // -------------------------------------------------------------------------- //
 
+#[cfg(feature = "browser")]
 async fn browser_rotate(
     AxumState(state): AxumState<Arc<AppState>>,
     AxumJson(req): AxumJson<serde_json::Value>,
@@ -2707,6 +2745,7 @@ async fn browser_rotate(
     AxumJson(serde_json::json!({"status": "started", "item_name": item_name_response}))
 }
 
+#[cfg(feature = "browser")]
 async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
     let browser = match &state.browser {
         Some(b) => b,
@@ -2719,6 +2758,7 @@ async fn browser_status(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<
     }
 }
 
+#[cfg(feature = "browser")]
 async fn browser_screenshot(
     AxumState(state): AxumState<Arc<AppState>>,
 ) -> AxumJson<serde_json::Value> {
@@ -2733,6 +2773,7 @@ async fn browser_screenshot(
     }
 }
 
+#[cfg(feature = "browser")]
 async fn browser_abort(AxumState(state): AxumState<Arc<AppState>>) -> AxumJson<serde_json::Value> {
     let browser = match &state.browser {
         Some(b) => b,
@@ -3173,8 +3214,11 @@ mod bg_refresh_tests {
 // Each test builds a minimal `AppState` with `BrowserAgent` set to a
 // deliberately incomplete configuration and calls `browser_rotate` directly
 // (no HTTP stack needed — the handler is a plain async fn).
+//
+// iter-81: gated behind `feature = "browser"` — the handler and BrowserAgent
+// are absent from default builds, so these tests only run when the feature is on.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser"))]
 mod browser_rotate_guard_tests {
     use super::{browser_rotate, AppState};
     use crate::browser::BrowserAgent;

@@ -317,8 +317,13 @@ pub async fn respond_approval(
 
 #[derive(serde::Deserialize)]
 pub struct ChangePasswordRequest {
+    // mode/new_password/length are part of the API spec but the handler
+    // currently returns 503 pending keystore reencryption implementation.
+    #[allow(dead_code)]
     pub mode: String,
+    #[allow(dead_code)]
     pub new_password: Option<String>,
+    #[allow(dead_code)]
     pub length: Option<usize>,
 }
 
@@ -340,6 +345,8 @@ pub async fn change_master_password(
 }
 
 /// Generate a cryptographically random password with mixed case letters, digits, and symbols.
+/// Used by the password rotation workflow; currently unused pending wiring to the rotation UI.
+#[allow(dead_code)]
 fn generate_password(length: usize) -> String {
     use rand::rngs::OsRng;
     use rand::Rng;
@@ -389,10 +396,11 @@ pub async fn tpm_status(State(state): State<DashboardState>) -> Json<Value> {
 }
 
 // -------------------------------------------------------------------------- //
-// Browser agent                                                               //
+// Browser agent (feature = "browser" only)                                   //
 // -------------------------------------------------------------------------- //
 
 /// `GET /api/browser/status` — current browser agent job state.
+#[cfg(feature = "browser")]
 pub async fn browser_status(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
         Ok(a) => a,
@@ -411,6 +419,7 @@ pub async fn browser_status(State(state): State<DashboardState>) -> Json<Value> 
 }
 
 /// `GET /api/browser/screenshot` — last screenshot from browser agent.
+#[cfg(feature = "browser")]
 pub async fn browser_screenshot(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
         Ok(a) => a,
@@ -426,6 +435,7 @@ pub async fn browser_screenshot(State(state): State<DashboardState>) -> Json<Val
 }
 
 /// `POST /api/browser/rotate` — start a password rotation via browser agent.
+#[cfg(feature = "browser")]
 pub async fn browser_rotate(
     State(state): State<DashboardState>,
     Json(req): Json<Value>,
@@ -447,6 +457,7 @@ pub async fn browser_rotate(
 }
 
 /// `POST /api/browser/abort` — abort the current browser agent job.
+#[cfg(feature = "browser")]
 pub async fn browser_abort(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
         Ok(a) => a,
@@ -797,6 +808,9 @@ pub async fn setup_cloud_credentials(
     #[derive(serde::Deserialize)]
     struct TokenResp {
         refresh_token: Option<String>,
+        // two_factor_token is present in some Bitwarden responses; parsed for
+        // completeness but not yet forwarded to the 2FA handler.
+        #[allow(dead_code)]
         #[serde(rename = "TwoFactorToken")]
         two_factor_token: Option<String>,
     }
@@ -919,8 +933,10 @@ pub async fn save_permissions(
             }
         };
 
-    let mut perms = crate::security::permissions::ToolPermissions::default();
-    perms.overrides = overrides;
+    let perms = crate::security::permissions::ToolPermissions {
+        overrides,
+        ..crate::security::permissions::ToolPermissions::default()
+    };
 
     if let Err(e) = perms.save("/config/tool-permissions.json") {
         return Json(json!({"ok": false, "error": e.to_string()}));
@@ -1162,16 +1178,24 @@ pub async fn notification_test(State(state): State<DashboardState>) -> Json<Valu
 }
 
 // -------------------------------------------------------------------------- //
-// Site profiles                                                               //
+// Site profiles (feature = "browser" only)                                   //
 // -------------------------------------------------------------------------- //
 
 /// `GET /api/profiles` — list site profiles for browser automation.
+#[cfg(feature = "browser")]
 pub async fn list_profiles(State(_state): State<DashboardState>) -> Json<Value> {
     let profiles = crate::browser::profiles::load_profiles("/config/site-profiles.json");
     Json(serde_json::to_value(profiles).unwrap_or_default())
 }
 
+/// `GET /api/profiles` stub — returns empty when browser feature is disabled.
+#[cfg(not(feature = "browser"))]
+pub async fn list_profiles(State(_state): State<DashboardState>) -> Json<Value> {
+    Json(json!({"profiles": {}, "note": "browser feature not enabled"}))
+}
+
 /// `POST /api/profiles` — save site profiles.
+#[cfg(feature = "browser")]
 pub async fn save_profiles_handler(
     State(state): State<DashboardState>,
     Json(profiles): Json<Value>,
@@ -1188,6 +1212,15 @@ pub async fn save_profiles_handler(
         Ok(()) => Json(json!({"ok": true})),
         Err(e) => Json(json!({"error": e.to_string()})),
     }
+}
+
+/// `POST /api/profiles` stub — returns error when browser feature is disabled.
+#[cfg(not(feature = "browser"))]
+pub async fn save_profiles_handler(
+    State(_state): State<DashboardState>,
+    Json(_profiles): Json<Value>,
+) -> Json<Value> {
+    Json(json!({"ok": false, "error": "browser feature not enabled"}))
 }
 
 // -------------------------------------------------------------------------- //
@@ -1603,14 +1636,16 @@ pub async fn setup_cloud_via_dashboard(
     }
 }
 
-// ───────────────────── credential audit ──────────────────────
+// ───────────────────── credential audit (feature = "engine") ─────────────
 
+#[cfg(feature = "engine")]
 fn credaudit_unavailable() -> Json<Value> {
     Json(json!({
         "error": "credential audit unavailable: vault not unlocked"
     }))
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_runs_list(State(state): State<DashboardState>) -> Json<Value> {
     let Some(orch) = state.cred_audit_orch.as_ref() else {
         return credaudit_unavailable();
@@ -1621,6 +1656,7 @@ pub async fn credaudit_runs_list(State(state): State<DashboardState>) -> Json<Va
     }
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_run_detail(
     State(state): State<DashboardState>,
     Path(run_id): Path<String>,
@@ -1634,6 +1670,7 @@ pub async fn credaudit_run_detail(
     }
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_scan_start(State(state): State<DashboardState>) -> Json<Value> {
     if let Err(e) = state.sessions.check_config_write_rate().await {
         return Json(json!({"ok": false, "error": e}));
@@ -1647,6 +1684,7 @@ pub async fn credaudit_scan_start(State(state): State<DashboardState>) -> Json<V
     }
 }
 
+#[cfg(feature = "engine")]
 #[derive(serde::Deserialize)]
 pub struct CredauditApplyBody {
     pub run_id: String,
@@ -1656,10 +1694,12 @@ pub struct CredauditApplyBody {
     pub confirm_bulk: bool,
 }
 
+#[cfg(feature = "engine")]
 fn default_dry_run() -> bool {
     true
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_apply(
     State(state): State<DashboardState>,
     Json(body): Json<CredauditApplyBody>,
@@ -1679,6 +1719,7 @@ pub async fn credaudit_apply(
     }
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_telemetry(
     State(state): State<DashboardState>,
     Path(run_id): Path<String>,
@@ -1692,6 +1733,7 @@ pub async fn credaudit_telemetry(
     }
 }
 
+#[cfg(feature = "engine")]
 pub async fn credaudit_verify_start(
     State(state): State<DashboardState>,
     Json(body): Json<Value>,
