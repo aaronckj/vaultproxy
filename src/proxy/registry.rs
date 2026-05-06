@@ -173,6 +173,25 @@ pub enum AuthPattern {
     },
 }
 
+impl AuthPattern {
+    /// Return the vault item name referenced by this auth pattern.
+    ///
+    /// iter-125: Used by the dashboard `GET /api/items` handler to build a
+    /// reverse map from vault item names to registry service names, so the
+    /// rotation button in `items.html` can pass `unifi_service_name` and
+    /// trigger UniFi session cache invalidation on a successful rotation.
+    pub fn vault_item(&self) -> &str {
+        match self {
+            AuthPattern::Header { vault_item, .. } => vault_item,
+            AuthPattern::QueryParam { vault_item, .. } => vault_item,
+            AuthPattern::Bearer { vault_item } => vault_item,
+            AuthPattern::Basic { vault_item, .. } => vault_item,
+            AuthPattern::Session { vault_item, .. } => vault_item,
+            AuthPattern::UnifiDual { vault_item, .. } => vault_item,
+        }
+    }
+}
+
 // -------------------------------------------------------------------------- //
 // ServiceEntry                                                                 //
 // -------------------------------------------------------------------------- //
@@ -241,6 +260,17 @@ pub struct ServiceEntry {
     /// Set this in `services.toml` as `timeout_secs = 30` on a `[[service]]`
     /// block. The value must be > 0; zero is rejected at load time.
     pub timeout_secs: Option<u64>,
+}
+
+impl ServiceEntry {
+    /// Return the vault item name referenced by this service.
+    ///
+    /// Delegates to `AuthPattern::vault_item()`.  Used by the dashboard
+    /// `GET /api/items` handler (iter-125) to build the reverse map from
+    /// vault item names to registry service names for the rotation button.
+    pub fn vault_item(&self) -> &str {
+        self.auth.vault_item()
+    }
 }
 
 // -------------------------------------------------------------------------- //
@@ -2592,5 +2622,86 @@ i1J0BBT9c7yU\n\
             svc.ca_cert_path.is_none(),
             "ca_cert_path must be None when insecure_tls wins (cert is redundant)"
         );
+    }
+}
+
+/// iter-125: Tests for `AuthPattern::vault_item()` and `ServiceEntry::vault_item()`.
+/// These accessors power the `GET /api/items` `serviceNames` annotation so that
+/// the dashboard rotation button can pass `unifi_service_name` to `browser_rotate`.
+#[cfg(test)]
+mod vault_item_accessor_tests {
+    use super::*;
+
+    #[test]
+    fn auth_pattern_vault_item_header() {
+        let p = AuthPattern::Header {
+            header_name: "X-Api-Key".to_string(),
+            vault_item: "sonarr-item".to_string(),
+        };
+        assert_eq!(p.vault_item(), "sonarr-item");
+    }
+
+    #[test]
+    fn auth_pattern_vault_item_query_param() {
+        let p = AuthPattern::QueryParam {
+            param_name: "apikey".to_string(),
+            vault_item: "tautulli-item".to_string(),
+        };
+        assert_eq!(p.vault_item(), "tautulli-item");
+    }
+
+    #[test]
+    fn auth_pattern_vault_item_bearer() {
+        let p = AuthPattern::Bearer {
+            vault_item: "ha-item".to_string(),
+        };
+        assert_eq!(p.vault_item(), "ha-item");
+    }
+
+    #[test]
+    fn auth_pattern_vault_item_basic() {
+        let p = AuthPattern::Basic {
+            vault_item: "opnsense-item".to_string(),
+            key_field: "key".to_string(),
+            secret_field: "secret".to_string(),
+        };
+        assert_eq!(p.vault_item(), "opnsense-item");
+    }
+
+    #[test]
+    fn auth_pattern_vault_item_session() {
+        let p = AuthPattern::Session {
+            vault_item: "duplicati-item".to_string(),
+            login_path: "/api/v1/auth/issuetoken".to_string(),
+            token_field: "Token".to_string(),
+            login_include_username: false,
+        };
+        assert_eq!(p.vault_item(), "duplicati-item");
+    }
+
+    #[test]
+    fn auth_pattern_vault_item_unifi_dual() {
+        let p = AuthPattern::UnifiDual {
+            vault_item: "unifi-home-item".to_string(),
+            login_path: "/api/auth/login".to_string(),
+        };
+        assert_eq!(p.vault_item(), "unifi-home-item");
+    }
+
+    /// `ServiceEntry::vault_item()` delegates to `AuthPattern::vault_item()`.
+    #[test]
+    fn service_entry_vault_item_delegates() {
+        let entry = ServiceEntry {
+            name: "unifi_home".to_string(),
+            base_url: "https://192.0.2.2".to_string(),
+            auth: AuthPattern::UnifiDual {
+                vault_item: "Connecterr - UniFi".to_string(),
+                login_path: "/api/auth/login".to_string(),
+            },
+            insecure_tls: true,
+            ca_cert_path: None,
+            timeout_secs: None,
+        };
+        assert_eq!(entry.vault_item(), "Connecterr - UniFi");
     }
 }

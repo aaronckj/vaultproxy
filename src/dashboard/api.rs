@@ -107,13 +107,60 @@ pub async fn status(State(state): State<DashboardState>) -> Json<Value> {
 // -------------------------------------------------------------------------- //
 
 /// `GET /api/items` — masked vault items list.
+///
+/// iter-125: Each item now carries `"service_names": [...]` — the registry
+/// service names whose `vault_item` field matches this item's name.  The
+/// dashboard rotation button uses the first entry as `unifi_service_name` so
+/// the UniFi session cache is invalidated on a successful browser rotation.
+/// For non-UniFi items the list is empty and the field is a no-op.
 pub async fn items(State(state): State<DashboardState>) -> Json<Value> {
     let app = match require_app(&state) {
         Ok(a) => a,
         Err(e) => return e,
     };
     let items = app.vault.list_items().await;
-    let items_val = serde_json::to_value(items).unwrap_or(json!([]));
+
+    // Build a reverse map: vault_item_name → Vec<service_name>.
+    // Acquired as a read lock so in-flight proxy requests are not blocked.
+    let registry = app.registry.read().await;
+    let mut service_names_by_item: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for svc_name in registry.list() {
+        if let Some(entry) = registry.get(svc_name) {
+            let vault_item = entry.vault_item();
+            service_names_by_item
+                .entry(vault_item.to_string())
+                .or_default()
+                .push(svc_name.to_string());
+        }
+    }
+    drop(registry);
+
+    // Annotate each item JSON object with its matching service names.
+    let items_val: Value = match serde_json::to_value(&items) {
+        Ok(Value::Array(arr)) => Value::Array(
+            arr.into_iter()
+                .map(|mut v| {
+                    // Extract the name first (immutable borrow), then mutate.
+                    let name_opt = v
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string());
+                    if let (Some(name), Some(obj)) = (name_opt, v.as_object_mut()) {
+                        let svcs: Vec<Value> = service_names_by_item
+                            .get(&name)
+                            .map(|names| names.iter().map(|n| Value::String(n.clone())).collect())
+                            .unwrap_or_default();
+                        obj.insert("serviceNames".to_string(), Value::Array(svcs));
+                    }
+                    v
+                })
+                .collect(),
+        ),
+        Ok(other) => other,
+        Err(_) => json!([]),
+    };
+
     Json(json!({"ok": true, "items": items_val}))
 }
 

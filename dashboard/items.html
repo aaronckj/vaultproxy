@@ -46,12 +46,21 @@
 
     <script src="/static/app.js"></script>
     <script>
-    async function rotateItem(name) {
+    // iter-125: rotateItem now accepts the full item object so it can pass
+    // unifi_service_name for UniFi items.  The server-side browser_rotate
+    // handler uses this to invalidate the cached session cookie on a
+    // successful rotation (iter-124).  For non-UniFi items serviceNames is
+    // empty and the field is omitted — a no-op on the server.
+    async function rotateItem(item) {
+        var body = {item_name: item.name};
+        if (item.serviceNames && item.serviceNames.length > 0) {
+            body.unifi_service_name = item.serviceNames[0];
+        }
         await fetch('/api/browser/rotate', {
             method: 'POST',
             credentials: 'same-origin',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({item_name: name})
+            body: JSON.stringify(body)
         });
         window.location = '/rotation';
     }
@@ -90,9 +99,9 @@
                 rotateBtn.textContent = "Rotate";
                 rotateBtn.style.padding = "5px 14px";
                 rotateBtn.style.fontSize = "0.82rem";
-                (function(name) {
-                    rotateBtn.addEventListener("click", function() { rotateItem(name); });
-                })(item.name);
+                (function(capturedItem) {
+                    rotateBtn.addEventListener("click", function() { rotateItem(capturedItem); });
+                })(item);
                 actionCell.appendChild(rotateBtn);
                 tr.appendChild(actionCell);
                 tbody.appendChild(tr);

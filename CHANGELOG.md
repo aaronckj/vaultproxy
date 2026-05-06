@@ -5,36 +5,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] — iteration 124: UniFi session invalidation on rotation, ProxyError service-name audit
+## [1.0.3] — iterations 124–125: UniFi session invalidation complete, serviceNames in items API
 
-### Features (iter-124)
+### Bugs (iter-125)
 
-- **`browser_rotate` — UniFi session invalidated on successful rotation (iter-124)** — `src/main.rs`. MEDIUM.
-  After a successful browser-based credential rotation, the old UniFi session cookie remained cached in
-  `UnifiSessionCache` indefinitely — subsequent proxy calls would continue authenticating with the
-  pre-rotation session until UDM's own session TTL expired, defeating the rotation's intent.
-  Fixed: `browser_rotate` now accepts an optional `unifi_service_name` field in the request body.
-  When `success == true` and `unifi_service_name` is set, `state.unifi_sessions.invalidate(svc)` is
-  called inside the `tokio::spawn` so the next proxy call performs a fresh login with the new credential.
-  The call is a no-op for non-UniFi items (field absent) or services without a cached session.
+- **`items.html` rotation button does not pass `unifi_service_name` — cache invalidation never fires for dashboard-initiated rotations (iter-125)** — `dashboard/items.html:50`. MEDIUM.
+  Iter-124 wired `unifi_sessions.invalidate(svc)` into `browser_rotate` and documented that callers
+  must include `unifi_service_name` in the request body.  The dashboard rotation button in `items.html`
+  sent `{item_name: name}` with no service metadata — so the invalidation path was dead for every
+  rotation triggered from the dashboard.  Root cause: `items.html` received only `MaskedItem` fields
+  from `GET /api/items` and had no way to know which registry service name(s) referenced each vault item.
+  Fixed (two parts):
+  1. `GET /api/items` (`src/dashboard/api.rs`) now acquires a read lock on the service registry and
+     annotates each item JSON object with `"serviceNames": [...]` — the registry service names whose
+     `vault_item` field matches the item's name.  New `AuthPattern::vault_item()` and
+     `ServiceEntry::vault_item()` accessors (`src/proxy/registry.rs`) power the reverse lookup.
+     For non-UniFi items the list is empty; the field is a no-op on the server.
+  2. `rotateItem()` in `items.html` now accepts the full item object.  When `item.serviceNames` is
+     non-empty, the first entry is forwarded as `unifi_service_name` in the rotate request body.
+     The handler invalidates the cached session cookie on a successful rotation exactly as intended
+     by iter-124.
 
-### Audited (iter-124) — no further action required
+- **`unifi_session::invalidate` carries `#[allow(dead_code)]` after being production-wired (iter-125)** — `src/proxy/unifi_session.rs:92`. LOW.
+  Iter-124 updated the comment but left `#[allow(dead_code)]` on the `pub` function.  Dead-code lint
+  does not fire on `pub` items regardless, so the attribute was incorrect and misleading (suggesting
+  the function still has no caller when it now does).  Removed.
 
-1. **`approvals.html` `renderError()` implementation** — PASS. Renders to `#queue-container` via
-   `div.textContent` (XSS-safe). User-visible. No `innerHTML`.
-2. **`browser_rotate` `ok===false` check** — PASS. `workflow.run()` returns a `bool`; invalidation
-   is gated on `success == true`, so a failed rotation leaves the cache untouched (no stale None).
-3. **`ProxyError` service name echo** — PASS. `"unknown service"` message does not include `req.service`.
-   Enumeration via trial-and-error is not possible from the error body.
-4. **Dashboard session cookie `Domain` attribute** — PASS. Cookie strings at `mod.rs:390,442` and
-   `api.rs:1370` have no `Domain` attribute — defaults to exact origin `127.0.0.1`. Not broadened.
-5. **CI v1.0.2 run** — PASS. Latest run: tag `v1.0.2`, status `success`.
-6. **`approvals.html` `return` after `renderError()`** — PASS. Line 259: explicit `return` prevents
-   `renderApprovals()` and `renderEmpty()` from overwriting the error state.
-7. **`rotation.html` session cache invalidation** — FIXED (see Features above).
-8. **`CHANGELOG.md [1.0.2]` iter-123 coverage** — PASS. Section covers all four iter-123 fixes.
-9. **Test count** — 317 tests (main binary) + 2 tests (secret_discipline integration) = 319 total.
-   Two binaries. All pass.
+### Tests (iter-125)
+
+- **`vault_item_accessor_tests` — 7 new tests (iter-125)** — `src/proxy/registry.rs`.
+  No tests covered the new `AuthPattern::vault_item()` / `ServiceEntry::vault_item()` accessors.
+  Added one test per `AuthPattern` variant (Header, QueryParam, Bearer, Basic, Session, UnifiDual)
+  and one test that exercises `ServiceEntry::vault_item()` delegation.
+
+### Verified (iter-125) — iter-124 wiring audit
+
+Ten specific areas were audited against iter-124 changes. One new bug found (see above); remainder pass.
+
+1. **`items.html` passes `unifi_service_name`** — FIXED (see Bugs above). Was absent; invalidation
+   never fired for dashboard-initiated rotations regardless of item type.
+2. **`browser_rotate` silent skip when `unifi_service_name` absent** — DOCUMENTED. `Option<String>`;
+   empty string filtered at parse time (`filter(|s| !s.is_empty())`). No-op for non-UniFi callers or
+   old clients. The iter-125 fix ensures dashboard callers now pass the field for UniFi items.
+3. **`approvals.html` approval payload** — PASS. POSTs to `/api/approvals` with `{id, action, code}`.
+   Separate from rotation flow. No change needed.
+4. **Connecterr TS client `triggerBrowserRotation()`** — NOT PRESENT. No such method in
+   `Connecterr/src/sidecar-client.ts`. Browser rotation is dashboard-only; no TS client update needed.
+5. **`invalidate()` called before or after panic window** — PASS. Invalidation fires after
+   `workflow.run()` returns `success=true` — the rotation is already committed to the vault at that
+   point.  A panic before `invalidate()` would leave the old session cached, but the credential
+   fingerprint mismatch in `handle_request` would catch it on the next proxy call and re-login anyway.
+   No additional guard needed.
+6. **`CHANGELOG.md` iter-124 documented** — DONE (this entry, combined as [1.0.3]).
+7. **`v1.0.3` patch release** — Cargo.toml bumped; tag to follow after quality gates.
+8. **`#[allow(dead_code)]` on `invalidate`** — FIXED (see Bugs above). Annotation removed.
+9. **`unifi_service_name` input validation** — PASS. `filter(|s| !s.is_empty())` rejects empty strings.
+   The value is used as a `HashMap` key lookup — no injection vector; no length limit needed beyond
+   what a `DashMap` key lookup already implies (safe for any valid UTF-8 string).
+10. **Final quality gates** — see below.
+
+### Quality gates (iter-125)
+
+- `cargo fmt --check` — 0 diffs
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
+- `cargo test --all-targets --features browser,engine,dashboard` — **324 passed** (+ 2 integration) = **326 total**; 0 failed (7 new tests: `vault_item_accessor_tests`)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 errors, 0 warnings
 
 ## [1.0.2] — iterations 122–123: approvals silent-error, null fallback hardening, shape test gaps
 
