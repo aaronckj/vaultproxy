@@ -2204,15 +2204,22 @@ async fn start_server(
                         let _guard = inner_mutex.lock().await;
                         let result = crate::audit::run_audit(&inner_vault).await;
                         let n_weak = result.weak_passwords.len();
-                        let n_reuse = result.reused_passwords.len();
-                        if n_weak > 0 || n_reuse > 0 {
+                        let n_reuse_groups = result.reused_passwords.len();
+                        // iter-74: count total reused items (sum of group sizes), not
+                        // just group count.  "1 reuse group" could mean 2 items or 50
+                        // items sharing a password — the group count alone severely
+                        // under-reports severity for large shared-credential incidents.
+                        let n_reused_items: usize =
+                            result.reused_passwords.iter().map(|g| g.len()).sum();
+                        if n_weak > 0 || n_reuse_groups > 0 {
                             // Issues found — log at WARN so it surfaces through default
                             // log filters and alerts operators without manual inspection.
                             tracing::warn!(
                                 vault_folder = %inner_folder,
                                 total = result.total_items,
                                 weak = n_weak,
-                                reuse_groups = n_reuse,
+                                reuse_groups = n_reuse_groups,
+                                reused_items = n_reused_items,
                                 "credential audit background: issues found — review GET /vault/audit/run"
                             );
                             // iter-72: send push notification via configured channel
@@ -2223,12 +2230,17 @@ async fn start_server(
                             // iter-73: scale priority with severity so routine
                             // single-item findings don't wake the operator's phone
                             // with a critical alert.  ntfy priority meanings:
-                            //   2 = low  — fewer than 5 total issues (weak + reuse groups)
+                            //   2 = low  — fewer than 5 total issues
                             //   3 = default — 5–9 total issues
                             //   4 = high — 10 or more total issues (warrants immediate attention)
                             // This avoids sending an Android wake-lock notification for
                             // "1 weak password", while still escalating real incidents.
-                            let total_issues = n_weak + n_reuse;
+                            //
+                            // iter-74: use n_weak + n_reused_items (total affected credentials)
+                            // instead of n_weak + n_reuse_groups.  A single reuse group with
+                            // 50 items is a severe incident; group-count-based scaling
+                            // would produce total_issues=2 and priority=2 (low) for it.
+                            let total_issues = n_weak + n_reused_items;
                             let priority: u8 = if total_issues >= 10 {
                                 4 // high
                             } else if total_issues >= 5 {
@@ -2237,16 +2249,25 @@ async fn start_server(
                                 2 // low
                             };
                             let title = format!(
-                                "Vault audit: {} weak, {} reuse group(s) — {}",
-                                n_weak, n_reuse, inner_folder
+                                "Vault audit: {} weak, {} item(s) with shared passwords — {}",
+                                n_weak, n_reused_items, inner_folder
                             );
                             let body = format!(
                                 "vault-proxy credential audit found issues in '{}': \
-                                 {} weak password(s), {} reuse group(s) (total {} items scanned). \
+                                 {} weak password(s), {} item(s) with shared passwords \
+                                 across {} reuse group(s) (total {} items scanned). \
                                  Review with: GET /vault/audit/run",
-                                inner_folder, n_weak, n_reuse, result.total_items
+                                inner_folder, n_weak, n_reused_items,
+                                n_reuse_groups, result.total_items
                             );
-                            inner_notifier.send(&title, &body, priority).await.ok();
+                            // iter-74: log a warning if the notification fails so
+                            // operators know the audit alert was not delivered.
+                            // Previously `.ok()` silently discarded send errors —
+                            // if ntfy.sh is unreachable, the operator would never
+                            // know the push notification was dropped.
+                            if let Err(e) = inner_notifier.send(&title, &body, priority).await {
+                                tracing::warn!("audit alert notification failed to send: {}", e);
+                            }
                         } else {
                             // Clean run — log at DEBUG to avoid 288 identical INFO lines
                             // per day when no issues exist (e.g. 300 s interval, 0 weak).
@@ -2361,13 +2382,33 @@ async fn start_server(
         // iter-73: await the audit task so all SecureBuffers are dropped before
         // the graceful-shutdown drain window starts.  Cap at 8 s so a stuck task
         // (e.g. Vaultwarden unresponsive) cannot push past the 10-second SIGKILL.
-        if let Some(handle) = audit_task_handle {
-            match tokio::time::timeout(std::time::Duration::from_secs(8), handle).await {
+        //
+        // iter-74: call handle.abort() when the 8-second timeout fires.
+        // Without abort(), tokio::time::timeout(dur, handle).await drops the
+        // JoinHandle on Err(Elapsed) but the underlying tokio TASK continues
+        // running as an orphan — decrypted SecureBuffers remain live in mlocked
+        // memory until the OS SIGKILL fires.  abort() force-cancels the task,
+        // which triggers Drop on all task-local values (including SecureBuffer
+        // zeroization) promptly rather than at SIGKILL time.
+        //
+        // Pattern: pass a mutable reference (`&mut handle`) to timeout so the
+        // JoinHandle is not consumed; on Err(Elapsed) the handle is still owned
+        // here and we call handle.abort() explicitly.
+        if let Some(mut handle) = audit_task_handle {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                &mut handle,
+            )
+            .await
+            {
                 Ok(_) => tracing::debug!("audit task joined cleanly on shutdown"),
-                Err(_) => tracing::warn!(
-                    "audit task did not finish within 8 s — proceeding with shutdown \
-                     (OS will reclaim mlocked pages at SIGKILL)"
-                ),
+                Err(_) => {
+                    tracing::warn!(
+                        "audit task did not finish within 8 s — aborting task to force \
+                         SecureBuffer zeroization before SIGKILL"
+                    );
+                    handle.abort();
+                }
             }
         }
         // Allow up to 10 s for in-flight requests to complete before hard-kill.

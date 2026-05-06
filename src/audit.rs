@@ -400,13 +400,19 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
         // still say "shorter than 8 characters" until someone noticed the drift.
         // iter-69: mention the `reason` field so callers know where to find
         // the per-item explanation without consulting source code.
+        // iter-74: mention REUSE_NAME_DISPLAY_LIMIT truncation so callers know
+        // reuse reason lists are capped at 5 names and to use the groups for
+        // the full picture rather than reading only the reason string.
         scoring_note: format!(
             "rule-based heuristic: length + character classes only; \
              no dictionary check — common passwords like 'password123' \
              may score 'fair' if they meet the length threshold \
              (weak = fewer than {} characters); \
-             each AuditItem includes a `reason` field with an actionable explanation",
-            WEAK_THRESHOLD
+             each AuditItem includes a `reason` field with an actionable explanation; \
+             reuse reason name lists are capped at {} names per item (see reused_passwords groups \
+             for the full membership list when a group exceeds this limit)",
+            WEAK_THRESHOLD,
+            REUSE_NAME_DISPLAY_LIMIT
         ),
     }
 }
@@ -827,13 +833,17 @@ mod tests {
             reused_passwords: vec![],
             fair_passwords_count: 0,
             weak_threshold_len: WEAK_THRESHOLD,
+            // iter-74: keep in sync with the format!() in run_audit().
             scoring_note: format!(
                 "rule-based heuristic: length + character classes only; \
                  no dictionary check — common passwords like 'password123' \
                  may score 'fair' if they meet the length threshold \
                  (weak = fewer than {} characters); \
-                 each AuditItem includes a `reason` field with an actionable explanation",
-                WEAK_THRESHOLD
+                 each AuditItem includes a `reason` field with an actionable explanation; \
+                 reuse reason name lists are capped at {} names per item (see reused_passwords groups \
+                 for the full membership list when a group exceeds this limit)",
+                WEAK_THRESHOLD,
+                REUSE_NAME_DISPLAY_LIMIT
             ),
         };
 
