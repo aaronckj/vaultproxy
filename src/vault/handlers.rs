@@ -27,11 +27,26 @@ use crate::proxy::AppState;
 /// caching the resolved ID avoids the repeated lock acquisition.
 ///
 /// The cache is invalidated by `POST /vault/resync` (which may rename or
-/// recreate the folder). A `None` in the cache means "not yet resolved" —
-/// this function populates it on first call and returns the resolved ID.
+/// recreate the folder). The cache holds `Option<String>`:
+///   - `None` in the cache (i.e. `*state.cached_folder_id == None`) means
+///     "not yet resolved" or "not found on the most recent resolution attempt".
+///     Because `None` is NOT written to the cache, every call re-scans until
+///     the folder is found — so if an operator creates the vault folder while
+///     vault-proxy is running, the next request will detect it automatically.
+///   - `Some(id)` means the folder was resolved and cached.
 ///
 /// Callers that get `None` back should treat it as "folder not found in the
 /// vault" (same semantics as `find_folder_id_by_name_async`).
+///
+/// # None-not-cached behaviour
+///
+/// When `find_folder_id_by_name_async` returns `None` (folder absent), this
+/// function returns `None` without writing to the cache. Subsequent requests
+/// will each take the slow path and re-scan — O(n) per call until the folder
+/// is found. This is intentional: it ensures operators can create the missing
+/// folder without restarting vault-proxy, at the cost of repeated scans when
+/// the folder is genuinely absent (unusual in production; operators are warned
+/// at startup if `vault_folder` is not found).
 ///
 /// # Thundering-herd prevention (iter-23)
 ///

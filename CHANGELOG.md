@@ -3,6 +3,100 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — iteration 90: SECURITY.md comprehensive rewrite, resolve_vault_folder_id None-not-cached doc fix
+
+### Fixes (iter-90)
+
+- **SECURITY.md comprehensively rewritten — stale since iter-57 (HIGH)** —
+  `SECURITY.md`. Last comprehensive update was iter-57, 33 iterations ago. The
+  following features added since then were absent from the document:
+  (1) Per-caller rate limiting (`X-Caller-Id` header, `VAULT_PROXY_CALLER_ID` env var)
+  with per-route tighter limits for destructive and audit endpoints (10 req/60 s and
+  2 req/60 s respectively) — iter-85 added this, SECURITY.md still described "60 req/60 s".
+  (2) Browser rotation subsystem (`--features browser`) and `sanitize_output` wiring —
+  LLM vision responses are sanitised before JSON parsing; screenshots never leave the
+  homelab network — not mentioned.
+  (3) `=` signs in server names (VAULT_PROXY_CALLER_ID values) are allowed —
+  iter-89 reversed the iter-88 rejection; SECURITY.md still said `=` rejected in env var
+  validation bullet.
+  (4) HTTP/1 5-second header-read timeout added in iter-22 — SECURITY.md mentioned
+  the Slowloris risk but not the resolution.
+  (5) `vault_folder` scope guard caching semantics and None-not-cached behaviour —
+  absent from "Vault folder scope guards" section.
+  (6) Credential audit endpoint (`/vault/audit/run`) and its 2 req/60 s cap — absent.
+  Full rewrite brings threat model, rate limiting, browser subsystem, launcher,
+  and folder-scope sections up to date with v0.2.31 posture.
+
+- **`resolve_vault_folder_id` doc comment misleading on None semantics (LOW)** —
+  `src/vault/handlers.rs:29`. The comment said "A `None` in the cache means
+  'not yet resolved'" — this is true for the case where the cache has never been
+  populated, but a `None` result from `find_folder_id_by_name_async` (folder
+  genuinely absent) also leaves the cache as `None` (None is not written back).
+  Two distinct conditions are conflated. The comment now explicitly documents
+  the None-not-cached design decision: because None is never cached, operators
+  who create the vault folder while vault-proxy is running will have it detected
+  automatically on the next request, without a restart. This is intentional
+  self-healing behaviour that the old comment did not surface.
+
+### Audit findings (iter-90) — no code changes required
+
+- **`sanitize_output` scope — full raw LLM string, before JSON parsing (confirmed correct)** —
+  `src/browser/vision.rs:172`. `sanitize_output` is called on `raw.trim()` where
+  `raw = parsed.choices[0].message.content` — the raw LLM response string, before any
+  JSON parsing. The full raw text is sanitised: injection phrases, `<tool_call>` tags,
+  and LLM control tokens are all replaced before the JSON is interpreted. If the LLM
+  echoes adversarial page content anywhere in the string (including inside a `"reason"`
+  field value), it is stripped before the VisionAction parse step. No issue.
+
+- **`X-Caller-Id` with `=` — passes correctly (confirmed)** —
+  `src/security/rate_limit.rs:180`. `extract_caller_key` validates header bytes with
+  `b.is_ascii_graphic() || b == b' '`. Rust's `is_ascii_graphic()` returns true for
+  bytes 0x21–0x7E, which includes `=` (0x3D). A header value like `"prod=main"` is
+  accepted and used as the bucket key unchanged. No issue.
+
+- **`cached_folder_id` None not cached — re-scan on folder-absent (confirmed correct)** —
+  `src/vault/handlers.rs:70`. When `find_folder_id_by_name_async` returns `None`,
+  the write guard is NOT updated (`if let Some(ref resolved) = id` branches past the
+  write). Subsequent requests each take the slow path and re-scan. This is the correct
+  design: it allows operators to create the `vault_folder` after vault-proxy starts
+  without a restart. The cost is O(n) re-scans on every request while the folder is
+  absent, which is acceptable because vault-proxy logs a startup warning when the
+  folder is not found, making the condition visible. No code change needed.
+
+- **v0.2.31 GitHub release — already exists (confirmed)** —
+  `gh release list` confirms `v0.2.31` was created on 2026-05-06. No action needed.
+
+- **Test count — 272 total (270 unit + 2 integration) (confirmed)** —
+  `cargo test --all-targets --features browser,engine,dashboard` → 270 passed (unit/doc)
+  + 2 passed (`tests/secret_discipline.rs`). 0 warnings. Matches CHANGELOG claim of 272.
+
+- **Post-v1.0 deferred count — 6 live `post-v1.0:` annotations in source (confirmed)** —
+  `grep -rn "post-v1.0:" src/` finds 6 annotated items across 4 files: `keystore.rs:333`
+  (unseal_private_key_from_tpm), `keystore.rs:563` (reset_keystore), `cloud.rs:40` and
+  `cloud.rs:786` (Bitwarden cloud password change), `unifi_session.rs:90` (rotation UI),
+  `vault/mod.rs:76` (field inspector). `vision.rs:11` contains a historical prose comment
+  ("was tagged post-v1.0: in iter-85") — not a live tag. The CHANGELOG "15 deferred
+  items" count includes broader narrative work items tracked across CHANGELOG sections
+  beyond just dead_code annotations; 6 is the live annotation count, 15 is the project
+  work-item count. Both are accurate in context.
+
+- **`=` in server names — test `test_server_name_eq_sign_allowed_for_env_value` present
+  (confirmed)** — `src/launcher.rs:972`. `test_server_name_eq_sign_allowed_for_env_value`
+  tests that `server_name_env_value_is_safe("prod=main")` and
+  `server_name_env_value_is_safe("server=v2")` both return true. Net test count after
+  iter-89 (removed `test_server_name_eq_sign_rejected_for_env_value`, added
+  `test_server_name_eq_sign_allowed_for_env_value`): net zero change, correct.
+
+- **Compiler warning count — 0 (confirmed)** —
+  `cargo test --all-targets --features browser,engine,dashboard 2>&1 | grep '^warning' | wc -l` → 0.
+
+### Quality gates (iter-90)
+
+- `cargo test --all-targets --features browser,engine,dashboard` — 272 passed; 0 failed
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
+- `cargo fmt --check` — clean (0 diffs)
+- `cargo doc --no-deps --features browser,engine,dashboard` — 0 warnings
+
 ## [0.2.31] — iteration 89: relax '=' in server names, vision test fmt fix, quality gate snapshot
 
 ### Fixes (iter-89)

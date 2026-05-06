@@ -13,6 +13,7 @@
 - Log injection via service names: ASCII control characters (including `\n`, `\r`, `\t`) in service names are rejected at load time
 - Path traversal in `login_path`: `..` and `.` path segments are rejected at load time
 - Arbitrary command execution in launcher mode: shell interpreters (bash, sh, python, node, etc.) are blocked as launch targets
+- Prompt injection via browser vision pipeline: LLM responses from the vision model (MLbox/Qwen3-VL) are sanitised by `sanitize_output` before JSON parsing — adversarial text embedded in web page screenshots cannot reach downstream tool decisions
 
 **What it does NOT protect against:**
 - A compromised process running as the same OS user on the same host — it can reach `127.0.0.1:3201` directly
@@ -25,12 +26,24 @@
 
 - Listens on localhost only by default; a startup warning is logged when `--listen` is set to a non-loopback address
 - DNS rebinding guard rejects requests with non-localhost `Host` headers
-- Rate-limited: 60 requests per 60-second window
+- Rate-limited: 60 requests per 60-second window per caller (see per-caller rate limiting below)
+- Destructive endpoints (`/vault/items/delete`, `/vault/items/update`, `/vault/folders/delete`) are tighter: 10 req/60 s per caller
+- Credential audit endpoint (`/vault/audit/run`) decrypts every vault password for HMAC fingerprinting — capped at 2 req/60 s per caller to prevent decrypt-loop DoS
 - No credential-based auth on the endpoint itself — the trust model is OS-level process isolation
 - Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <internal-token>`. The token is written to `$CONFIG_DIR/internal-token` (mode 0600) at startup and rotated on each restart.
 - Auth-override headers (`Authorization`, `X-Api-Key`, `X-Plex-Token`, `Cookie`, `Host`, etc.) supplied by callers in `POST /proxy` requests are blocked — auth is always injected from the vault, never from the caller
 - Duplicate query parameters that shadow keys already present in the service `base_url` are rejected
 - Upstream response bodies are capped at 32 MB (configurable via `UPSTREAM_BODY_LIMIT_MB`) to prevent heap exhaustion from malicious upstreams
+- HTTP/1 header-read timeout of 5 seconds is set on every connection to prevent slowloris-style resource exhaustion
+
+## Per-caller rate limiting (`X-Caller-Id` / `VAULT_PROXY_CALLER_ID`)
+
+All MCP servers sharing `127.0.0.1` would otherwise share a single rate-limit bucket. vault-proxy supports per-caller isolation:
+
+- Callers set `X-Caller-Id: <name>` on every request. When present and valid ASCII, this header value is used as the bucket key — each MCP server gets its own independent budget.
+- When `--launch <server-name>` is used, vault-proxy automatically injects `VAULT_PROXY_CALLER_ID=<server-name>` into the child process's environment. Smart servers forward this as `X-Caller-Id`.
+- `X-Caller-Id` is **not authenticated** — it is a cooperative declaration. Any local process can set any value. This is intentional: in the loopback threat model, IP address and header value are equally controllable by any local process. If vault-proxy is ever exposed beyond `127.0.0.1` (strongly discouraged), `X-Caller-Id` would need to be derived from the authenticated bearer token.
+- Values are truncated to 64 bytes and must be printable ASCII (0x20–0x7E). Values containing `=` are valid (server names like `"prod=main"` are a legitimate operator convention; `=` is the name/value delimiter only in the env entry, not in the value itself).
 
 ## Dashboard (`--features dashboard`, `127.0.0.1:3202`)
 
@@ -40,9 +53,18 @@
 - Never returns plaintext credentials — passwords masked as `"********"` in all API responses
 - If exposed via a reverse proxy, place it behind strong forward authentication (e.g., Authentik)
 
+## Browser rotation subsystem (`--features browser`)
+
+- Routes: `POST /browser/rotate`, `POST /browser/rotate` (all gated behind internal bearer token)
+- Vision model (LiteLLM/Qwen3-VL via MLbox) receives base64 PNG screenshots and returns JSON action descriptors
+- LLM responses are sanitised by `sanitize_output` **before** JSON parsing — injection phrases, `<tool_call>` tags, and LLM control tokens are replaced with `[FILTERED]` before any field value can influence Playwright selectors or downstream tool calls
+- Screenshots and LLM calls never leave the homelab network (all traffic goes to `LITELLM_URL`, which should be the local MLbox endpoint)
+
 ## Vault folder scope guards
 
-All 17 vault item handlers enforce that looked-up items belong to the configured `vault_folder`. A compromised or crafted request cannot read credentials from outside the designated folder, even if the attacker knows exact Vaultwarden item IDs. This prevents privilege escalation across vault folders in multi-tenant Vaultwarden instances.
+All vault item handlers enforce that looked-up items belong to the configured `vault_folder`. A compromised or crafted request cannot read credentials from outside the designated folder, even if the attacker knows exact Vaultwarden item IDs. This prevents privilege escalation across vault folders in multi-tenant Vaultwarden instances.
+
+The `vault_folder` → folder ID resolution is cached after the first successful lookup (double-checked locking in `resolve_vault_folder_id`). The cache is invalidated by `POST /vault/resync`. If the folder does not exist in the vault, `None` is returned without caching — every subsequent request re-scans until the folder is created, at which point the cache is populated automatically.
 
 ## Two-tier security model
 
@@ -50,7 +72,7 @@ All 17 vault item handlers enforce that looked-up items belong to the configured
 
 MCP servers that support vault-proxy call `POST http://127.0.0.1:3201/proxy` at runtime. The credential is resolved inside vault-proxy, injected into the outbound HTTP request header, and **never exposed to the MCP server process**. The MCP server only sees the downstream service's response.
 
-To detect vault-proxy, smart servers check the `VAULT_PROXY_URL` environment variable (automatically set when vault-proxy is running or when a server is launched via `--launch`).
+To detect vault-proxy, smart servers check the `VAULT_PROXY_URL` environment variable (automatically set when vault-proxy is running or when a server is launched via `--launch`). They should also read `VAULT_PROXY_CALLER_ID` and forward it as `X-Caller-Id` to receive an isolated rate-limit budget.
 
 If a smart server launched via `--launch` also needs to call vault-proxy's internal `/vault/*` endpoints (not `/proxy`), it must present the internal bearer token from `$CONFIG_DIR/internal-token`. This is a deliberate two-layer design: `/proxy` is open to any local caller (rate-limited); internal endpoints require the token.
 
@@ -69,7 +91,7 @@ vault-proxy resolves credentials from Vaultwarden and spawns the server via fork
 **Additional launcher hardening:**
 - Shell interpreters (bash, sh, python, node, etc.) are blocked as launch targets — use a purpose-built binary
 - Dynamic-linker control variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, etc.) in the `env` block trigger a startup warning
-- Env var names are validated against `[A-Za-z_][A-Za-z0-9_]*` — `=` signs and null bytes are rejected
+- Env var names are validated against `[A-Za-z_][A-Za-z0-9_]*` — null bytes and newlines are rejected (null truncates the C-string value; newlines enable env-file injection). `=` signs in the server name (used as the `VAULT_PROXY_CALLER_ID` value, not the name) are allowed — a POSIX env entry `VAULT_PROXY_CALLER_ID=prod=main` is valid; the first `=` delimits name from value.
 - Duplicate server names in `mcp-servers.toml` are warned at load time
 - A per-server fcntl advisory lock prevents duplicate launches of the same server
 
