@@ -3,7 +3,7 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — iteration 91: invalidate on persistent auth failure, stale post-v1.0 annotation, TPM docs
+## [0.3.0] — iteration 91: invalidate on persistent auth failure, stale post-v1.0 annotation, TPM docs
 
 ### Fixes (iter-91)
 
@@ -100,7 +100,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 errors, 0 warnings
 - `cargo fmt --check` — clean (0 diffs)
 
-## [Unreleased/prev] — iteration 90: SECURITY.md comprehensive rewrite, resolve_vault_folder_id None-not-cached doc fix
+## [0.2.32] — iteration 90: SECURITY.md comprehensive rewrite, resolve_vault_folder_id None-not-cached doc fix
 
 ### Fixes (iter-90)
 
