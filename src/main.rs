@@ -2257,8 +2257,11 @@ async fn start_server(
                                  {} weak password(s), {} item(s) with shared passwords \
                                  across {} reuse group(s) (total {} items scanned). \
                                  Review with: GET /vault/audit/run",
-                                inner_folder, n_weak, n_reused_items,
-                                n_reuse_groups, result.total_items
+                                inner_folder,
+                                n_weak,
+                                n_reused_items,
+                                n_reuse_groups,
+                                result.total_items
                             );
                             // iter-74: log a warning if the notification fails so
                             // operators know the audit alert was not delivered.
@@ -2395,12 +2398,7 @@ async fn start_server(
         // JoinHandle is not consumed; on Err(Elapsed) the handle is still owned
         // here and we call handle.abort() explicitly.
         if let Some(mut handle) = audit_task_handle {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                &mut handle,
-            )
-            .await
-            {
+            match tokio::time::timeout(std::time::Duration::from_secs(8), &mut handle).await {
                 Ok(_) => tracing::debug!("audit task joined cleanly on shutdown"),
                 Err(_) => {
                     tracing::warn!(

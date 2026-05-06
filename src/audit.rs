@@ -411,8 +411,7 @@ pub async fn run_audit(vault: &VaultManager) -> AuditResult {
              each AuditItem includes a `reason` field with an actionable explanation; \
              reuse reason name lists are capped at {} names per item (see reused_passwords groups \
              for the full membership list when a group exceeds this limit)",
-            WEAK_THRESHOLD,
-            REUSE_NAME_DISPLAY_LIMIT
+            WEAK_THRESHOLD, REUSE_NAME_DISPLAY_LIMIT
         ),
     }
 }
