@@ -1325,26 +1325,43 @@ pub async fn update_item(
 /// `$CONFIG_DIR/internal-token` (0o600 permissions). Connecterr reads the
 /// token file before calling `/handshake`, eliminating the race window for
 /// unauthenticated callers.
-pub async fn handshake(State(state): State<Arc<AppState>>) -> Json<Value> {
+pub async fn handshake(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Only allow handshake once — prevent key exfiltration after startup.
+    // Issue (iter-102): return 409 Conflict (not 200) when handshake already
+    // completed; the previous Json<Value> return type silently returned HTTP 200.
     if state
         .handshake_completed
         .swap(true, std::sync::atomic::Ordering::SeqCst)
     {
-        return Json(json!({
-            "error": "handshake already completed — restart sidecar to re-handshake",
-        }));
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": "handshake already completed — restart sidecar to re-handshake",
+            })),
+        )
+            .into_response();
     }
 
     match &state.client_certs {
-        Some(certs) => Json(json!({
-            "ca_cert_pem":     certs.ca_cert_pem,
-            "client_cert_pem": certs.client_cert_pem,
-            "client_key_pem":  certs.client_key_pem,
-        })),
-        None => Json(json!({
-            "error": "mTLS certificates not available",
-        })),
+        Some(certs) => (
+            StatusCode::OK,
+            Json(json!({
+                "ca_cert_pem":     certs.ca_cert_pem,
+                "client_cert_pem": certs.client_cert_pem,
+                "client_key_pem":  certs.client_key_pem,
+            })),
+        )
+            .into_response(),
+        // Issue (iter-102): return 503 (not 200) when certs are unavailable.
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "ok": false,
+                "error": "mTLS certificates not available",
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -3008,21 +3025,34 @@ pub struct SetupCloudRequest {
 pub async fn check_permission(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<Value> {
+) -> impl IntoResponse {
+    // Issue (iter-102): return 400 Bad Request (not 200) when the required
+    // `tool` query parameter is missing; the previous Json<Value> return type
+    // silently returned HTTP 200 for this error path.
     let tool = match params.get("tool") {
-        Some(t) if !t.is_empty() => t,
-        _ => return Json(json!({"error": "tool query param required"})),
+        Some(t) if !t.is_empty() => t.clone(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "tool query param required"})),
+            )
+                .into_response()
+        }
     };
-    let permission = state.permissions.read().await.get_permission(tool);
+    let permission = state.permissions.read().await.get_permission(&tool);
     // Serialize the Permission enum's Debug form ("Allow"|"Ask"|"Block"|"Log")
     // lowercased for the wire, matching the existing JSON shape of the
     // dashboard `overrides` map.
     let verdict = format!("{:?}", permission).to_lowercase();
-    Json(json!({
-        "tool": tool,
-        "permission": verdict,
-        "allowed": !matches!(permission, crate::security::permissions::Permission::Block | crate::security::permissions::Permission::Ask),
-    }))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "tool": tool,
+            "permission": verdict,
+            "allowed": !matches!(permission, crate::security::permissions::Permission::Block | crate::security::permissions::Permission::Ask),
+        })),
+    )
+        .into_response()
 }
 
 /// `POST /vault/resync` — re-fetch all ciphers from Vaultwarden and replace
@@ -3397,29 +3427,47 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 /// `POST /sync/trigger` — trigger a full cloud sync.
-pub async fn sync_trigger(State(state): State<Arc<AppState>>) -> Json<Value> {
+///
+/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
+/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// type silently returned HTTP 200 for sync-failure (should be 503) and
+/// not-configured (should be 503) paths.
+pub async fn sync_trigger(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match &state.cloud_sync {
         Some(sync) => match sync.full_sync().await {
             Ok(()) => {
                 let st = sync.get_status().await;
-                Json(json!({
-                    "result": "ok",
-                    "items_synced": st.items_synced,
-                    "errors": st.errors,
-                }))
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "result": "ok",
+                        "items_synced": st.items_synced,
+                        "errors": st.errors,
+                    })),
+                )
+                    .into_response()
             }
             Err(e) => {
                 tracing::error!("sync trigger failed: {:#}", e);
-                Json(json!({
-                    "result": "error",
-                    "error": "sync failed — check logs for details",
-                }))
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": "sync failed — check logs for details",
+                    })),
+                )
+                    .into_response()
             }
         },
-        None => Json(json!({
-            "result": "error",
-            "error": "cloud sync not configured",
-        })),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "ok": false,
+                "error": "cloud sync not configured",
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -3444,15 +3492,27 @@ pub struct SyncInitRequest {
 ///
 /// For users who don't use secrets files, they can POST a refresh token
 /// (obtained from `bw login`) and their cloud master password to start syncing.
+///
+/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
+/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// type silently returned HTTP 200 for all error paths:
+///   - already-active → 409 Conflict
+///   - keystore unlock failures → 503 Service Unavailable
+///   - auth failure → 502 Bad Gateway
+///   - initial sync failure (partial) → 207 Multi-Status
 pub async fn sync_init(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SyncInitRequest>,
-) -> Json<Value> {
+) -> impl IntoResponse {
     if state.cloud_sync.is_some() {
-        return Json(json!({
-            "result": "error",
-            "error": "cloud sync is already active",
-        }));
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": "cloud sync is already active",
+            })),
+        )
+            .into_response();
     }
 
     // Get cloud email from keystore
@@ -3461,12 +3521,26 @@ pub async fn sync_init(
         Ok(c) => match c.cloud {
             Some(cl) => cl.email,
             None => {
-                return Json(
-                    json!({"result": "error", "error": "no cloud credentials in keystore"}),
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": "no cloud credentials in keystore",
+                    })),
                 )
+                    .into_response();
             }
         },
-        Err(_) => return Json(json!({"result": "error", "error": "cannot unlock keystore"})),
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "cannot unlock keystore",
+                })),
+            )
+                .into_response();
+        }
     };
 
     let kdf_override = std::env::var("CLOUD_KDF_ITERATIONS")
@@ -3496,25 +3570,41 @@ pub async fn sync_init(
 
             if let Err(e) = sync_mgr.full_sync().await {
                 tracing::error!("initial sync after sync/init failed: {:#}", e);
-                return Json(json!({
-                    "result": "partial",
-                    "message": "authenticated but initial sync failed — check logs",
-                }));
+                // 207 Multi-Status: authenticated OK but initial sync failed —
+                // partial success, not a complete failure.
+                return (
+                    StatusCode::MULTI_STATUS,
+                    Json(json!({
+                        "ok": false,
+                        "result": "partial",
+                        "message": "authenticated but initial sync failed — check logs",
+                    })),
+                )
+                    .into_response();
             }
 
             let status = sync_mgr.get_status().await;
-            Json(json!({
-                "result": "ok",
-                "message": "cloud sync initialized via refresh token",
-                "items_synced": status.items_synced,
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "result": "ok",
+                    "message": "cloud sync initialized via refresh token",
+                    "items_synced": status.items_synced,
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!("refresh token auth failed: {:#}", e);
-            Json(json!({
-                "result": "error",
-                "error": "authentication failed — check logs for details",
-            }))
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "ok": false,
+                    "error": "authentication failed — check logs for details",
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -3578,9 +3668,12 @@ pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCo
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
             });
+            // Issue (iter-102): add "ok": false for consistent 503 body format.
+            // All other 503 paths include "ok": false; this one was missing it,
+            // breaking clients that use `response.ok` for status detection.
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "vault unavailable"})),
+                Json(json!({"ok": false, "error": "vault unavailable"})),
             )
         }
     }
@@ -3589,28 +3682,46 @@ pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCo
 /// `POST /sync/totp` — provide a one-time TOTP code for 2FA during initial
 /// Bitwarden cloud setup. The sidecar will authenticate, get a device token
 /// for future 2FA-free logins, and start syncing.
+///
+/// Issue (iter-102): changed return type from Json<Value> to impl IntoResponse
+/// so that error paths return the correct HTTP status codes. The old Json<Value>
+/// type silently returned HTTP 200 for all error paths:
+///   - keystore unlock failure → 503 Service Unavailable
+///   - no cloud credentials → 503 Service Unavailable
+///   - TOTP auth failure → 401 Unauthorized
+///   - initial sync failure (partial) → 207 Multi-Status
 pub async fn provide_totp(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TotpRequest>,
-) -> Json<Value> {
+) -> impl IntoResponse {
     // Retrieve cloud credentials from keystore.
     // Try TPM first, then fall back to env-based config dir.
     let config_dir = std::env::var("CONFIG_DIR").unwrap_or_else(|_| "/config".to_string());
     let creds = match crate::keystore::unlock_keystore(&config_dir, None) {
         Ok(c) => c,
         Err(_) => {
-            return Json(
-                json!({ "result": "error", "error": "cannot unlock keystore to read cloud credentials — use dashboard settings to configure" }),
-            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "cannot unlock keystore to read cloud credentials — use dashboard settings to configure",
+                })),
+            )
+                .into_response();
         }
     };
 
     let cloud = match creds.cloud {
         Some(c) => c,
         None => {
-            return Json(
-                json!({ "result": "error", "error": "no cloud credentials configured — add them in dashboard settings" }),
-            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "no cloud credentials configured — add them in dashboard settings",
+                })),
+            )
+                .into_response();
         }
     };
 
@@ -3633,26 +3744,40 @@ pub async fn provide_totp(
 
             if let Err(e) = sync_mgr.full_sync().await {
                 tracing::error!("initial sync after setup_cloud failed: {:#}", e);
-                return Json(json!({
-                    "result": "partial",
-                    "message": "authenticated but initial sync failed — check logs",
-                }));
+                return (
+                    StatusCode::MULTI_STATUS,
+                    Json(json!({
+                        "ok": false,
+                        "result": "partial",
+                        "message": "authenticated but initial sync failed — check logs",
+                    })),
+                )
+                    .into_response();
             }
 
             let status = sync_mgr.get_status().await;
-            Json(json!({
-                "result": "ok",
-                "message": "cloud sync active — 2FA device token saved for future logins",
-                "items_synced": status.items_synced,
-                "device_token_saved": device_token.is_some(),
-            }))
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "result": "ok",
+                    "message": "cloud sync active — 2FA device token saved for future logins",
+                    "items_synced": status.items_synced,
+                    "device_token_saved": device_token.is_some(),
+                })),
+            )
+                .into_response()
         }
         Err(e) => {
             tracing::error!("TOTP auth failed: {:#}", e);
-            Json(json!({
-                "result": "error",
-                "error": "authentication failed — check logs for details",
-            }))
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "ok": false,
+                    "error": "authentication failed — check logs for details",
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -3731,10 +3856,11 @@ pub async fn upsert_connecterr_secrets(
                     item.name,
                     e
                 );
+                // Issue (iter-102): add "ok": false for consistent 503 body format.
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(
-                        json!({ "error": "vault-proxy returned 503 — vault locked or VW unreachable" }),
+                        json!({ "ok": false, "error": "vault-proxy returned 503 — vault locked or VW unreachable" }),
                     ),
                 ));
             }
