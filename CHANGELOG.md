@@ -3,6 +3,98 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.11] — iteration 59: version sync, headless Dockerfile, Unicode test, migration note
+
+### Bug fixes (iter-59)
+
+- **`Cargo.toml` version stuck at `0.2.8` (iter-59, MEDIUM)**: Tags `v0.2.9` and
+  `v0.2.10` were pushed for CI and fmt fixes but `Cargo.toml` was never bumped past
+  `0.2.8`. As a result `cargo run -- --version` printed `vaultproxy 0.2.8` and
+  `GET /vault/health` returned `"version": "0.2.8"` even when the published Docker
+  image was tagged `v0.2.10`. Fixed: version bumped to `0.2.10` to match the current
+  release tag, then bumped to `0.2.11` for this iteration's fixes.
+
+- **Dockerfile compiled `--features dashboard` unconditionally (iter-59, MEDIUM)**:
+  The published Docker image was built with `--features dashboard`, which starts a
+  web UI listener on `127.0.0.1:3202` inside every container — whether or not the
+  operator wanted it. Operators running the published image with `network_mode: host`
+  got an unexpected dashboard on port 3202. Fixed: the default build is now headless
+  (`FEATURES=""` ARG). Operators who want the dashboard build locally with
+  `--build-arg FEATURES=dashboard`. The `EXPOSE 3202` comment was updated to note
+  it is only meaningful for dashboard builds.
+
+### Tests added (iter-59)
+
+- **Unicode `password_strength()` regression tests (iter-59)**: Added a
+  `#[cfg(test)] mod tests` block to `src/audit.rs` with five unit tests:
+  `cyrillic_4_char_password_is_weak` — verifies that "АБВГ" (4 chars, 8 bytes)
+  is classified "weak" (not "fair" as it was before the iter-58 fix);
+  `cyrillic_8_char_password_is_not_weak` — verifies the boundary at 8 chars;
+  `ascii_7_char_password_is_weak`, `ascii_8_char_password_is_not_weak` — ASCII
+  boundary sanity; `strong_password_classified_strong` — 16-char mixed-class check.
+
+### Documentation / migration note (iter-59)
+
+- **`_review-delete` → `<vault_folder>-review-delete` migration gap documented**:
+  The iter-58 change renamed the quarantine folder from `"_review-delete"` to
+  `"<vault_folder>-review-delete"` for multi-deployment isolation. Deployments that
+  ran a credential-audit scan before upgrading have items stranded in the old
+  `"_review-delete"` folder; the `apply` endpoint will never find them under the new
+  name. Migration path: in Vaultwarden, manually move items from `"_review-delete"`
+  to `"<your_vault_folder>-review-delete"` (or simply rename the folder). There is no
+  automated migration in vault-proxy. Deployments with `vault_folder = None`
+  (unconfigured) are unaffected — they continue to use `"_review-delete"`.
+
+### Findings — no code change required (iter-59)
+
+- **Orchestrator `Marker::new()` vault_folder wiring — CORRECT (iter-59)**:
+  `main.rs` line 1432–1435 passes `Some(args.vault_folder.clone())` to
+  `Marker::new()` at `Orchestrator` construction time. The `vault_folder`
+  parameter is correctly threaded from the parsed CLI args through to the
+  `Marker`. No fix needed.
+
+- **GitHub releases for v0.2.9 / v0.2.10 — deferred**: The tags were pushed for
+  CI toolchain and fmt fixes; formal GitHub release notes were not created for
+  those tags. The v0.2.11 tag (this iteration) should have a proper release with
+  the notes from this section and the prior two iterations.
+
+- **`WEAK_THRESHOLD = 8` configurability — documented, not changed**: The threshold
+  is exposed in `AuditResult::weak_threshold_len` in every API response, so callers
+  can see the active threshold without reading source. Making it a runtime CLI flag
+  would require threading it through `run_audit()` and `AppState`, adding complexity
+  for a homelab-targeted v0.x tool. The current approach (recompile to change the
+  constant) is adequate; NIST SP 800-63B's own floor is 8 chars. A `--audit-weak-threshold`
+  flag is noted as a v1.0 enhancement.
+
+- **CI GHA cache — not auditable from source (iter-59)**: Whether the GitHub Actions
+  cache was populated on the v0.2.10 build is a runtime artifact that cannot be
+  verified from the repository. The workflow's `cache-from: type=gha` / `cache-to:
+  type=gha,mode=max` configuration is correct; subsequent runs will benefit from the
+  cache on a cache-hit. No change needed.
+
+### Verification (iter-59)
+
+- `cargo test --all-targets`: 245 passed (240 prior + 5 new password_strength tests), 0 failed.
+- `cargo build --release`: clean (0 errors, 0 warnings in vaultproxy crate).
+- `cargo clippy --all-targets -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+
+## [0.2.10] — iteration 58 follow-up: CI fmt fix, Docker image publication
+
+### Changes
+
+- **`cargo fmt` fix (CI)**: Corrected rustfmt formatting in `src/sync/cloud.rs`
+  that caused the CI `cargo fmt --check` step to fail on the v0.2.9 tag. No
+  logic changes.
+
+- **First published Docker image**: `ghcr.io/aaronckj/vaultproxy:v0.2.10` and
+  `ghcr.io/aaronckj/vaultproxy:latest` were successfully built and pushed by the
+  GitHub Actions workflow on the `v0.2.10` tag push.
+
+- **Note**: `Cargo.toml` was not bumped from `0.2.8` for the `v0.2.9` or `v0.2.10`
+  tags — only CI/fmt fixes were made. The binary version reported by `--version` and
+  `GET /vault/health` remained `0.2.8`. This is corrected in `v0.2.11`.
+
 ## [0.2.9] — iteration 58: Unicode password length, review-delete folder isolation, CHANGELOG
 
 ### Bug fixes (iter-58)

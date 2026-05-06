@@ -230,3 +230,66 @@ pub async fn handle_audit_run(
     );
     axum::Json(result)
 }
+
+// -------------------------------------------------------------------------- //
+// Unit tests                                                                   //
+// -------------------------------------------------------------------------- //
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // iter-59: Verify that the iter-58 Unicode fix correctly classifies a
+    // 4-character Cyrillic password as "weak".
+    //
+    // Before the fix, `pw.len()` returned 8 (byte count), which equalled
+    // WEAK_THRESHOLD and caused the password to be classified "fair".
+    // After the fix, `chars().count()` returns 4 (character count), which is
+    // less than WEAK_THRESHOLD (8), so the password is correctly classified "weak".
+    #[test]
+    fn cyrillic_4_char_password_is_weak() {
+        // "АБВГ" = 4 Cyrillic uppercase letters, 8 UTF-8 bytes.
+        // char count = 4 < WEAK_THRESHOLD (8) → must be "weak".
+        let pw = "АБВГ";
+        assert_eq!(pw.chars().count(), 4, "sanity: 4 chars");
+        assert_eq!(pw.len(), 8, "sanity: 8 bytes");
+        assert_eq!(
+            password_strength(pw.as_bytes()),
+            "weak",
+            "4-char Cyrillic password must be 'weak', not 'fair'"
+        );
+    }
+
+    #[test]
+    fn cyrillic_8_char_password_is_not_weak() {
+        // "АБВГДЕЖЗ" = 8 Cyrillic uppercase letters, 16 UTF-8 bytes.
+        // char count = 8 = WEAK_THRESHOLD → must NOT be "weak".
+        let pw = "АБВГДЕЖЗ";
+        assert_eq!(pw.chars().count(), 8, "sanity: 8 chars");
+        assert_eq!(pw.len(), 16, "sanity: 16 bytes");
+        // 8 chars = WEAK_THRESHOLD: not weak.  16 bytes but only 1 char class
+        // (all uppercase non-ASCII, no ASCII lower/digit/punct) → "fair".
+        assert_ne!(
+            password_strength(pw.as_bytes()),
+            "weak",
+            "8-char Cyrillic password must not be 'weak'"
+        );
+    }
+
+    #[test]
+    fn ascii_7_char_password_is_weak() {
+        assert_eq!(password_strength(b"abc1234"), "weak");
+    }
+
+    #[test]
+    fn ascii_8_char_password_is_not_weak() {
+        assert_ne!(password_strength(b"abc12345"), "weak");
+    }
+
+    #[test]
+    fn strong_password_classified_strong() {
+        // 16+ chars with lowercase, uppercase, digit, symbol = "strong"
+        let pw = b"Correct-Horse-1!";
+        assert_eq!(password_strength(pw), "strong");
+    }
+}

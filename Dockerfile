@@ -1,23 +1,25 @@
 # syntax=docker/dockerfile:1
 # Multi-stage Dockerfile for vaultproxy.
 #
-# Stage 1 (builder): compiles the Rust binary with the `dashboard` feature.
-# Stage 2 (runtime): minimal Debian slim image with just the binary and
-#   the Node.js dashboard assets.
+# Stage 1 (builder): compiles the Rust binary.  By default the build is
+#   headless (no dashboard).  Pass --build-arg FEATURES=dashboard to opt in.
+# Stage 2 (runtime): minimal Debian slim image with just the binary.
 #
-# Build:
+# Build (headless, default — recommended for production):
 #   docker build -t vaultproxy:latest .
 #
-# The published image (ghcr.io/aaronckj/vaultproxy:latest) is built from
-# this file via the GitHub Actions workflow.
+# Build with dashboard (opt-in — exposes port 3202):
+#   docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .
 #
-# Features compiled in:
-#   dashboard — web management UI on 127.0.0.1:3202 (HTTPS)
+# The published image (ghcr.io/aaronckj/vaultproxy:latest) is built headless.
+# Operators who want the web UI should build locally with --build-arg FEATURES=dashboard
+# or use the docker-compose.example.yml build section with the build-arg set.
 #
 # TPM sealing is intentionally NOT compiled into the default Docker image
 # because it requires the TSS2 system libraries and a physical TPM device.
-# To add TPM support, change the cargo build line to:
-#   --features dashboard,tpm
+# To add TPM support:
+#   --build-arg FEATURES=tpm
+#   or: --build-arg FEATURES=dashboard,tpm
 # and install `libtss2-dev` in the builder stage.
 
 # ---------------------------------------------------------------------------- #
@@ -55,6 +57,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 
+# FEATURES build-arg controls which Cargo features are compiled in.
+# Default = empty string (headless, no dashboard, no TPM).
+# Pass --build-arg FEATURES=dashboard to enable the web UI on port 3202.
+# Pass --build-arg FEATURES=dashboard,tpm for dashboard + TPM sealing.
+# iter-59: Changed default from `--features dashboard` to headless so the
+# published image does not expose port 3202 without operator opt-in.
+ARG FEATURES=""
+
 # Cache dependency build: copy manifests first, compile a dummy main, then
 # replace with real source. This layer is reused on source-only changes.
 #
@@ -71,14 +81,16 @@ WORKDIR /build
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
-    && cargo build --release --features dashboard 2>/dev/null; \
+    && if [ -n "$FEATURES" ]; then cargo build --release --features "$FEATURES" 2>/dev/null; \
+       else cargo build --release 2>/dev/null; fi; \
     rm -rf src
 
 # Copy real source and compile.
 COPY src ./src
 # Touch main.rs to force recompile (the dummy main above left stale artifacts).
 RUN touch src/main.rs \
-    && cargo build --release --features dashboard
+    && if [ -n "$FEATURES" ]; then cargo build --release --features "$FEATURES"; \
+       else cargo build --release; fi
 
 # ---------------------------------------------------------------------------- #
 # Stage 2: runtime                                                              #
@@ -151,7 +163,9 @@ USER vaultproxy
 
 # MCP proxy port (localhost-only; network_mode:host or explicit mapping needed)
 EXPOSE 3201
-# Dashboard port (HTTPS, localhost-only)
+# Dashboard port (HTTPS, localhost-only).
+# Only relevant when the image is built with --build-arg FEATURES=dashboard.
+# The headless default image does not start a dashboard listener on this port.
 EXPOSE 3202
 
 # Issue (iter-12): Add a HEALTHCHECK so `docker run` deployments get container
