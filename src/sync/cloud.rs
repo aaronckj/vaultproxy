@@ -37,7 +37,7 @@ pub struct CloudClient {
     org_keys: HashMap<String, (SecureBuffer, SecureBuffer)>,
     /// KDF iterations used for key derivation (needed for password change).
     #[allow(dead_code)]
-    // read by change_master_password (v1.0: Bitwarden cloud password change)
+    // read by change_master_password (post-v1.0: Bitwarden cloud password change)
     kdf_iterations: u32,
     http: Client,
     /// API key credentials for re-authentication when token expires.
@@ -783,7 +783,7 @@ impl CloudClient {
     /// This re-encrypts the vault's symmetric key with the new password and
     /// POSTs the change to the Bitwarden API. On success, updates the internal
     /// encryption keys to match the new password.
-    #[allow(dead_code)] // v1.0: will be exposed via dashboard cloud-account settings
+    #[allow(dead_code)] // post-v1.0: will be exposed via dashboard cloud-account settings
     pub async fn change_master_password(
         &mut self,
         email: &str,

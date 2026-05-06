@@ -87,7 +87,7 @@ impl UnifiSessionCache {
 
     /// Drop the cached session for a service (called on credential rotation
     /// or after an auth failure on a session-authenticated request).
-    #[allow(dead_code)] // v1.0: will be called from rotation handler after UniFi credential change
+    #[allow(dead_code)] // called by tests; production rotation handler not yet wired (post-v1.0: rotation UI)
     pub fn invalidate(&self, service: &str) {
         if let Some(slot) = self.inner.get(service) {
             // Best-effort: we can't await here so we just try_lock; if the

@@ -127,7 +127,7 @@ const MAX_OUTPUT_SIZE: usize = 100 * 1024;
 /// Use this for content that will be forwarded to an AI model (browser agent
 /// screenshots text, tool-call result text). Do NOT use for upstream HTTP
 /// response bodies that callers need structurally intact.
-#[allow(dead_code)] // v1.0: will be used by browser agent output pipeline
+#[allow(dead_code)] // post-v1.0: will be used by browser agent output pipeline
 pub fn sanitize_output(text: &str) -> String {
     sanitize_internal(text, /* aggressive */ true)
 }

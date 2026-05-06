@@ -1,9 +1,17 @@
 //! Lightweight in-memory rate limiter for sidecar API routes.
 //!
-//! Tracks request counts per `(route, client_ip)` in 60-second windows using a
-//! `tokio::sync::Mutex<HashMap>`. Keying on the client IP (not just the route
-//! path) prevents a single caller from exhausting the budget for everyone
-//! else and prevents many clients from collectively bypassing a per-route cap.
+//! Tracks request counts per `(route, caller_key)` in 60-second windows using
+//! a `tokio::sync::Mutex<HashMap>`. The caller key is resolved as follows:
+//!
+//! 1. If the request carries an `X-Caller-Id` header with a non-empty ASCII
+//!    value, that value is used as the bucket key. This lets each MCP server
+//!    declare its own identity and receive an independent budget — critical when
+//!    vault-proxy is used as a sidecar and all MCP servers share `127.0.0.1`.
+//! 2. Otherwise the client IP (from `ConnectInfo<SocketAddr>`) is used. This
+//!    preserves the prior behaviour for callers that do not set the header.
+//!
+//! Keying on the caller (not just the route path) prevents a single MCP server
+//! from exhausting the budget for all other concurrent servers.
 //!
 //! # Per-route overrides (iter-37)
 //!
@@ -13,6 +21,14 @@
 //! global `max_requests` fallback. The tight limits are intentionally low:
 //! deleting 10 vault items in one minute is already an unusual workload for a
 //! homelab sidecar; anything beyond that is likely runaway automation.
+//!
+//! # Per-caller identity (iter-85)
+//!
+//! MCP servers may set `X-Caller-Id: <name>` in every request. When present,
+//! the header value replaces the IP as the bucket key, giving each MCP server
+//! its own independent rate-limit budget. The header value is truncated to
+//! 64 bytes and ASCII-sanitized before use as a map key. An empty or
+//! non-ASCII-printable value falls back to the IP.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -28,7 +44,7 @@ use axum::{
 use serde_json::json;
 use tokio::sync::Mutex;
 
-/// Per-(route, ip) request counter with windowed expiry.
+/// Per-(route, caller_key) request counter with windowed expiry.
 #[derive(Debug, Clone)]
 struct RouteCounter {
     count: u64,
@@ -38,7 +54,9 @@ struct RouteCounter {
 /// Shared rate-limit state.
 #[derive(Clone)]
 pub struct RateLimiter {
-    /// Map of (route_path, client_ip) -> counter.
+    /// Map of (route_path, caller_key) -> counter.
+    /// `caller_key` is the `X-Caller-Id` header value if present, otherwise
+    /// the client IP address.
     counters: Arc<Mutex<HashMap<(String, String), RouteCounter>>>,
     /// Default maximum requests per window (applies when no per-route override).
     max_requests: u64,
@@ -54,7 +72,9 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter with the given default max requests per window.
-    #[allow(dead_code)] // v1.0: will be used by configurable per-route rate limiting
+    /// Used by tests; production code uses `default_rate_limiter()` or
+    /// `with_per_route_overrides()`.
+    #[allow(dead_code)] // production path uses default_rate_limiter(); tests use this directly
     pub fn new(max_requests: u64, window_secs: u64) -> Self {
         Self {
             counters: Arc::new(Mutex::new(HashMap::new())),
@@ -82,9 +102,13 @@ impl RateLimiter {
         }
     }
 
-    /// Check if a request to the given path from the given client IP should be
+    /// Check if a request to the given path from the given caller key should be
     /// allowed. Returns `true` if allowed, `false` if rate-limited.
-    async fn check(&self, path: &str, ip: &str) -> bool {
+    ///
+    /// `caller_key` is the `X-Caller-Id` header value (if present and valid
+    /// ASCII) or the client IP address. The key is used as the bucket key so
+    /// each distinct caller gets its own independent budget.
+    async fn check(&self, path: &str, caller_key: &str) -> bool {
         let limit = self
             .per_route
             .get(path)
@@ -95,10 +119,10 @@ impl RateLimiter {
         let now = std::time::Instant::now();
 
         // Opportunistic GC — drop entries whose window expired long ago to
-        // bound memory under churn of distinct client IPs.
+        // bound memory under churn of distinct caller keys.
         counters.retain(|_, c| now.duration_since(c.window_start) < self.window * 4);
 
-        let key = (path.to_string(), ip.to_string());
+        let key = (path.to_string(), caller_key.to_string());
         let counter = counters.entry(key).or_insert(RouteCounter {
             count: 0,
             window_start: now,
@@ -113,6 +137,35 @@ impl RateLimiter {
         counter.count += 1;
         counter.count <= limit
     }
+}
+
+/// Extract the caller key from a request.
+///
+/// Prefers the `X-Caller-Id` header value (iter-85: per-caller rate limiting).
+/// The header value is:
+///   - Truncated to 64 bytes.
+///   - Accepted only if every byte is ASCII printable (0x20–0x7E).
+///   - Rejected (fallback to IP) if empty after truncation.
+///
+/// On rejection or absence, falls back to the client IP from
+/// `ConnectInfo<SocketAddr>`, then to the sentinel `"unknown"` if that
+/// extension is missing (test harness or direct-call paths).
+fn extract_caller_key(req: &Request) -> String {
+    if let Some(header_val) = req.headers().get("x-caller-id") {
+        if let Ok(s) = header_val.to_str() {
+            // Truncate and validate.
+            let truncated = &s[..s.len().min(64)];
+            if !truncated.is_empty() && truncated.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
+            {
+                return truncated.to_string();
+            }
+        }
+    }
+    // Fall back to client IP.
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Routes that are subject to rate limiting.
@@ -140,7 +193,7 @@ const RATE_LIMITED_PATHS: &[&str] = &[
     // iter-54: in-process credential health audit — decrypts every vault password
     // to compute HMAC fingerprints.  A single run on a 500-item vault can take
     // several seconds; concurrent runs multiply that cost and decrypt the same
-    // passwords simultaneously.  Limit to 2 req/60 s per IP so a slow or
+    // passwords simultaneously.  Limit to 2 req/60 s per caller so a slow or
     // mis-configured caller cannot DDoS the proxy's decrypt loop.
     "/vault/audit/run",
     // iter-78: permissions diagnostic endpoint — gated behind the internal bearer
@@ -170,16 +223,20 @@ fn per_route_limits() -> HashMap<&'static str, u64> {
     // iter-54: audit/run decrypts every vault password for HMAC fingerprinting.
     // Each run is expensive (AES-256-CBC + HMAC-SHA256 per item); 60 concurrent
     // runs at the default global budget would mean 60 × N password decrypts per
-    // minute.  Cap at 2 per IP per 60-second window — enough for one deliberate
+    // minute.  Cap at 2 per caller per 60-second window — enough for one deliberate
     // scan plus one retry, but not enough to sustain an accidental loop.
     m.insert("/vault/audit/run", 2u64);
     m
 }
 
-/// Axum middleware that enforces per-`(route, ip)` rate limits on sensitive
-/// endpoints. The client IP is pulled from `ConnectInfo<SocketAddr>` injected
-/// by the outer `serve` layer; if that extension is missing (test harness,
-/// direct-call), we fall back to a sentinel so limits still apply.
+/// Axum middleware that enforces per-`(route, caller)` rate limits on sensitive
+/// endpoints. The caller identity is resolved from the `X-Caller-Id` header
+/// (iter-85) when present; otherwise the client IP is used.
+///
+/// Choosing `X-Caller-Id` over IP resolves the shared-loopback problem: all
+/// MCP servers running on the same host share `127.0.0.1`, so IP-based keying
+/// gives them a single shared budget. With `X-Caller-Id`, each MCP server
+/// configuration can declare a unique name and receive an independent budget.
 pub async fn rate_limit_middleware(
     axum::extract::State(limiter): axum::extract::State<RateLimiter>,
     req: Request,
@@ -207,14 +264,15 @@ pub async fn rate_limit_middleware(
 
     // Only rate-limit specific sensitive endpoints.
     if RATE_LIMITED_PATHS.iter().any(|p| path == *p) {
-        let ip = req
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        // iter-85: prefer X-Caller-Id over IP for per-caller isolation.
+        let caller_key = extract_caller_key(&req);
 
-        if !limiter.check(&path, &ip).await {
-            tracing::warn!("rate limit exceeded for {} from {}", path, ip);
+        if !limiter.check(&path, &caller_key).await {
+            tracing::warn!(
+                "rate limit exceeded for {} from caller {:?}",
+                path,
+                caller_key
+            );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({"error": "rate limit exceeded — try again later"})),
@@ -250,22 +308,18 @@ pub async fn rate_limit_middleware(
 /// .http1().timer(TokioTimer::new()).header_read_timeout(Duration::from_secs(5))`.
 /// See `main.rs::start_server` for the implementation.
 ///
-/// # Shared-IP bucket limitation
+/// # Per-caller isolation (iter-85)
 ///
-/// The rate limiter keys on `(route, client_ip)`.  When vault-proxy is used
-/// as a sidecar, all MCP servers run on `127.0.0.1` — they all share the
-/// **same** bucket for each route.  This means:
+/// The rate limiter keys on `(route, caller_key)`. When `X-Caller-Id` is set
+/// in the request, `caller_key` is that header value and each MCP server gets
+/// its own independent budget even when all run on `127.0.0.1`. Without the
+/// header, `caller_key` falls back to the client IP, which means all loopback
+/// callers share a single bucket (same behaviour as before iter-85).
 ///
-/// - A single LLM session making 1 call/s hits the 60 req/60s cap in one
-///   minute with nothing left for other concurrent MCP servers.
-/// - The limit does protect against runaway loops and mis-configured clients,
-///   but it is not per-caller isolation.
-///
-/// TODO: Introduce per-caller identity (e.g. an `X-Caller-Id` header set by
-/// each MCP server's configuration) so the bucket can be keyed on
-/// `(route, caller_id)` instead of the always-identical loopback IP.  Until
-/// then, operators running many concurrent MCP servers may need to raise this
-/// limit via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` env vars (not yet wired).
+/// Each MCP server configuration should set:
+/// ```
+/// X-Caller-Id: <unique-name>   # e.g. "connecterr-unifi", "connecterr-vault"
+/// ```
 pub fn default_rate_limiter() -> RateLimiter {
     RateLimiter::with_per_route_overrides(60, 60, per_route_limits())
 }
@@ -404,5 +458,78 @@ mod tests {
             !limiter.check("/vault/audit/run", "127.0.0.1").await,
             "fourth request (still canonical) must stay rate-limited"
         );
+    }
+
+    /// iter-85: per-caller rate limiting via `X-Caller-Id`.
+    /// Two distinct caller-ids must get independent buckets on the same route,
+    /// even when sharing the same IP address.
+    #[tokio::test]
+    async fn distinct_caller_ids_have_independent_buckets() {
+        // Tight limit of 2 so we can exhaust one caller quickly.
+        let limiter = RateLimiter::new(2, 60);
+        // Exhaust caller-a's budget.
+        assert!(limiter.check("/proxy", "caller-a").await);
+        assert!(limiter.check("/proxy", "caller-a").await);
+        assert!(
+            !limiter.check("/proxy", "caller-a").await,
+            "caller-a must be rate-limited"
+        );
+
+        // caller-b's budget is independent — must still be allowed.
+        assert!(
+            limiter.check("/proxy", "caller-b").await,
+            "caller-b must have its own fresh budget"
+        );
+    }
+
+    /// iter-85: `extract_caller_key` must prefer a valid X-Caller-Id header
+    /// over the client IP.
+    #[test]
+    fn extract_caller_key_prefers_header() {
+        use axum::http::Request;
+
+        let req = Request::builder()
+            .uri("/proxy")
+            .header("x-caller-id", "my-mcp-server")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_caller_key(&req), "my-mcp-server");
+    }
+
+    /// iter-85: a non-ASCII or empty `X-Caller-Id` must fall through to IP
+    /// (or the "unknown" sentinel when ConnectInfo is absent).
+    #[test]
+    fn extract_caller_key_rejects_invalid_header() {
+        use axum::http::Request;
+
+        // A header value with a non-ASCII byte — to_str() fails on it, so
+        // extract_caller_key falls through to IP/unknown.
+        // Use header_name + header_value bytes directly to inject a non-UTF-8 value.
+        let req = Request::builder()
+            .uri("/proxy")
+            .header(
+                "x-caller-id",
+                axum::http::HeaderValue::from_bytes(b"\x80\xFF").unwrap(),
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // ConnectInfo is absent in a bare Request; sentinel is "unknown".
+        assert_eq!(extract_caller_key(&req), "unknown");
+    }
+
+    /// iter-85: X-Caller-Id longer than 64 bytes is truncated to 64 chars.
+    #[test]
+    fn extract_caller_key_truncates_long_header() {
+        use axum::http::Request;
+
+        let long_id = "a".repeat(100);
+        let req = Request::builder()
+            .uri("/proxy")
+            .header("x-caller-id", long_id.as_str())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let key = extract_caller_key(&req);
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c == 'a'));
     }
 }

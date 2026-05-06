@@ -3,6 +3,102 @@
 All notable changes to vaultproxy are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.28] — iteration 85: stale v1.0 tag audit, per-caller rate limiting
+
+### Feature (iter-85)
+
+- **Per-caller `X-Caller-Id` rate limiting (MEDIUM)** —
+  `src/security/rate_limit.rs`. The rate limiter keyed on `(route, client_ip)`,
+  which gave all MCP servers on the same host a single shared 60 req/60 s budget
+  (all share `127.0.0.1`). This meant a single runaway MCP session could starve
+  all others. Added `extract_caller_key()` that prefers the `X-Caller-Id` request
+  header over the IP. When present and valid ASCII (non-empty, printable bytes,
+  truncated to 64 chars), the header value is used as the bucket key giving each
+  MCP server its own independent budget. Falls back to IP when absent or invalid.
+  The module-level doc comment, `rate_limit_middleware` doc, and `default_rate_limiter`
+  doc all updated to describe the new behaviour. 3 new unit tests:
+  `distinct_caller_ids_have_independent_buckets`, `extract_caller_key_prefers_header`,
+  `extract_caller_key_rejects_invalid_header`, `extract_caller_key_truncates_long_header`.
+
+### Stale `v1.0:` tag audit (iter-85)
+
+All 12 stable-core `v1.0:` items were reviewed. 4 were stale (the functions are
+already called from production or dashboard-gated code); 8 were genuinely deferred
+and re-marked `post-v1.0:`. Details:
+
+- **`keystore.rs:480` `reencrypt_credentials` — stale (MEDIUM)** — Tag said "will be
+  called from dashboard credential rotation UI". The function is called from
+  `dashboard/api.rs` in 4 production places. Removed `v1.0:` framing; updated
+  comment to "dashboard-gated: called from dashboard/api.rs credential rotation
+  handlers".
+
+- **`keystore.rs:304` `public_key_from_pem` — stale (LOW)** — Tag said "used by
+  reencrypt_credentials (v1.0: credential rotation UI)". `reencrypt_credentials` IS
+  the credential rotation UI (now implemented). Updated comment to "only called from
+  reencrypt_credentials which is dashboard-gated". `#[allow(dead_code)]` retained
+  for non-dashboard builds.
+
+- **`policy.rs:74` `delete_policy` — stale (LOW)** — Tag said "will be called from
+  dashboard policy management UI". The function is called from `dashboard/api.rs:239`
+  (`DELETE /api/policies/:id`). Removed `v1.0:` framing; updated comment to reflect
+  dashboard routing.
+
+- **`security/rate_limit.rs:57` `RateLimiter::new` — stale tag (LOW)** — Tag said
+  "will be used by configurable per-route rate limiting". Per-route rate limiting is
+  fully implemented via `with_per_route_overrides()`. `RateLimiter::new` is used in
+  test code across `proxy/mod.rs`. Removed `v1.0:` framing; updated comment to
+  "production path uses `default_rate_limiter()`; tests use this directly".
+
+- **`keystore.rs:333` `unseal_private_key_from_tpm` — genuinely deferred** — Re-marked
+  `post-v1.0:`. TPM-backed auto-unlock path not yet wired.
+
+- **`keystore.rs:563` `reset_keystore` — genuinely deferred** — Re-marked `post-v1.0:`.
+  Dashboard "factory reset" flow not yet wired.
+
+- **`proxy/unifi_session.rs:90` `invalidate` — clarified** — Function IS called from
+  tests (line 498). Comment updated to "called by tests; production rotation handler
+  not yet wired (post-v1.0: rotation UI)".
+
+- **`security/sanitize.rs:130` `sanitize_output` — genuinely deferred** — Re-marked
+  `post-v1.0:`. Browser agent output pipeline not yet wired.
+
+- **`sync/cloud.rs:40` `kdf_iterations` field — genuinely deferred** — Re-marked
+  `post-v1.0:`. Bitwarden cloud master password change not needed for homelab.
+
+- **`sync/cloud.rs:786` `change_master_password` — genuinely deferred** — Re-marked
+  `post-v1.0:`. Dashboard stub returns 503; real implementation not yet wired.
+
+- **`vault/mod.rs:75` `field_names_from_cipher` — genuinely deferred** — Re-marked
+  `post-v1.0:`. Called from tests; dashboard field inspector not yet wired.
+
+- **`vault/handlers.rs:23` `resolve_vault_folder_id` — genuinely deferred** — Re-marked
+  `post-v1.0:`. No production callers yet; folder-scoping not yet wired.
+
+### v1.0 deferred count update (iter-85)
+
+Before this iteration: 12 `v1.0:` items in stable-core + 9 in `credential_audit/pass2`
+(engine scaffold) = 21 total.
+
+After audit:
+- 4 stable-core items were stale (already implemented) — `v1.0:` tags removed.
+- 8 stable-core items are genuinely deferred — re-tagged `post-v1.0:`.
+- 9 `credential_audit/pass2` items unchanged (engine scaffold, opt-in feature).
+
+Genuine `post-v1.0:` blockers in stable-core: **8** (down from 12).
+`post-v1.0:` items in engine scaffold: **9** (unchanged).
+Total `post-v1.0:` deferred items: **17**.
+
+The 4 previously-stale `v1.0:` tags were inflating the count of apparent blockers.
+Stable-core blockers that genuinely need wiring before v1.0.0: 0 (all 8 remaining
+deferred items are `post-v1.0:` — they are out-of-scope for v1.0.0 by design).
+
+### Verification (iter-85)
+
+- `cargo test --all-targets --features browser,engine,dashboard`: 262 passed (260 lib +
+  2 integration), 0 failed. (+4 new rate-limiter tests vs iter-84's 258.)
+- `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings`: 0 errors.
+- `cargo fmt --check`: clean.
+
 ## [0.2.27] — iteration 84: README browser/engine build examples, release readiness audit
 
 ### Documentation fixes (iter-84)

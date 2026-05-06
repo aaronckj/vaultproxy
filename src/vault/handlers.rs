@@ -20,7 +20,7 @@ use crate::proxy::AppState;
 
 /// Resolve the `vault_folder` name to its Vaultwarden folder ID, using the
 /// cached value in `state.cached_folder_id` when available.
-#[allow(dead_code)] // v1.0: will be called by scoped vault handlers once folder-scoping is wired
+#[allow(dead_code)] // post-v1.0: will be called by scoped vault handlers once folder-scoping is wired
 ///
 /// Issue (iter-22): Every scoped handler previously called
 /// `find_folder_id_by_name_async` on every request — a read lock + linear scan
