@@ -5,7 +5,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [1.0.1] — iteration 118: CI OCI version arg, items.html unwrap verification
+## [1.0.1] — iterations 117–119: dashboard "ok" sentinel pass, diagnostic fields, CI OCI fix, stability hardening
+
+### Bugs (iter-119) — final stability pass
+
+- **`items.html` silently swallows server-side errors (iter-119)** — `dashboard/items.html:103-105`. MEDIUM.
+  The fallback `itemsResp.items || []` silently returned an empty list when the server returned
+  `{"ok":false,"error":"..."}`. Users would see a blank items table with no explanation. Fixed: added
+  `ok === false` guard that renders an error row in the table via DOM `textContent` (XSS-safe).
+
+- **`Dockerfile ARG IMAGE_VERSION` hardcodes stale version string (iter-119)** — `Dockerfile:206`. LOW.
+  Default was `"1.0.1"` — every release requires updating this line manually. A bare `docker build .`
+  without `--build-arg` would silently label the image with whatever version was last hardcoded.
+  Fixed: default changed to `""` so unlabeled builds stamp `unknown`; CI always passes the correct
+  value via `IMAGE_VERSION=${{ github.ref_name }}`.
+
+- **`credaudit_telemetry` returns raw engine JSON without `"ok"` envelope (iter-119)** — `src/dashboard/api.rs:1776`. LOW.
+  Success path returned `Json(v)` (raw engine telemetry blob) while the error path returned
+  `{"ok":false,"error":"..."}`. Inconsistent — callers checking `body.ok` got `undefined` on
+  success. Fixed: wrapped as `{"ok":true,"telemetry":{...}}`.
+
+- **`list_profiles` (browser) returns bare `HashMap` without `"ok"` envelope (iter-119)** — `src/dashboard/api.rs:1222`. LOW.
+  The `#[cfg(feature = "browser")]` variant returned `serde_json::to_value(profiles)` directly
+  (a raw JSON object) while the non-browser stub returned `{"profiles":{},"note":"..."}` without
+  `"ok"`. Fixed: both variants now return `{"ok":true,"profiles":{...},...}`.
+
+- **No test coverage for any of the 11 iter-117 dashboard handler `"ok"` additions (iter-119)** — `src/dashboard/api.rs`. LOW.
+  Iter-117 added `"ok"` to 11 dashboard handlers with no regression tests. If any handler accidentally
+  loses the field it would go undetected until a dashboard JS call returned `undefined`. Fixed: added
+  `#[cfg(test)] mod dashboard_ok_shape_tests` with 14 shape tests covering all 11 iter-117 fixes plus
+  3 new iter-119 fixes.
 
 ### Bugs (iter-118)
 
@@ -17,10 +46,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (e.g. `v1.0.1`) stamps the correct version into the image label.
 
 ### Verified (iter-118) — no action required
-
-- **`items.html` correctly unwraps `itemsResp.items`** — `dashboard/items.html:103-105`. Confirmed.
-  Line 105 uses `Array.isArray(itemsResp) ? itemsResp : (itemsResp.items || [])` — graceful fallback
-  for both the new envelope format and any bare-array rollback scenario. No fix needed.
 
 - **`browser_status` — two separate handlers, not a duplicate fix** — `src/dashboard/api.rs:428,431`
   vs `src/main.rs:2869`. Confirmed distinct. The `main.rs` handler serves the internal bearer-token
@@ -50,13 +75,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/sync/status` call found in `sidecar-client.ts`. TypeScript ignores extra fields on `as` casts
   regardless; no breakage possible.
 
-### Quality gates (iter-118)
+### Quality gates (iter-119)
 
 - `cargo fmt --check` — 0 diffs
 - `cargo clippy --all-targets -- -D warnings` — 0 warnings
 - `cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings` — 0 warnings
 - `cargo test --all-targets` — **258 passed**; 0 failed
-- `cargo test --all-targets --features browser,engine,dashboard` — **301 passed** (+ 2 integration) = **303 total**; 0 failed
+- `cargo test --all-targets --features browser,engine,dashboard` — **315 passed** (+ 2 integration) = **317 total**; 0 failed (14 new shape tests)
 
 ---
 

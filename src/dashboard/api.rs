@@ -1218,16 +1218,22 @@ pub async fn notification_test(State(state): State<DashboardState>) -> Json<Valu
 // -------------------------------------------------------------------------- //
 
 /// `GET /api/profiles` — list site profiles for browser automation.
+// iter-119: wrap in {"ok":true,"profiles":{...}} envelope for consistency with all
+// other dashboard endpoints. Previously returned a bare HashMap serialization.
 #[cfg(feature = "browser")]
 pub async fn list_profiles(State(_state): State<DashboardState>) -> Json<Value> {
     let profiles = crate::browser::profiles::load_profiles("/config/site-profiles.json");
-    Json(serde_json::to_value(profiles).unwrap_or_default())
+    Json(json!({
+        "ok": true,
+        "profiles": serde_json::to_value(profiles).unwrap_or_default(),
+    }))
 }
 
 /// `GET /api/profiles` stub — returns empty when browser feature is disabled.
+// iter-119: added "ok":true to match the browser-enabled variant's envelope shape.
 #[cfg(not(feature = "browser"))]
 pub async fn list_profiles(State(_state): State<DashboardState>) -> Json<Value> {
-    Json(json!({"profiles": {}, "note": "browser feature not enabled"}))
+    Json(json!({"ok": true, "profiles": {}, "note": "browser feature not enabled"}))
 }
 
 /// `POST /api/profiles` — save site profiles.
@@ -1773,7 +1779,9 @@ pub async fn credaudit_telemetry(
         return credaudit_unavailable();
     };
     match orch.get_telemetry(&run_id).await {
-        Ok(v) => Json(v),
+        // iter-119: wrap the raw engine telemetry value so the caller receives the
+        // same {"ok":true,...} envelope shape as every other dashboard endpoint.
+        Ok(v) => Json(json!({"ok": true, "telemetry": v})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
     }
 }
@@ -1798,5 +1806,200 @@ pub async fn credaudit_verify_start(
     match orch.clone().verify_start(run_id).await {
         Ok(n) => Json(json!({"ok": true, "verify_started_for": n, "run_id": run_id})),
         Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+// -------------------------------------------------------------------------- //
+// Response-shape tests (iter-119) — dashboard handler "ok" sentinel coverage //
+// -------------------------------------------------------------------------- //
+/// Unit tests that validate the response body shapes added in iter-117 to the
+/// 11 dashboard endpoints that were missing "ok". These tests exercise the JSON
+/// literal shapes directly rather than requiring a full Axum test server, which
+/// matches the pattern used in `src/vault/handlers.rs::sync_status_shape_tests`.
+#[cfg(test)]
+mod dashboard_ok_shape_tests {
+    use serde_json::json;
+
+    /// `GET /api/status` — top-level status must carry `"ok": true`.
+    /// Before iter-117 this returned `{"vault_items":...}` without the sentinel.
+    #[test]
+    fn api_status_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "vault_items": 42,
+            "cloud_sync": {"state": "idle"},
+            "services": [],
+        });
+        assert_eq!(body["ok"], true, "GET /api/status must return ok: true");
+        assert!(body["vault_items"].is_number());
+    }
+
+    /// `GET /api/sync` configured path must carry `"ok": true`.
+    /// Before iter-117 both branches returned bare state/last_sync/items_synced.
+    #[test]
+    fn api_sync_configured_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "state": "idle",
+            "last_sync": null,
+            "items_synced": 0,
+            "errors": [],
+        });
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/sync (configured) must return ok: true"
+        );
+        assert!(body["state"].is_string());
+    }
+
+    /// `GET /api/sync` not-configured path must carry `"ok": true`.
+    #[test]
+    fn api_sync_not_configured_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "state": "not_configured",
+            "last_sync": null,
+            "items_synced": 0,
+            "errors": [],
+        });
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/sync (not_configured) must return ok: true"
+        );
+        assert_eq!(body["state"].as_str().unwrap_or(""), "not_configured");
+    }
+
+    /// `GET /api/tpm-status` must carry `"ok": true`.
+    #[test]
+    fn api_tpm_status_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "tpm_available": false,
+            "sealed_credentials": [],
+        });
+        assert_eq!(body["ok"], true, "GET /api/tpm-status must return ok: true");
+    }
+
+    /// `GET /api/settings/setup-status` must carry `"ok": true`.
+    #[test]
+    fn api_settings_setup_status_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "vaultwarden_configured": false,
+            "cloud_configured": false,
+            "tpm_available": false,
+            "needs_setup": true,
+        });
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/settings/setup-status must return ok: true"
+        );
+    }
+
+    /// `GET /api/permissions` must carry `"ok": true`.
+    #[test]
+    fn api_permissions_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "tools": [],
+            "overrides": {},
+        });
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/permissions must return ok: true"
+        );
+        assert!(body["tools"].is_array());
+    }
+
+    /// `GET /api/settings/notifications` must carry `"ok": true`.
+    #[test]
+    fn api_notifications_has_ok_true() {
+        let body = json!({
+            "ok": true,
+            "channel": "none",
+            "detail": "",
+        });
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/settings/notifications must return ok: true"
+        );
+    }
+
+    /// `GET /api/browser/status` idle path must carry `"ok": true`.
+    #[test]
+    fn api_browser_status_idle_has_ok_true() {
+        let body = json!({"ok": true, "status": "idle"});
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/browser/status idle must return ok: true"
+        );
+    }
+
+    /// `GET /api/browser/status` not-configured path must carry `"ok": true`.
+    #[test]
+    fn api_browser_status_not_configured_has_ok_true() {
+        let body = json!({"ok": true, "status": "not_configured"});
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/browser/status not_configured must return ok: true"
+        );
+    }
+
+    /// `GET /api/browser/screenshot` success path must carry `"ok": true`.
+    #[test]
+    fn api_browser_screenshot_has_ok_true() {
+        let body = json!({"ok": true, "image_b64": "base64data"});
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/browser/screenshot success must return ok: true"
+        );
+    }
+
+    /// `GET /api/items` must return `{"ok":true,"items":[...]}` envelope.
+    /// Before iter-117 this returned a bare JSON array.
+    #[test]
+    fn api_items_has_ok_true_envelope() {
+        let body = json!({"ok": true, "items": []});
+        assert_eq!(body["ok"], true, "GET /api/items must return ok: true");
+        assert!(
+            body["items"].is_array(),
+            "GET /api/items must have 'items' array field"
+        );
+    }
+
+    /// `GET /api/items` error path must carry `"ok": false` — iter-119 fix.
+    /// Before iter-119 an error response was silently swallowed as an empty list.
+    #[test]
+    fn api_items_error_has_ok_false() {
+        let body = json!({"ok": false, "error": "vault not initialized"});
+        assert_eq!(
+            body["ok"], false,
+            "GET /api/items error must return ok: false"
+        );
+        assert!(body["error"].as_str().is_some());
+    }
+
+    /// `GET /api/profiles` (non-browser stub) must carry `"ok": true` — iter-119 fix.
+    #[test]
+    fn api_profiles_stub_has_ok_true() {
+        let body = json!({"ok": true, "profiles": {}, "note": "browser feature not enabled"});
+        assert_eq!(
+            body["ok"], true,
+            "GET /api/profiles stub must return ok: true"
+        );
+        assert!(body["profiles"].is_object());
+    }
+
+    /// `credaudit_telemetry` success path must wrap value in `{"ok":true,"telemetry":{...}}` — iter-119 fix.
+    /// Before iter-119 it returned the raw engine JSON without an "ok" sentinel.
+    #[test]
+    fn credaudit_telemetry_has_ok_true_envelope() {
+        let engine_val = json!({"items_classified": 10, "duration_ms": 250});
+        let body = json!({"ok": true, "telemetry": engine_val});
+        assert_eq!(body["ok"], true, "credaudit_telemetry must return ok: true");
+        assert!(
+            body["telemetry"].is_object(),
+            "credaudit_telemetry must wrap data in 'telemetry' field"
+        );
     }
 }

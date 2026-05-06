@@ -102,8 +102,20 @@
         try {
             var itemsResp = await api("/api/items");
             // iter-117: /api/items now returns {"ok":true,"items":[...]} envelope.
-            allItems = Array.isArray(itemsResp) ? itemsResp : (itemsResp.items || []);
-            renderItems(allItems);
+            // iter-119: check ok:false before unwrapping to surface server-side errors.
+            if (itemsResp && itemsResp.ok === false) {
+                var errRow = document.createElement("tr");
+                var errCell = document.createElement("td");
+                errCell.setAttribute("colspan", "4");
+                errCell.style.color = "#c0392b";
+                errCell.style.padding = "12px";
+                errCell.textContent = "Error loading items: " + (itemsResp.error || "unknown error");
+                errRow.appendChild(errCell);
+                tbody.appendChild(errRow);
+            } else {
+                allItems = Array.isArray(itemsResp) ? itemsResp : (itemsResp.items || []);
+                renderItems(allItems);
+            }
         } catch(e) { /* redirect handled by api() */ }
 
         document.getElementById("search").addEventListener("input", function() {
