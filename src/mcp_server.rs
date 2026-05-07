@@ -17,7 +17,7 @@ pub struct GeneratePasswordParams {
     pub symbols: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateItemParams {
     /// Display name for the vault item
     pub name: String,
@@ -31,7 +31,7 @@ pub struct CreateItemParams {
     pub folder_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateItemParams {
     /// Vaultwarden item id to update
     pub id: String,

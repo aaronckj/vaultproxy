@@ -1032,8 +1032,6 @@ impl VaultManager {
     /// Create a new login item in Vaultwarden.
     /// Encrypts all fields before sending. Never receives plaintext after return.
     /// Returns the new item's VW id.
-    // Used by mcp_server.rs create_item tool. Dead until mcp_server is wired up.
-    #[allow(dead_code)]
     pub async fn create_login_item(
         &self,
         name: &str,
@@ -1109,8 +1107,6 @@ impl VaultManager {
     /// Update name, username, and/or password of a login item by its VW id.
     /// Only fields with Some(...) are changed; None fields are left as-is.
     /// Never returns plaintext.
-    // Used by mcp_server.rs update_item tool. Dead until mcp_server is wired up.
-    #[allow(dead_code)]
     pub async fn update_login_item_fields(
         &self,
         id: &str,

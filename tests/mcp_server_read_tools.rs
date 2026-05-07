@@ -118,3 +118,29 @@ async fn update_item_unknown_id_returns_error_json() {
         .await;
     assert!(result.contains("error"), "got: {result}");
 }
+
+#[tokio::test]
+async fn resync_stub_returns_error_json() {
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server.resync().await;
+    // stub has no HTTP; sync() fails
+    assert!(result.contains("error"), "got: {result}");
+}
+
+#[tokio::test]
+async fn clone_item_unknown_id_returns_error_json() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server
+        .clone_item(Parameters(vaultproxy::mcp_server::CloneItemParams {
+            id: "nonexistent-id".into(),
+            new_name: "Clone".into(),
+            new_username: None,
+            new_uri: None,
+            folder_id: None,
+        }))
+        .await;
+    assert!(result.contains("error"), "got: {result}");
+}
