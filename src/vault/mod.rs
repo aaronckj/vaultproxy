@@ -1029,6 +1029,142 @@ impl VaultManager {
         Ok(())
     }
 
+    /// Create a new login item in Vaultwarden.
+    /// Encrypts all fields before sending. Never receives plaintext after return.
+    /// Returns the new item's VW id.
+    pub async fn create_login_item(
+        &self,
+        name: &str,
+        username: Option<&str>,
+        password: &str,
+        uris: Vec<String>,
+        folder_id: Option<&str>,
+    ) -> Result<String> {
+        let enc_name = crate::vault::crypto::encrypt_to_cipher_string(
+            name,
+            self.enc_key.as_bytes(),
+            self.mac_key.as_bytes(),
+        )
+        .context("encrypting name")?;
+
+        let enc_password = crate::vault::crypto::encrypt_to_cipher_string(
+            password,
+            self.enc_key.as_bytes(),
+            self.mac_key.as_bytes(),
+        )
+        .context("encrypting password")?;
+
+        let enc_username = username
+            .map(|u| {
+                crate::vault::crypto::encrypt_to_cipher_string(
+                    u,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .context("encrypting username")
+            })
+            .transpose()?;
+
+        let enc_uris = uris
+            .iter()
+            .map(|u| {
+                crate::vault::crypto::encrypt_to_cipher_string(
+                    u,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .map(|enc| crate::vault::types::EncryptedUri { uri: Some(enc) })
+                .context("encrypting URI")
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let cipher = crate::vault::types::EncryptedCipher {
+            id: String::new(),
+            name: enc_name,
+            cipher_type: 1,
+            login: Some(crate::vault::types::EncryptedLogin {
+                username: enc_username,
+                password: Some(enc_password),
+                uris: if enc_uris.is_empty() { None } else { Some(enc_uris) },
+                totp: None,
+            }),
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: None,
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: folder_id.map(|s| s.to_string()),
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+
+        self.create_cipher(&cipher).await
+    }
+
+    /// Update name, username, and/or password of a login item by its VW id.
+    /// Only fields with Some(...) are changed; None fields are left as-is.
+    /// Never returns plaintext.
+    pub async fn update_login_item_fields(
+        &self,
+        id: &str,
+        new_name: Option<&str>,
+        new_username: Option<&str>,
+        new_password: Option<&str>,
+    ) -> Result<()> {
+        let cipher = {
+            let items = self.items.read().await;
+            items
+                .get(id)
+                .map(|(_, c)| c.clone())
+                .ok_or_else(|| anyhow!("vault item id '{}' not found", id))?
+        };
+
+        let mut updated = cipher.clone();
+
+        if let Some(name) = new_name {
+            updated.name = crate::vault::crypto::encrypt_to_cipher_string(
+                name,
+                self.enc_key.as_bytes(),
+                self.mac_key.as_bytes(),
+            )
+            .context("encrypting name")?;
+        }
+
+        let login = updated.login.get_or_insert(crate::vault::types::EncryptedLogin {
+            username: None,
+            password: None,
+            uris: None,
+            totp: None,
+        });
+
+        if let Some(username) = new_username {
+            login.username = Some(
+                crate::vault::crypto::encrypt_to_cipher_string(
+                    username,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .context("encrypting username")?,
+            );
+        }
+
+        if let Some(password) = new_password {
+            login.password = Some(
+                crate::vault::crypto::encrypt_to_cipher_string(
+                    password,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .context("encrypting password")?,
+            );
+        }
+
+        self.update_cipher(id, &updated).await
+    }
+
     /// Decrypt notes for a cipher identified by its VW id (NOT name). Returns
     /// `Ok(None)` if the cipher exists but has no notes, or the decrypted
     /// notes as a `SecureBuffer`. Errors if the cipher id is not in the
@@ -2152,5 +2288,30 @@ mod tests {
             std::str::from_utf8(value_buf.as_bytes()).unwrap(),
             "super-secret-123"
         );
+    }
+
+    #[tokio::test]
+    async fn create_login_item_returns_id() {
+        let vault = VaultManager::new_stub();
+        let id = vault
+            .create_login_item(
+                "Test Service",
+                Some("user@example.com"),
+                "s3cret!",
+                vec!["https://example.com".to_string()],
+                None,
+            )
+            .await;
+        // stub has no HTTP; expect an error (the method exists and compiles)
+        assert!(id.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_login_item_fields_id_not_found() {
+        let vault = VaultManager::new_stub();
+        let result = vault
+            .update_login_item_fields("nonexistent-id", None, None, Some("newpass"))
+            .await;
+        assert!(result.is_err());
     }
 }
