@@ -862,7 +862,12 @@ async fn start_server(
     // outstanding connections are torn down by the OS).  This is intentional:
     // `exec` semantics require process replacement, not graceful shutdown.
     // Background tokio tasks spawned below are never reached in this branch.
-    // TODO(--mcp): dispatch to mcp_server::run when args.mcp is set (wired in Task 5)
+    // MCP server mode: expose Vaultwarden management tools over stdio.
+    // Runs instead of the HTTP proxy — the binary becomes a stdio MCP server.
+    if args.mcp {
+        return crate::mcp_server::run(vault_arc, args.vault_folder.clone()).await;
+    }
+
     if let Some(ref server_name) = args.launch {
         // Issue (iter-39): pass listen_addr so VAULT_PROXY_URL is synthesised
         // from the actual --listen address rather than a hard-coded default.
