@@ -17,7 +17,6 @@ pub struct GeneratePasswordParams {
     pub symbols: Option<bool>,
 }
 
-#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateItemParams {
     /// Display name for the vault item
@@ -32,7 +31,6 @@ pub struct CreateItemParams {
     pub folder_id: Option<String>,
 }
 
-#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct UpdateItemParams {
     /// Vaultwarden item id to update
@@ -45,14 +43,12 @@ pub struct UpdateItemParams {
     pub password: Option<String>,
 }
 
-#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteItemParams {
     /// Vaultwarden item id to delete (soft-delete / move to trash)
     pub id: String,
 }
 
-#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MoveItemParams {
     /// Vaultwarden item id to move
@@ -61,7 +57,6 @@ pub struct MoveItemParams {
     pub folder_name: String,
 }
 
-#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CloneItemParams {
     /// Vaultwarden item id to clone
@@ -170,6 +165,105 @@ impl VaultMcpServer {
             .collect();
 
         serde_json::json!({ "password": password, "length": len }).to_string()
+    }
+
+    /// Resync the vault cache from Vaultwarden. Call after making changes externally.
+    #[tool(description = "Resync the vault cache from Vaultwarden.")]
+    pub async fn resync(&self) -> String {
+        match self.vault.sync().await {
+            Ok(()) => r#"{"status":"ok","message":"vault resynced"}"#.to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Create a new login item in Vaultwarden. Password is encrypted; never returned.
+    #[tool(description = "Create a new login item. Password is encrypted; the new item id is returned.")]
+    pub async fn create_item(
+        &self,
+        Parameters(p): Parameters<CreateItemParams>,
+    ) -> String {
+        let uris = p.uris.unwrap_or_default();
+        match self
+            .vault
+            .create_login_item(
+                &p.name,
+                p.username.as_deref(),
+                &p.password,
+                uris,
+                p.folder_id.as_deref(),
+            )
+            .await
+        {
+            Ok(id) => serde_json::json!({"status":"ok","id":id}).to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Update name, username, and/or password of an existing vault item.
+    #[tool(description = "Update name, username, and/or password of a vault item by id. Omit fields to keep current values.")]
+    pub async fn update_item(
+        &self,
+        Parameters(p): Parameters<UpdateItemParams>,
+    ) -> String {
+        match self
+            .vault
+            .update_login_item_fields(
+                &p.id,
+                p.name.as_deref(),
+                p.username.as_deref(),
+                p.password.as_deref(),
+            )
+            .await
+        {
+            Ok(()) => r#"{"status":"ok"}"#.to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Soft-delete a vault item (moves it to Vaultwarden trash).
+    #[tool(description = "Soft-delete a vault item by id (moves to trash).")]
+    pub async fn delete_item(
+        &self,
+        Parameters(p): Parameters<DeleteItemParams>,
+    ) -> String {
+        match self.vault.delete_cipher(&p.id).await {
+            Ok(()) => r#"{"status":"ok"}"#.to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Move a vault item to a different folder (looked up by name).
+    #[tool(description = "Move a vault item to a folder, looked up by name.")]
+    pub async fn move_item(
+        &self,
+        Parameters(p): Parameters<MoveItemParams>,
+    ) -> String {
+        match self.vault.move_cipher_to_folder(&p.id, &p.folder_name).await {
+            Ok(()) => r#"{"status":"ok"}"#.to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Clone an existing vault item with a new name (and optionally new username/URI/folder).
+    #[tool(description = "Clone a vault item with a new name. Optionally override username, URI, or folder.")]
+    pub async fn clone_item(
+        &self,
+        Parameters(p): Parameters<CloneItemParams>,
+    ) -> String {
+        match self
+            .vault
+            .clone_cipher_with_overrides(
+                &p.id,
+                &p.new_name,
+                p.new_username.as_deref(),
+                p.new_uri.as_deref(),
+                p.folder_id.as_deref(),
+            )
+            .await
+        {
+            Ok(new_id) => serde_json::json!({"status":"ok","id":new_id}).to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
     }
 }
 

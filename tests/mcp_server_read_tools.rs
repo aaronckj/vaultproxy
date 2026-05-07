@@ -58,3 +58,63 @@ async fn generate_password_custom_length() {
     let pw = v["password"].as_str().expect("password field");
     assert_eq!(pw.len(), 32);
 }
+
+#[tokio::test]
+async fn delete_item_unknown_id_returns_error_json() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server
+        .delete_item(Parameters(vaultproxy::mcp_server::DeleteItemParams {
+            id: "nonexistent-id".into(),
+        }))
+        .await;
+    assert!(result.contains("error"), "got: {result}");
+}
+
+#[tokio::test]
+async fn move_item_unknown_id_returns_error_json() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server
+        .move_item(Parameters(vaultproxy::mcp_server::MoveItemParams {
+            id: "nonexistent-id".into(),
+            folder_name: "TestFolder".into(),
+        }))
+        .await;
+    assert!(result.contains("error"), "got: {result}");
+}
+
+#[tokio::test]
+async fn create_item_stub_returns_error_json() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server
+        .create_item(Parameters(vaultproxy::mcp_server::CreateItemParams {
+            name: "Test".into(),
+            username: Some("user".into()),
+            password: "pass".into(),
+            uris: None,
+            folder_id: None,
+        }))
+        .await;
+    assert!(result.contains("error"), "got: {result}");
+}
+
+#[tokio::test]
+async fn update_item_unknown_id_returns_error_json() {
+    use rmcp::handler::server::wrapper::Parameters;
+    let vault = Arc::new(VaultManager::new_stub());
+    let server = vaultproxy::mcp_server::VaultMcpServer::new(vault, "vault-proxy".into());
+    let result = server
+        .update_item(Parameters(vaultproxy::mcp_server::UpdateItemParams {
+            id: "nonexistent-id".into(),
+            name: None,
+            username: None,
+            password: Some("newpass".into()),
+        }))
+        .await;
+    assert!(result.contains("error"), "got: {result}");
+}
