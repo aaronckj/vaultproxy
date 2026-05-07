@@ -89,6 +89,9 @@ jobs:
         # path (browser + engine + dashboard together) is validated in CI.
         run: cargo test --all-targets --features browser,engine,dashboard
 
+      - name: Run integration tests
+        run: cargo test --all-targets --features test-utils
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

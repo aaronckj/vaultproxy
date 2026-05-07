@@ -17,6 +17,7 @@ pub struct GeneratePasswordParams {
     pub symbols: Option<bool>,
 }
 
+#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateItemParams {
     /// Display name for the vault item
@@ -31,6 +32,7 @@ pub struct CreateItemParams {
     pub folder_id: Option<String>,
 }
 
+#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct UpdateItemParams {
     /// Vaultwarden item id to update
@@ -43,12 +45,14 @@ pub struct UpdateItemParams {
     pub password: Option<String>,
 }
 
+#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DeleteItemParams {
     /// Vaultwarden item id to delete (soft-delete / move to trash)
     pub id: String,
 }
 
+#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MoveItemParams {
     /// Vaultwarden item id to move
@@ -57,6 +61,7 @@ pub struct MoveItemParams {
     pub folder_name: String,
 }
 
+#[allow(dead_code)] // used by Task 4 write tools
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CloneItemParams {
     /// Vaultwarden item id to clone
@@ -124,13 +129,12 @@ impl VaultMcpServer {
         }
     }
 
-    /// Check vault-proxy health: reports base URL and cached item count.
-    #[tool(description = "Check vault-proxy health: base URL and cached item count.")]
+    /// Check vault-proxy health: reports cached item count.
+    #[tool(description = "Check vault-proxy health: cached item count.")]
     pub async fn health(&self) -> String {
         let items = self.vault.list_items().await;
         serde_json::json!({
             "status": "ok",
-            "base_url": self.vault.base_url(),
             "cached_items": items.len(),
             "vault_folder": self.vault_folder,
         })
