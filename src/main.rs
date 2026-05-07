@@ -25,6 +25,7 @@ mod dashboard;
 mod internal_token;
 mod keystore;
 mod launcher;
+mod mcp_server;
 mod notify;
 mod policy;
 mod proxy;
@@ -205,6 +206,13 @@ struct Args {
     /// No Vaultwarden credentials are required. No network calls are made.
     #[arg(long)]
     check: bool,
+
+    /// Run as a stdio MCP server exposing Vaultwarden management tools.
+    /// Never returns plaintext credentials — passwords are always masked.
+    /// Credentials must already be configured (keystore unlocked) before
+    /// this flag is used. Reads JSON-RPC from stdin, writes to stdout.
+    #[arg(long)]
+    mcp: bool,
 
     /// Background vault refresh interval in seconds.
     ///
