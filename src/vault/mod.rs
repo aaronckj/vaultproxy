@@ -1956,7 +1956,7 @@ impl VaultManager {
 // Test-only helpers                                                            //
 // =========================================================================== //
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl VaultManager {
     /// Build a minimal stub `VaultManager` for use in unit and integration tests.
     ///

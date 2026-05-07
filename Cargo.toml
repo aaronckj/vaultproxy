@@ -17,6 +17,11 @@ homepage = "https://github.com/aaronckj/vaultproxy"
 keywords = ["mcp", "vaultwarden", "credentials", "security", "proxy"]
 categories = ["authentication", "network-programming"]
 
+[lib]
+name = "vaultproxy"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
@@ -91,6 +96,11 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "s
 # but omits the web dashboard, TPM hardware binding, browser rotation, and the
 # credential-audit engine sidecar path.
 default = []
+
+# Expose VaultManager::new_stub() and new_stub_with_keys() outside of #[cfg(test)].
+# Used by integration tests in the `tests/` directory which cannot access
+# cfg(test)-gated items from the library crate.
+test-utils = []
 
 # Enable hardware-backed keystore sealing via TPM 2.0 (requires TSS2 system
 # libraries: libtss2-dev / tss2-esapi on the host). On hosts without a TPM the
