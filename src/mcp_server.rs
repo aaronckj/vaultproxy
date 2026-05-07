@@ -93,10 +93,14 @@ impl VaultMcpServer {
 
 #[tool_router(server_handler)]
 impl VaultMcpServer {
-    /// List all vault items. Passwords are always masked as "***".
-    #[tool(description = "List all Vaultwarden items. Passwords are always masked.")]
+    /// List vault items scoped to vault_folder. Passwords are always masked as "***".
+    #[tool(description = "List Vaultwarden items in the configured vault folder. Passwords are always masked.")]
     pub async fn list_items(&self) -> String {
-        let items = self.vault.list_items().await;
+        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
+        let items: Vec<_> = self.vault.list_items().await
+            .into_iter()
+            .filter(|item| item.folder_id.as_deref() == folder_id.as_deref())
+            .collect();
         match serde_json::to_string(&items) {
             Ok(json) => json,
             Err(e) => format!("{{\"error\": \"{e}\"}}"),
@@ -114,23 +118,31 @@ impl VaultMcpServer {
         }
     }
 
-    /// Find duplicate credentials (same username+password stored multiple times).
-    #[tool(description = "Find duplicate credentials in Vaultwarden. Never returns plaintext passwords.")]
+    /// Find duplicate credentials scoped to vault_folder. Never returns plaintext passwords.
+    #[tool(description = "Find duplicate credentials in the configured vault folder. Never returns plaintext passwords.")]
     pub async fn list_duplicates(&self) -> String {
-        let dupes = self.vault.list_duplicates().await;
+        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
+        let dupes = match folder_id.as_deref() {
+            Some(fid) => self.vault.list_duplicates_in_folder(Some(fid)).await,
+            None => vec![],
+        };
         match serde_json::to_string(&dupes) {
             Ok(json) => json,
             Err(e) => format!("{{\"error\": \"{e}\"}}"),
         }
     }
 
-    /// Check vault-proxy health: reports cached item count.
-    #[tool(description = "Check vault-proxy health: cached item count.")]
+    /// Check vault-proxy health: reports folder-scoped cached item count.
+    #[tool(description = "Check vault-proxy health: folder-scoped cached item count.")]
     pub async fn health(&self) -> String {
-        let items = self.vault.list_items().await;
+        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
+        let count = self.vault.list_items().await
+            .into_iter()
+            .filter(|item| item.folder_id.as_deref() == folder_id.as_deref())
+            .count();
         serde_json::json!({
             "status": "ok",
-            "cached_items": items.len(),
+            "cached_items": count,
             "vault_folder": self.vault_folder,
         })
         .to_string()
