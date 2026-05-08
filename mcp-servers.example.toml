@@ -56,6 +56,58 @@ command = "uvx homeassistant-mcp@latest"
   vault_item = "vault-proxy - Home Assistant"
   field = "password"
 
+# ── mcp-opnsense (smart /proxy integration — credentials never in env) ───────
+# mcp-opnsense natively calls POST $VAULT_PROXY_URL/proxy for every OPNsense
+# API request. vaultproxy injects Basic auth (API key + secret) internally.
+# No vault_item entries needed here — credentials stay in vaultproxy.
+# Requires a matching [[service]] block in services.toml:
+#   name = "opnsense", auth = "basic", key_field = "key", secret_field = "secret"
+# See mcp-opnsense repo: vaultproxy.example.toml
+[[mcp_server]]
+name = "mcp-opnsense"
+command = "uvx mcp-opnsense@latest"
+# VAULT_PROXY_URL is auto-injected — do NOT add it manually.
+
+  [[mcp_server.env]]
+  var = "OPNSENSE_HOST"
+  value = "https://192.168.1.1"           # update to your OPNsense host
+
+# ── mcp-duplicati (smart /proxy integration — credentials never in env) ──────
+# mcp-duplicati natively calls POST $VAULT_PROXY_URL/proxy. vaultproxy manages
+# the Duplicati session (login + token caching) internally.
+# No vault_item entries needed here — credentials stay in vaultproxy.
+# Requires a matching [[service]] block in services.toml:
+#   name = "duplicati", auth = "session", login_path = "/api/v1/auth/login"
+# See mcp-duplicati repo: vaultproxy.example.toml
+[[mcp_server]]
+name = "mcp-duplicati"
+command = "uvx mcp-duplicati@latest"
+# VAULT_PROXY_URL is auto-injected — do NOT add it manually.
+
+  [[mcp_server.env]]
+  var = "DUPLICATI_HOST"
+  value = "http://localhost:8200"         # update to your Duplicati host
+
+# ── mcp-caddy (no credentials — Caddy admin API is unauthenticated) ──────────
+# Caddy's admin API (default: http://localhost:2019) requires no auth.
+# Launcher mode is still useful for configuring CADDY_HOST when Caddy runs
+# on a non-default address or a remote host.
+[[mcp_server]]
+name = "mcp-caddy"
+command = "uvx mcp-caddy@latest"
+# VAULT_PROXY_URL is auto-injected (unused by mcp-caddy, which has no auth).
+
+  [[mcp_server.env]]
+  var = "CADDY_HOST"
+  value = "http://localhost:2019"         # update if Caddy admin binds elsewhere
+
+# ── mcp-nettools (no credentials — uses system tools) ───────────────────────
+# mcp-nettools runs ping, traceroute, DNS lookups, etc. — no remote service
+# credentials. No [[mcp_server.env]] entries needed.
+[[mcp_server]]
+name = "mcp-nettools"
+command = "uvx mcp-nettools@latest"
+
 # ── Smart server example (native /proxy integration) ─────────────────────────
 # A "smart" MCP server that natively supports vault-proxy does NOT need any
 # [[mcp_server.env]] entries with vault_item — it discovers the proxy sidecar
