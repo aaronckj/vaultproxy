@@ -935,6 +935,16 @@ impl VaultManager {
         items.get(id).map(|(_, cipher)| cipher.clone())
     }
 
+    /// Return the vault item id for the item with the given decrypted name,
+    /// or None if no item with that name exists.
+    pub async fn find_item_id_by_name(&self, item_name: &str) -> Option<String> {
+        let items = self.items.read().await;
+        items
+            .iter()
+            .find(|(_, (name, _))| name == item_name)
+            .map(|(id, _)| id.clone())
+    }
+
     /// Create a new cipher in Vaultwarden and return its assigned ID.
     pub async fn create_cipher(&self, cipher: &EncryptedCipher) -> Result<String> {
         tracing::debug!("creating cipher");
@@ -2053,6 +2063,13 @@ impl VaultManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_find_item_id_by_name_returns_none_for_missing() {
+        let vault = VaultManager::new_stub();
+        let result = vault.find_item_id_by_name("nonexistent").await;
+        assert!(result.is_none());
+    }
 
     #[test]
     fn folder_index_resolves_name_to_id() {
