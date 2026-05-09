@@ -1595,8 +1595,8 @@ impl VaultManager {
 
     /// Resolve a named field from a vault item by item name.
     ///
-    /// `field` must be `"password"` or `"username"`. Used by the launcher
-    /// to inject credentials into child-process env vars.
+    /// `field` must be `"password"`, `"username"`, or `"uri"`. Used by the
+    /// launcher to inject credentials into child-process env vars.
     pub async fn get_field_by_item_name(&self, item_name: &str, field: &str) -> Result<String> {
         match field {
             "password" => {
@@ -1618,9 +1618,29 @@ impl VaultManager {
                     .to_string();
                 Ok(s)
             }
+            "uri" => {
+                let map = self
+                    .items
+                    .try_read()
+                    .map_err(|_| anyhow!("vault items lock is contended"))?;
+                let cipher = map
+                    .values()
+                    .find(|(n, _)| n == item_name)
+                    .map(|(_, c)| c)
+                    .ok_or_else(|| anyhow!("item '{}' not found in vault", item_name))?;
+                let uri_cs = cipher
+                    .login
+                    .as_ref()
+                    .and_then(|l| l.uris.as_ref())
+                    .and_then(|uris| uris.first())
+                    .and_then(|u| u.uri.as_deref());
+                let uri = decrypt_to_string(uri_cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                    .ok_or_else(|| anyhow!("item '{}' has no URI", item_name))?;
+                Ok(uri)
+            }
             other => {
                 anyhow::bail!(
-                    "unsupported field '{}' — must be 'password' or 'username'",
+                    "unsupported field '{}' — must be 'password', 'username', or 'uri'",
                     other
                 )
             }
@@ -2356,5 +2376,22 @@ mod tests {
             .update_login_item_fields("nonexistent-id", None, None, Some("newpass"))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_uri_field_returns_not_found_not_unsupported() {
+        let vault = VaultManager::new_stub();
+        let result = vault.get_field_by_item_name("nonexistent", "uri").await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found"),
+            "expected 'not found' error, got: {}",
+            err
+        );
+        assert!(
+            !err.contains("unsupported field"),
+            "should not hit unsupported arm, got: {}",
+            err
+        );
     }
 }
