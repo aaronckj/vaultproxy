@@ -61,8 +61,11 @@ pub async fn bootstrap_unifi_api_key(
         .context("build reqwest client for UniFi bootstrap")?;
 
     // Step 1: Authenticate — obtain session cookie.
+    // X-Csrf-Token must be present (any non-empty value); UniFi OS rejects
+    // the request with 403 if the header is absent entirely.
     let login_resp = client
         .post(format!("{}/api/auth/login", uri))
+        .header("X-Csrf-Token", "bootstrap")
         .json(&serde_json::json!({
             "username": username,
             "password": password
