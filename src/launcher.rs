@@ -97,6 +97,7 @@ struct McpServerConfig {
     command: String,
     #[serde(default)]
     env: Vec<EnvMapping>,
+    bootstrap: Option<BootstrapConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -108,6 +109,20 @@ struct EnvMapping {
     vault_item: Option<String>,
     /// Which field to resolve: `"password"` (default) or `"username"`.
     field: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct BootstrapConfig {
+    #[serde(rename = "type")]
+    strategy_type: String,
+    auth_item: String,
+    key_item: String,
+    #[serde(default = "default_verify_ssl")]
+    verify_ssl: bool,
+}
+
+fn default_verify_ssl() -> bool {
+    true
 }
 
 /// Resolve credentials and exec the named MCP server.
@@ -1379,5 +1394,46 @@ command = "cmd-b"
              got stdout: {}",
             stdout,
         );
+    }
+
+    #[test]
+    fn test_bootstrap_config_deserializes() {
+        let toml = r#"
+[[mcp_server]]
+name    = "unifi"
+command = "/usr/local/bin/go-unifi-mcp"
+
+  [mcp_server.bootstrap]
+  type      = "unifi_api_key"
+  auth_item = "unifi/home"
+  key_item  = "unifi/home-key"
+  verify_ssl = false
+
+  [[mcp_server.env]]
+  var   = "UNIFI_HOST"
+  vault_item = "unifi/home"
+  field = "uri"
+"#;
+        let parsed: super::McpServersFile = toml::from_str(toml).unwrap();
+        let server = &parsed.mcp_server[0];
+        let bs = server.bootstrap.as_ref().expect("bootstrap should be present");
+        assert_eq!(bs.strategy_type, "unifi_api_key");
+        assert_eq!(bs.auth_item, "unifi/home");
+        assert_eq!(bs.key_item, "unifi/home-key");
+        assert!(!bs.verify_ssl);
+    }
+
+    #[test]
+    fn test_bootstrap_config_optional() {
+        let toml = r#"
+[[mcp_server]]
+name    = "plain"
+command = "echo"
+  [[mcp_server.env]]
+  var   = "X"
+  value = "y"
+"#;
+        let parsed: super::McpServersFile = toml::from_str(toml).unwrap();
+        assert!(parsed.mcp_server[0].bootstrap.is_none());
     }
 }
