@@ -107,7 +107,7 @@ struct EnvMapping {
     value: Option<String>,
     /// Vault item name — resolved from Vaultwarden at launch time.
     vault_item: Option<String>,
-    /// Which field to resolve: `"password"` (default) or `"username"`.
+    /// Which field to resolve: `"password"` (default), `"username"`, or `"uri"` (resolves `item.uris[0]`).
     field: Option<String>,
 }
 
