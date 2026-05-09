@@ -194,6 +194,23 @@ pub async fn launch(
         };
 
         if needs_bootstrap {
+            // Note: the lock file (acquired below) prevents duplicate concurrent launches,
+            // but it is acquired after this block. A simultaneous --launch for the same
+            // server could pass the needs_bootstrap check and both call create_login_item.
+            // The second will fail loudly at the Vaultwarden layer (acceptable: duplicate
+            // concurrent bootstrap is a misuse case in this homelab tool).
+
+            if vault
+                .find_item_id_by_name(&bootstrap.auth_item)
+                .await
+                .is_none()
+            {
+                anyhow::bail!(
+                    "bootstrap: auth_item '{}' not found in vault",
+                    bootstrap.auth_item
+                );
+            }
+
             tracing::info!(
                 server = %server_name,
                 key_item = %bootstrap.key_item,
@@ -259,7 +276,7 @@ pub async fn launch(
                             &bootstrap.key_item,
                             None,
                             api_key.as_str(),
-                            vec![uri.clone()],
+                            vec![uri],
                             folder_id.as_deref(),
                         )
                         .await
