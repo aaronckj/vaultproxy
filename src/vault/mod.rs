@@ -1633,10 +1633,18 @@ impl VaultManager {
                     .as_ref()
                     .and_then(|l| l.uris.as_ref())
                     .and_then(|uris| uris.first())
-                    .and_then(|u| u.uri.as_deref());
-                let uri = decrypt_to_string(uri_cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                    .and_then(|u| u.uri.as_deref())
                     .ok_or_else(|| anyhow!("item '{}' has no URI", item_name))?;
-                Ok(uri)
+                let buf = decrypt_cipher_string(
+                    uri_cs,
+                    self.enc_key.as_bytes(),
+                    self.mac_key.as_bytes(),
+                )
+                .with_context(|| format!("failed to decrypt URI for '{}'", item_name))?;
+                let s = std::str::from_utf8(&buf)
+                    .map_err(|e| anyhow!("URI for '{}' is not valid UTF-8: {}", item_name, e))?
+                    .to_string();
+                Ok(s)
             }
             other => {
                 anyhow::bail!(
