@@ -2071,6 +2071,32 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[tokio::test]
+    async fn test_find_item_id_by_name_returns_id_when_found() {
+        let vault = VaultManager::new_stub();
+        let cipher = crate::vault::types::EncryptedCipher {
+            id: "abc-123".into(),
+            name: "unifi/home-key".into(),
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: None,
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+        vault.seed_item_by_name("unifi/home-key".into(), cipher).await;
+
+        let result = vault.find_item_id_by_name("unifi/home-key").await;
+        assert_eq!(result.as_deref(), Some("abc-123"));
+    }
+
     #[test]
     fn folder_index_resolves_name_to_id() {
         let mut idx = FolderIndex::default();
