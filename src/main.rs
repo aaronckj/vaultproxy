@@ -871,7 +871,7 @@ async fn start_server(
     if let Some(ref server_name) = args.launch {
         // Issue (iter-39): pass listen_addr so VAULT_PROXY_URL is synthesised
         // from the actual --listen address rather than a hard-coded default.
-        return crate::launcher::launch(server_name, config_dir, &vault_arc, args.listen).await;
+        return crate::launcher::launch(server_name, config_dir, &vault_arc, args.listen, &args.vault_folder).await;
     }
 
     // Cloud sync setup — activates when cloud credentials exist in keystore

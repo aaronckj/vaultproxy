@@ -142,6 +142,7 @@ pub async fn launch(
     config_dir: &str,
     vault: &crate::vault::VaultManager,
     listen_addr: std::net::SocketAddr,
+    vault_folder: &str,
 ) -> Result<()> {
     let path = Path::new(config_dir).join("mcp-servers.toml");
     let content = std::fs::read_to_string(&path).with_context(|| {
@@ -180,6 +181,120 @@ pub async fn launch(
                 server_name
             )
         })?;
+
+    // ------------------------------------------------------------------ //
+    // Bootstrap: auto-generate API key if key_item is absent or empty.   //
+    // ------------------------------------------------------------------ //
+    if let Some(ref bootstrap) = server.bootstrap {
+        let needs_bootstrap = match vault.decrypt_password(&bootstrap.key_item) {
+            Ok(buf) => std::str::from_utf8(&buf)
+                .map(|s| s.is_empty())
+                .unwrap_or(true),
+            Err(_) => true, // item absent or no password field
+        };
+
+        if needs_bootstrap {
+            tracing::info!(
+                server = %server_name,
+                key_item = %bootstrap.key_item,
+                "bootstrapping API key"
+            );
+
+            let uri = vault
+                .get_field_by_item_name(&bootstrap.auth_item, "uri")
+                .await
+                .with_context(|| {
+                    format!(
+                        "bootstrap: auth_item '{}' missing URI",
+                        bootstrap.auth_item
+                    )
+                })?;
+            let username = vault
+                .get_field_by_item_name(&bootstrap.auth_item, "username")
+                .await
+                .with_context(|| {
+                    format!(
+                        "bootstrap: auth_item '{}' missing username",
+                        bootstrap.auth_item
+                    )
+                })?;
+            let password = vault
+                .get_field_by_item_name(&bootstrap.auth_item, "password")
+                .await
+                .with_context(|| {
+                    format!(
+                        "bootstrap: auth_item '{}' missing password",
+                        bootstrap.auth_item
+                    )
+                })?;
+
+            let api_key = match bootstrap.strategy_type.as_str() {
+                "unifi_api_key" => {
+                    crate::rotate::strategies::bootstrap_unifi_api_key(
+                        &uri,
+                        &username,
+                        &password,
+                        bootstrap.verify_ssl,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "bootstrap: unifi_api_key strategy failed for '{}'",
+                            server_name
+                        )
+                    })?
+                }
+                other => {
+                    anyhow::bail!("bootstrap: unknown strategy type '{}'", other);
+                }
+            };
+
+            let folder_id = vault.find_folder_id_by_name_async(vault_folder).await;
+            let existing_id = vault.find_item_id_by_name(&bootstrap.key_item).await;
+
+            match existing_id {
+                None => {
+                    vault
+                        .create_login_item(
+                            &bootstrap.key_item,
+                            None,
+                            api_key.as_str(),
+                            vec![uri.clone()],
+                            folder_id.as_deref(),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "bootstrap: failed to create key_item '{}'",
+                                bootstrap.key_item
+                            )
+                        })?;
+                }
+                Some(ref id) => {
+                    vault
+                        .update_login_item_fields(id, None, None, Some(api_key.as_str()))
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "bootstrap: failed to update key_item '{}'",
+                                bootstrap.key_item
+                            )
+                        })?;
+                }
+            }
+
+            vault
+                .sync()
+                .await
+                .context("bootstrap: vault sync failed after storing key")?;
+
+            tracing::info!(
+                server = %server_name,
+                key_item = %bootstrap.key_item,
+                "bootstrap complete, key stored"
+            );
+        }
+    }
 
     // Resolve env vars — static values pass through, vault refs are decrypted.
     let mut resolved: Vec<(String, Zeroizing<String>)> = Vec::new();
@@ -1421,6 +1536,23 @@ command = "/usr/local/bin/go-unifi-mcp"
         assert_eq!(bs.auth_item, "unifi/home");
         assert_eq!(bs.key_item, "unifi/home-key");
         assert!(!bs.verify_ssl);
+    }
+
+    #[test]
+    fn test_bootstrap_strategy_type_field_name() {
+        let toml = r#"
+[[mcp_server]]
+name    = "s"
+command = "echo"
+  [mcp_server.bootstrap]
+  type      = "unifi_api_key"
+  auth_item = "a/b"
+  key_item  = "a/b-key"
+"#;
+        let parsed: super::McpServersFile = toml::from_str(toml).unwrap();
+        let bs = parsed.mcp_server[0].bootstrap.as_ref().unwrap();
+        assert_eq!(bs.strategy_type, "unifi_api_key");
+        assert!(bs.verify_ssl); // default true
     }
 
     #[test]
