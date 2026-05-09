@@ -73,12 +73,9 @@ pub async fn bootstrap_unifi_api_key(
 
     if !login_resp.status().is_success() {
         let status = login_resp.status();
-        let body = login_resp.text().await.unwrap_or_default();
         anyhow::bail!(
-            "bootstrap: UniFi login failed ({}) — check local admin credentials in auth_item. \
-             Response: {}",
-            status,
-            body
+            "bootstrap: UniFi login failed ({}) — check local admin credentials in auth_item",
+            status
         );
     }
 
@@ -86,20 +83,14 @@ pub async fn bootstrap_unifi_api_key(
     let key_result: anyhow::Result<zeroize::Zeroizing<String>> = async {
         let key_resp = client
             .post(format!("{}/api/users/self/api-key", uri))
-            .header("Content-Type", "application/json")
-            .body("{}")
+            .json(&serde_json::json!({}))
             .send()
             .await
             .context("UniFi API key generation request failed")?;
 
         if !key_resp.status().is_success() {
             let status = key_resp.status();
-            let body = key_resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "bootstrap: UniFi API key generation failed ({}): {}",
-                status,
-                body
-            );
+            anyhow::bail!("bootstrap: UniFi API key generation failed ({})", status);
         }
 
         let body: serde_json::Value = key_resp
