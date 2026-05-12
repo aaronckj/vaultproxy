@@ -647,13 +647,44 @@ pub async fn launch(
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if ret != 0 {
+            // Try non-blocking first so the common (uncontended) path stays
+            // fast. If busy — typically because a peer raven process is
+            // mid-launch of the same MCP — poll-acquire for up to
+            // VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S seconds (default 30) before
+            // giving up. Polling cadence is 100ms.
+            let timeout_s: u64 = std::env::var("VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
+            let mut acquired = false;
+            let mut logged_wait = false;
+            loop {
+                let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                if ret == 0 {
+                    acquired = true;
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                if !logged_wait {
+                    tracing::info!(
+                        "launch lock for {} held by peer; waiting up to {}s",
+                        server_name,
+                        timeout_s
+                    );
+                    logged_wait = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if !acquired {
                 anyhow::bail!(
                     "another vault-proxy --launch {} is already running (lock file {:?} is held). \
-                     Wait for it to finish or kill the duplicate process.",
+                     Waited {}s; raise VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S or kill the duplicate process.",
                     server_name,
-                    lock_path
+                    lock_path,
+                    timeout_s
                 );
             }
         }
