@@ -25,6 +25,7 @@ mod dashboard;
 mod internal_token;
 mod keystore;
 mod launcher;
+mod local_socket;
 mod mcp_server;
 mod notify;
 mod policy;
@@ -580,6 +581,38 @@ async fn main() -> anyhow::Result<()> {
     // This design means `--setup` is idempotent-safe: first run configures and
     // starts; subsequent runs with --setup require explicit confirmation before
     // overwriting.
+    // Socket fast-path for --launch: if a running daemon (this same binary in
+    // server mode) is exposing the credential socket, fetch creds over the
+    // socket and execve the child WITHOUT re-authenticating to Bitwarden cloud.
+    // Eliminates the rate-limit churn when several MCPs launch concurrently.
+    // On any failure (socket absent, bootstrap-needed, malformed item) we fall
+    // through to the existing full TPM+VW path below.
+    if let Some(ref server_name) = args.launch {
+        let socket_path = crate::local_socket::default_socket_path();
+        if socket_path.exists() {
+            let cred = crate::launcher::CredSource::Socket(socket_path.clone());
+            match crate::launcher::launch(
+                server_name,
+                &config_dir,
+                &cred,
+                args.listen,
+                &args.vault_folder,
+            )
+            .await
+            {
+                Ok(()) => return Ok(()), // execve never returns; unreachable on success
+                Err(e) => {
+                    tracing::warn!(
+                        "socket fast-path for --launch {} failed ({}); falling back to full TPM+VW auth",
+                        server_name,
+                        e
+                    );
+                    // fall through to keystore unlock + VW auth flow below
+                }
+            }
+        }
+    }
+
     if args.setup {
         // Guard against silent overwrite of an existing, working keystore.
         // An operator who accidentally passes --setup on a running deployment
@@ -872,7 +905,8 @@ async fn start_server(
     if let Some(ref server_name) = args.launch {
         // Issue (iter-39): pass listen_addr so VAULT_PROXY_URL is synthesised
         // from the actual --listen address rather than a hard-coded default.
-        return crate::launcher::launch(server_name, config_dir, &vault_arc, args.listen, &args.vault_folder).await;
+        let cred = crate::launcher::CredSource::Vault(&vault_arc);
+        return crate::launcher::launch(server_name, config_dir, &cred, args.listen, &args.vault_folder).await;
     }
 
     // Cloud sync setup — activates when cloud credentials exist in keystore
@@ -2588,6 +2622,19 @@ async fn start_server(
         // Allow up to 10 s for in-flight requests to complete before hard-kill.
         shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
     });
+
+    // Local UNIX-socket RPC for colocated --launch processes. SO_PEERCRED-gated,
+    // same-UID only; serves plaintext fields from the already-authed item cache
+    // so launches don't have to re-auth to Bitwarden cloud (which rate-limits).
+    {
+        let socket_vault = vault_arc.clone();
+        let socket_path = crate::local_socket::default_socket_path();
+        tokio::spawn(async move {
+            if let Err(e) = crate::local_socket::run(socket_vault, socket_path).await {
+                tracing::warn!("local credential socket exited: {}", e);
+            }
+        });
+    }
 
     tracing::info!("vault-proxy listening on {}", args.listen);
 

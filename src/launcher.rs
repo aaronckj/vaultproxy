@@ -16,6 +16,53 @@ use std::path::Path;
 use std::process::Command;
 use zeroize::Zeroizing;
 
+/// Credential source — either the in-process VaultManager (full power, requires
+/// VW auth at process start) or a UNIX socket to the already-authed daemon
+/// (read-only field fetch, no VW auth needed).
+///
+/// Used to keep `launch()` decoupled from where the credentials come from. The
+/// socket path skips the daemon's HTTP API (which masks passwords by design)
+/// and instead uses a SO_PEERCRED-gated local socket that returns plaintext to
+/// same-UID local callers only. The benefit: `--launch` no longer re-auths to
+/// Bitwarden cloud on every invocation, eliminating the rate-limit churn when
+/// multiple MCPs launch concurrently.
+pub enum CredSource<'a> {
+    Vault(&'a crate::vault::VaultManager),
+    Socket(std::path::PathBuf),
+}
+
+impl CredSource<'_> {
+    /// Fetch one field of one vault item. Works for both variants.
+    pub async fn get_field(&self, item: &str, field: &str) -> Result<String> {
+        match self {
+            Self::Vault(v) => v.get_field_by_item_name(item, field).await,
+            Self::Socket(p) => crate::local_socket::client::get_field(p, item, field).await,
+        }
+    }
+
+    /// Return the raw decrypted password bytes for an item. Convenience over
+    /// `get_field(item, "password")` since the bootstrap check needs to
+    /// distinguish "field absent" from "field empty".
+    pub async fn decrypt_password_bytes(&self, item: &str) -> Result<Vec<u8>> {
+        match self {
+            Self::Vault(v) => v.decrypt_password(item).map(|b| b.to_vec()),
+            Self::Socket(p) => crate::local_socket::client::get_field(p, item, "password")
+                .await
+                .map(String::into_bytes),
+        }
+    }
+
+    /// Escape hatch: bootstrap operations (folder/item create, password set)
+    /// require the in-process VaultManager. Socket variant returns None and the
+    /// caller bails out so main.rs can fall back to the full-auth path.
+    pub fn as_vault(&self) -> Option<&crate::vault::VaultManager> {
+        match self {
+            Self::Vault(v) => Some(v),
+            Self::Socket(_) => None,
+        }
+    }
+}
+
 /// Validate a VAULT_PROXY_PUBLIC_URL value.
 ///
 /// Requirements:
@@ -140,7 +187,7 @@ fn default_verify_ssl() -> bool {
 pub async fn launch(
     server_name: &str,
     config_dir: &str,
-    vault: &crate::vault::VaultManager,
+    vault: &CredSource<'_>,
     listen_addr: std::net::SocketAddr,
     vault_folder: &str,
 ) -> Result<()> {
@@ -186,21 +233,32 @@ pub async fn launch(
     // Bootstrap: auto-generate API key if key_item is absent or empty.   //
     // ------------------------------------------------------------------ //
     if let Some(ref bootstrap) = server.bootstrap {
-        let needs_bootstrap = match vault.decrypt_password(&bootstrap.key_item) {
-            Ok(buf) => std::str::from_utf8(&buf)
+        let needs_bootstrap = match vault.decrypt_password_bytes(&bootstrap.key_item).await {
+            Ok(bytes) => std::str::from_utf8(&bytes)
                 .map(|s| s.is_empty())
                 .unwrap_or(true),
             Err(_) => true, // item absent or no password field
         };
 
         if needs_bootstrap {
+            // Bootstrap requires write access to the vault (create folder/item,
+            // set password). The socket-backed CredSource is read-only, so we
+            // bail out with a distinguishable error and let main.rs fall back
+            // to the full TPM+VW path. Inline if-let here to grab the
+            // VaultManager just for the write operations below.
+            let vm = vault.as_vault().context(
+                "bootstrap requires full vault access (write operations); \
+                 socket fast-path cannot bootstrap a missing api-key item — \
+                 fall back to full --launch path",
+            )?;
+
             // Note: the lock file (acquired below) prevents duplicate concurrent launches,
             // but it is acquired after this block. A simultaneous --launch for the same
             // server could pass the needs_bootstrap check and both call create_login_item.
             // The second will fail loudly at the Vaultwarden layer (acceptable: duplicate
             // concurrent bootstrap is a misuse case in this homelab tool).
 
-            if vault
+            if vm
                 .find_item_id_by_name(&bootstrap.auth_item)
                 .await
                 .is_none()
@@ -217,7 +275,7 @@ pub async fn launch(
                 "bootstrapping API key"
             );
 
-            let uri = vault
+            let uri = vm
                 .get_field_by_item_name(&bootstrap.auth_item, "uri")
                 .await
                 .with_context(|| {
@@ -226,7 +284,7 @@ pub async fn launch(
                         bootstrap.auth_item
                     )
                 })?;
-            let username = vault
+            let username = vm
                 .get_field_by_item_name(&bootstrap.auth_item, "username")
                 .await
                 .with_context(|| {
@@ -235,7 +293,7 @@ pub async fn launch(
                         bootstrap.auth_item
                     )
                 })?;
-            let password = vault
+            let password = vm
                 .get_field_by_item_name(&bootstrap.auth_item, "password")
                 .await
                 .with_context(|| {
@@ -266,30 +324,28 @@ pub async fn launch(
                 }
             };
 
-            let folder_id = vault.find_folder_id_by_name_async(vault_folder).await;
-            let existing_id = vault.find_item_id_by_name(&bootstrap.key_item).await;
+            let folder_id = vm.find_folder_id_by_name_async(vault_folder).await;
+            let existing_id = vm.find_item_id_by_name(&bootstrap.key_item).await;
 
             match existing_id {
                 None => {
-                    vault
-                        .create_login_item(
-                            &bootstrap.key_item,
-                            None,
-                            api_key.as_str(),
-                            vec![uri],
-                            folder_id.as_deref(),
+                    vm.create_login_item(
+                        &bootstrap.key_item,
+                        None,
+                        api_key.as_str(),
+                        vec![uri],
+                        folder_id.as_deref(),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "bootstrap: failed to create key_item '{}'",
+                            bootstrap.key_item
                         )
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "bootstrap: failed to create key_item '{}'",
-                                bootstrap.key_item
-                            )
-                        })?;
+                    })?;
                 }
                 Some(ref id) => {
-                    vault
-                        .update_login_item_fields(id, None, None, Some(api_key.as_str()))
+                    vm.update_login_item_fields(id, None, None, Some(api_key.as_str()))
                         .await
                         .with_context(|| {
                             format!(
@@ -300,8 +356,7 @@ pub async fn launch(
                 }
             }
 
-            vault
-                .sync()
+            vm.sync()
                 .await
                 .context("bootstrap: vault sync failed after storing key")?;
 
@@ -390,15 +445,12 @@ pub async fn launch(
             resolved.push((mapping.var, Zeroizing::new(static_val)));
         } else if let Some(item_name) = mapping.vault_item {
             let field = mapping.field.as_deref().unwrap_or("password");
-            let credential = vault
-                .get_field_by_item_name(&item_name, field)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to resolve vault item '{}' field '{}'",
-                        item_name, field
-                    )
-                })?;
+            let credential = vault.get_field(&item_name, field).await.with_context(|| {
+                format!(
+                    "failed to resolve vault item '{}' field '{}'",
+                    item_name, field
+                )
+            })?;
             resolved.push((mapping.var, Zeroizing::new(credential)));
         } else {
             anyhow::bail!(

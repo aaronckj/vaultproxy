@@ -12,6 +12,7 @@ mod audit;
 mod internal_token;
 mod keystore;
 mod launcher;
+pub mod local_socket;
 mod notify;
 mod policy;
 mod proxy;
