@@ -27,6 +27,28 @@ pub trait MintExecutor: Send + Sync {
     async fn mint(&self, username: &str, password: &str) -> anyhow::Result<Zeroizing<String>>;
 }
 
+use std::path::Path;
+
+/// Vault read/write surface needed by `rotate_wi_mcp`. Production impl wraps
+/// `AppState` (see `crate::rotate::wi_mcp_adapter`); tests substitute a fake.
+#[async_trait::async_trait]
+pub trait RotateContext: Send + Sync {
+    /// Decrypt the `username` field of `item`. Returns a `Zeroizing<String>`
+    /// so the plaintext is wiped on drop.
+    fn decrypt_username(&self, item: &str) -> anyhow::Result<Zeroizing<String>>;
+
+    /// Decrypt the `password` field of `item`.
+    fn decrypt_password(&self, item: &str) -> anyhow::Result<Zeroizing<String>>;
+
+    /// Re-encrypt `new_password` and push the cipher update to the upstream
+    /// vault. Concrete impls MUST scope writes to the configured vault folder.
+    async fn update_password(&self, item: &str, new_password: &str) -> anyhow::Result<()>;
+
+    /// Path to the vault-proxy config directory. Used as the parent for
+    /// `wi-mcp-token-recovery-*.txt` on vault-write failure.
+    fn config_dir(&self) -> &Path;
+}
+
 // -------------------------------------------------------------------------- //
 // Strategies                                                                   //
 // -------------------------------------------------------------------------- //
@@ -177,5 +199,61 @@ mod tests {
         let exec: Arc<dyn MintExecutor> = Arc::new(fake);
         let out = exec.mint("user1", "pw1").await.unwrap();
         assert_eq!(&*out, "tok_abc");
+    }
+
+    use std::path::{Path, PathBuf};
+
+    struct FakeRotateContext {
+        username: Result<String, String>,
+        password: Result<String, String>,
+        update_should_fail: bool,
+        last_update: tokio::sync::Mutex<Option<(String, String)>>,
+        config_dir: PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl RotateContext for FakeRotateContext {
+        fn decrypt_username(&self, _item: &str) -> anyhow::Result<Zeroizing<String>> {
+            match &self.username {
+                Ok(u) => Ok(Zeroizing::new(u.clone())),
+                Err(m) => Err(anyhow::anyhow!("{}", m)),
+            }
+        }
+        fn decrypt_password(&self, _item: &str) -> anyhow::Result<Zeroizing<String>> {
+            match &self.password {
+                Ok(p) => Ok(Zeroizing::new(p.clone())),
+                Err(m) => Err(anyhow::anyhow!("{}", m)),
+            }
+        }
+        async fn update_password(&self, item: &str, new: &str) -> anyhow::Result<()> {
+            *self.last_update.lock().await = Some((item.to_string(), new.to_string()));
+            if self.update_should_fail {
+                anyhow::bail!("simulated vault write failure");
+            }
+            Ok(())
+        }
+        fn config_dir(&self) -> &Path {
+            &self.config_dir
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_rotate_context_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = FakeRotateContext {
+            username: Ok("admin".to_string()),
+            password: Ok("hunter2".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        assert_eq!(&*ctx.decrypt_username("x").unwrap(), "admin");
+        assert_eq!(&*ctx.decrypt_password("x").unwrap(), "hunter2");
+        ctx.update_password("WI MCP - Bearer", "tok_new")
+            .await
+            .unwrap();
+        let snap = ctx.last_update.lock().await.clone().unwrap();
+        assert_eq!(snap.0, "WI MCP - Bearer");
+        assert_eq!(snap.1, "tok_new");
     }
 }
