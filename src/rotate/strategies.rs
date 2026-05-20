@@ -2,6 +2,11 @@
 
 use anyhow::Context as _;
 use serde::Serialize;
+use std::fs::OpenOptions;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
 use zeroize::Zeroizing;
 
 // -------------------------------------------------------------------------- //
@@ -158,6 +163,124 @@ pub async fn bootstrap_unifi_api_key(
     key_result
 }
 
+const WI_MCP_BEARER_ITEM: &str = "WI MCP - Bearer";
+const WI_MCP_ADMIN_ITEM: &str = "WI MCP - Admin";
+
+/// Rotate the `wi-mcp` bearer token: read admin creds from the vault,
+/// mint a fresh token via the injected `MintExecutor`, write the new token
+/// back to the bearer item.
+///
+/// On vault-write failure the minted token is persisted to a 0600 recovery
+/// file under `ctx.config_dir()`; the `RotationResult.message` points the
+/// operator at it.
+pub async fn rotate_wi_mcp<E: MintExecutor + ?Sized>(
+    ctx: &dyn RotateContext,
+    mint_executor: &E,
+) -> RotationResult {
+    // --- admin lookup ----------------------------------------------------
+    let username = match ctx.decrypt_username(WI_MCP_ADMIN_ITEM) {
+        Ok(u) => u,
+        Err(e) => {
+            return RotationResult {
+                service: "wi-mcp".to_string(),
+                status: "error".to_string(),
+                message: format!("admin-lookup: {}", e),
+            };
+        }
+    };
+    let password = match ctx.decrypt_password(WI_MCP_ADMIN_ITEM) {
+        Ok(p) => p,
+        Err(e) => {
+            return RotationResult {
+                service: "wi-mcp".to_string(),
+                status: "error".to_string(),
+                message: format!("admin-lookup: {}", e),
+            };
+        }
+    };
+    let user_str: &str = &username;
+    if user_str.is_empty() {
+        return RotationResult {
+            service: "wi-mcp".to_string(),
+            status: "error".to_string(),
+            message: format!(
+                "admin-lookup: item '{}' has empty 'username'",
+                WI_MCP_ADMIN_ITEM
+            ),
+        };
+    }
+    let pass_str: &str = &password;
+    if pass_str.is_empty() {
+        return RotationResult {
+            service: "wi-mcp".to_string(),
+            status: "error".to_string(),
+            message: format!(
+                "admin-lookup: item '{}' has empty 'password'",
+                WI_MCP_ADMIN_ITEM
+            ),
+        };
+    }
+
+    // --- mint ------------------------------------------------------------
+    let new_token = match mint_executor.mint(user_str, pass_str).await {
+        Ok(t) => t,
+        Err(e) => {
+            return RotationResult {
+                service: "wi-mcp".to_string(),
+                status: "error".to_string(),
+                message: format!("mint: {}", e),
+            };
+        }
+    };
+
+    // --- persist ---------------------------------------------------------
+    if let Err(e) = ctx.update_password(WI_MCP_BEARER_ITEM, &new_token).await {
+        let recovery = write_recovery_file(ctx.config_dir(), &new_token);
+        let path_str = match recovery {
+            Ok(p) => p.display().to_string(),
+            Err(rerr) => format!("<recovery write failed: {}>", rerr),
+        };
+        return RotationResult {
+            service: "wi-mcp".to_string(),
+            status: "error".to_string(),
+            message: format!(
+                "persist: vault write failed: {}; token written to {}",
+                e, path_str
+            ),
+        };
+    }
+
+    RotationResult {
+        service: "wi-mcp".to_string(),
+        status: "success".to_string(),
+        message: format!("rotated wi-mcp bearer; token len={}", new_token.len()),
+    }
+}
+
+/// Write `token` to `<config_dir>/wi-mcp-token-recovery-<unix-ts>.txt` with
+/// mode 0600. Used as a fallback when vault write fails but the token was
+/// successfully minted.
+fn write_recovery_file(config_dir: &std::path::Path, token: &str) -> anyhow::Result<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = config_dir.join(format!("wi-mcp-token-recovery-{}.txt", ts));
+
+    let mut opts = OpenOptions::new();
+    opts.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&path)
+        .with_context(|| format!("open recovery file {}", path.display()))?;
+    writeln!(f, "WI MCP - Bearer")?;
+    writeln!(f, "{}", token)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +378,38 @@ mod tests {
         let snap = ctx.last_update.lock().await.clone().unwrap();
         assert_eq!(snap.0, "WI MCP - Bearer");
         assert_eq!(snap.1, "tok_new");
+    }
+
+    fn make_fakes(
+        token: &str,
+        user: &str,
+        pass: &str,
+    ) -> (Arc<FakeMintExecutor>, FakeRotateContext, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mint = Arc::new(FakeMintExecutor {
+            result: Ok(token.to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok(user.to_string()),
+            password: Ok(pass.to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        (mint, ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_happy_path() {
+        let (mint, ctx, _dir) = make_fakes("tok_abc", "admin", "hunter2");
+        let result = rotate_wi_mcp(&ctx, mint.as_ref()).await;
+        assert_eq!(result.status, "success", "msg={}", result.message);
+        let updated = ctx.last_update.lock().await.clone().unwrap();
+        assert_eq!(updated.0, "WI MCP - Bearer");
+        assert_eq!(updated.1, "tok_abc");
+        let minted = mint.last_call.lock().await.clone().unwrap();
+        assert_eq!(minted.0, "admin");
+        assert_eq!(minted.1, "hunter2");
     }
 }
