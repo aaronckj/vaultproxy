@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 // -------------------------------------------------------------------------- //
 // Result type                                                                  //
@@ -15,8 +16,6 @@ pub struct RotationResult {
     pub message: String,
 }
 
-use zeroize::Zeroizing;
-
 /// Abstracts the channel used to mint a fresh bearer token for a backing
 /// service. Production impl is `SshDockerMintExecutor`; tests substitute a
 /// fake.
@@ -25,11 +24,7 @@ pub trait MintExecutor: Send + Sync {
     /// Mint a new bearer token using `username`/`password` as the dashboard
     /// auth credentials. Implementations MUST NOT log `password` or include
     /// it in returned errors.
-    async fn mint(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> anyhow::Result<Zeroizing<String>>;
+    async fn mint(&self, username: &str, password: &str) -> anyhow::Result<Zeroizing<String>>;
 }
 
 // -------------------------------------------------------------------------- //
@@ -156,7 +151,6 @@ mod tests {
     }
 
     use std::sync::Arc;
-    use zeroize::Zeroizing;
 
     struct FakeMintExecutor {
         result: Result<String, String>,
@@ -165,11 +159,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MintExecutor for FakeMintExecutor {
-        async fn mint(
-            &self,
-            username: &str,
-            password: &str,
-        ) -> anyhow::Result<Zeroizing<String>> {
+        async fn mint(&self, username: &str, password: &str) -> anyhow::Result<Zeroizing<String>> {
             *self.last_call.lock().await = Some((username.to_string(), password.to_string()));
             match &self.result {
                 Ok(tok) => Ok(Zeroizing::new(tok.clone())),
