@@ -15,6 +15,23 @@ pub struct RotationResult {
     pub message: String,
 }
 
+use zeroize::Zeroizing;
+
+/// Abstracts the channel used to mint a fresh bearer token for a backing
+/// service. Production impl is `SshDockerMintExecutor`; tests substitute a
+/// fake.
+#[async_trait::async_trait]
+pub trait MintExecutor: Send + Sync {
+    /// Mint a new bearer token using `username`/`password` as the dashboard
+    /// auth credentials. Implementations MUST NOT log `password` or include
+    /// it in returned errors.
+    async fn mint(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> anyhow::Result<Zeroizing<String>>;
+}
+
 // -------------------------------------------------------------------------- //
 // Strategies                                                                   //
 // -------------------------------------------------------------------------- //
@@ -136,5 +153,39 @@ mod tests {
         if false {
             let _ = bootstrap_unifi_api_key("uri", "user", "pass", false);
         }
+    }
+
+    use std::sync::Arc;
+    use zeroize::Zeroizing;
+
+    struct FakeMintExecutor {
+        result: Result<String, String>,
+        last_call: tokio::sync::Mutex<Option<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MintExecutor for FakeMintExecutor {
+        async fn mint(
+            &self,
+            username: &str,
+            password: &str,
+        ) -> anyhow::Result<Zeroizing<String>> {
+            *self.last_call.lock().await = Some((username.to_string(), password.to_string()));
+            match &self.result {
+                Ok(tok) => Ok(Zeroizing::new(tok.clone())),
+                Err(msg) => Err(anyhow::anyhow!("{}", msg)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_mint_executor_returns_configured_token() {
+        let fake = FakeMintExecutor {
+            result: Ok("tok_abc".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        };
+        let exec: Arc<dyn MintExecutor> = Arc::new(fake);
+        let out = exec.mint("user1", "pw1").await.unwrap();
+        assert_eq!(&*out, "tok_abc");
     }
 }
