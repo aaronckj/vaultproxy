@@ -3,6 +3,8 @@ use rmcp::{ServiceExt, tool, tool_router, transport};
 use rmcp::handler::server::wrapper::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use crate::proxy::SmbConfig;
+use crate::vault::smb::{self, SmbMountRequest, SmbUnmountRequest};
 use crate::vault::VaultManager;
 
 // -------------------------------------------------------------------------- //
@@ -71,6 +73,29 @@ pub struct CloneItemParams {
     pub folder_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SmbMountParams {
+    /// Vaultwarden cipher id (uuid) whose login holds the SMB username + password.
+    /// You never pass the credentials yourself — vault-proxy resolves them.
+    pub vault_item_id: String,
+    /// SMB UNC path, e.g. `//10.0.0.30/screenshots`.
+    pub share: String,
+    /// Local mount point under --smb-mount-root (e.g. `/mnt/screenshots`).
+    pub mount_point: String,
+    /// Stable slug used in the creds filename + fstab markers (`[a-z0-9-]{1,32}`).
+    pub slug: String,
+    /// Optional extra cifs mount options. `credentials=`, `username=`, `password=` reserved.
+    pub fs_options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SmbUnmountParams {
+    /// Same slug used in the original smb_mount call.
+    pub slug: String,
+    /// Mount point to unmount and remove from fstab.
+    pub mount_point: String,
+}
+
 // -------------------------------------------------------------------------- //
 // Server struct                                                               //
 // -------------------------------------------------------------------------- //
@@ -79,11 +104,22 @@ pub struct CloneItemParams {
 pub struct VaultMcpServer {
     vault: Arc<VaultManager>,
     vault_folder: String,
+    smb: SmbConfig,
 }
 
 impl VaultMcpServer {
+    /// Construct a server without SMB support enabled (default).
     pub fn new(vault: Arc<VaultManager>, vault_folder: String) -> Self {
-        Self { vault, vault_folder }
+        Self {
+            vault,
+            vault_folder,
+            smb: SmbConfig::default(),
+        }
+    }
+
+    /// Construct a server with SMB mount tools wired to the given config.
+    pub fn with_smb(vault: Arc<VaultManager>, vault_folder: String, smb: SmbConfig) -> Self {
+        Self { vault, vault_folder, smb }
     }
 }
 
@@ -277,15 +313,56 @@ impl VaultMcpServer {
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
+
+    /// Set up an SMB/CIFS mount using credentials from a vault item. Vault-proxy
+    /// resolves the credential internally and pipes it to a setuid helper which
+    /// writes /etc/samba/vaultproxy-<slug>.credentials, edits /etc/fstab, and
+    /// runs mount. The plaintext password never leaves vault-proxy's address
+    /// space and is never returned to the caller. Disabled unless
+    /// --smb-helper-path is configured at vault-proxy startup.
+    #[tool(description = "Set up an SMB mount using a vault item. Vault-proxy never reveals the password to you — it writes the credentials file, edits /etc/fstab, and runs mount internally via a setuid helper. Returns only ok/error.")]
+    pub async fn smb_mount(
+        &self,
+        Parameters(p): Parameters<SmbMountParams>,
+    ) -> String {
+        let req = SmbMountRequest {
+            vault_item_id: p.vault_item_id,
+            share: p.share,
+            mount_point: p.mount_point,
+            slug: p.slug,
+            fs_options: p.fs_options.unwrap_or_default(),
+        };
+        let (_, body) = smb::perform_mount(&self.vault, &self.smb, req).await;
+        body.to_string()
+    }
+
+    /// Tear down a previously-installed SMB mount: unmount, remove its
+    /// /etc/fstab block, and delete the credentials file.
+    #[tool(description = "Tear down an SMB mount previously created by smb_mount. Unmounts, removes the fstab block, deletes the credentials file. Returns only ok/error.")]
+    pub async fn smb_unmount(
+        &self,
+        Parameters(p): Parameters<SmbUnmountParams>,
+    ) -> String {
+        let req = SmbUnmountRequest {
+            slug: p.slug,
+            mount_point: p.mount_point,
+        };
+        let (_, body) = smb::perform_unmount(&self.smb, req).await;
+        body.to_string()
+    }
 }
 
 // -------------------------------------------------------------------------- //
 // Entry point                                                                 //
 // -------------------------------------------------------------------------- //
 
-pub async fn run(vault: Arc<VaultManager>, vault_folder: String) -> anyhow::Result<()> {
+pub async fn run(
+    vault: Arc<VaultManager>,
+    vault_folder: String,
+    smb: SmbConfig,
+) -> anyhow::Result<()> {
     tracing::info!("starting vault-proxy MCP server on stdio");
-    let server = VaultMcpServer::new(vault, vault_folder);
+    let server = VaultMcpServer::with_smb(vault, vault_folder, smb);
     let service = server.serve(transport::stdio()).await?;
     service.waiting().await?;
     Ok(())

@@ -3,6 +3,7 @@
 pub mod connecterr_secrets;
 pub mod crypto;
 pub mod handlers;
+pub mod smb;
 pub mod types;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -983,10 +984,14 @@ impl VaultManager {
 
         let url = format!("{}/api/ciphers/{}", self.vaultwarden_url, id);
         let cipher_json = serde_json::to_value(cipher).context("failed to serialize cipher")?;
-        self.authed_request(|token| self.http.put(&url).bearer_auth(token).json(&cipher_json))
-            .await?
-            .error_for_status()
-            .context("update cipher returned error status")?;
+        let resp = self
+            .authed_request(|token| self.http.put(&url).bearer_auth(token).json(&cipher_json))
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_else(|_| "<no body>".into());
+            anyhow::bail!("update cipher {} returned {}: {}", id, status, body);
+        }
 
         tracing::debug!("cipher updated id={}", id);
         Ok(())
@@ -1230,6 +1235,18 @@ impl VaultManager {
     /// List every folder with its decrypted name, current item count, and
     /// whether it's tracked in the provided set of synced folder ids. The
     /// caller passes in the tracked set (from the sync map) so the vault
+    /// Return `true` if `folder_id` is a folder that currently exists in this
+    /// VW instance. Used by the cloud→VW reconciler to avoid pushing a cipher
+    /// with a cloud-side folder id that VW doesn't know about (VW rejects such
+    /// a PUT/POST with 400 "Invalid folder").
+    pub async fn folder_id_exists(&self, folder_id: &str) -> bool {
+        self.all_folders
+            .read()
+            .await
+            .iter()
+            .any(|(id, _)| id == folder_id)
+    }
+
     /// module doesn't have to know about sync internals.
     pub async fn list_folders_with_counts(
         &self,
@@ -1653,6 +1670,61 @@ impl VaultManager {
                 )
             }
         }
+    }
+
+    /// Resolve a named field by cipher **id** first, falling back to a by-name
+    /// match. This lets socket callers disambiguate items that share a
+    /// decrypted name (e.g. several "whatbox.ca" logins) by passing the exact
+    /// cipher id — the by-name path returns only the first HashMap match.
+    ///
+    /// `field` must be `"password"`, `"username"`, or `"uri"`.
+    pub async fn get_field_resolved(&self, item: &str, field: &str) -> Result<String> {
+        let map = self
+            .items
+            .try_read()
+            .map_err(|_| anyhow!("vault items lock is contended"))?;
+
+        let cipher = match map.get(item) {
+            Some((_, c)) => c,
+            None => map
+                .values()
+                .find(|(n, _)| n == item)
+                .map(|(_, c)| c)
+                .ok_or_else(|| anyhow!("item '{}' not found in vault", item))?,
+        };
+
+        let cs = match field {
+            "password" => cipher
+                .login
+                .as_ref()
+                .and_then(|l| l.password.as_deref())
+                .ok_or_else(|| anyhow!("item '{}' has no password", item))?,
+            "username" => cipher
+                .login
+                .as_ref()
+                .and_then(|l| l.username.as_deref())
+                .ok_or_else(|| anyhow!("item '{}' has no username field", item))?,
+            "uri" => cipher
+                .login
+                .as_ref()
+                .and_then(|l| l.uris.as_ref())
+                .and_then(|uris| uris.first())
+                .and_then(|u| u.uri.as_deref())
+                .ok_or_else(|| anyhow!("item '{}' has no URI", item))?,
+            other => {
+                anyhow::bail!(
+                    "unsupported field '{}' — must be 'password', 'username', or 'uri'",
+                    other
+                )
+            }
+        };
+
+        let buf = decrypt_cipher_string(cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+            .with_context(|| format!("decrypt {} for '{}'", field, item))?;
+        let s = std::str::from_utf8(&buf)
+            .map_err(|e| anyhow!("{} for '{}' is not valid UTF-8: {}", field, item, e))?
+            .to_string();
+        Ok(s)
     }
 
     // ---------------------------------------------------------------------- //

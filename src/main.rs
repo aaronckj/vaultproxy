@@ -196,6 +196,37 @@ struct Args {
     #[arg(long, env = "ENV_WRITE_ROOT", default_value = "")]
     env_write_root: String,
 
+    /// Absolute path to the setuid `vaultproxy-mount-helper` binary.
+    ///
+    /// Empty string disables the SMB mount endpoints (501). When set, the
+    /// proxy will exec this binary to perform credential file writes,
+    /// `/etc/fstab` edits, and mount calls — operations vault-proxy itself
+    /// cannot perform unprivileged. The helper is the privilege boundary;
+    /// install it 4750 root:<vault-proxy-group>.
+    #[arg(long, env = "SMB_HELPER_PATH", default_value = "")]
+    smb_helper_path: String,
+
+    /// Allowed root directory for SMB mount points (default `/mnt`).
+    ///
+    /// Caller-supplied `mount_point` values must begin with `<root>/` so the
+    /// endpoint cannot be used to mount over `/etc`, `/`, or other sensitive
+    /// directories. Narrow this to the smallest path that covers your use
+    /// case.
+    #[arg(long, env = "SMB_MOUNT_ROOT", default_value = "/mnt")]
+    smb_mount_root: String,
+
+    /// Directory the mount helper writes credential files into.
+    ///
+    /// Only `/etc/samba` and `/run/vaultproxy/smb` are accepted by the
+    /// helper. Files are written 0600 root:root with name
+    /// `vaultproxy-<slug>.credentials`.
+    #[arg(long, env = "SMB_CREDS_DIR", default_value = "/etc/samba")]
+    smb_creds_dir: String,
+
+    /// Path to /etc/fstab. Overridable for tests; do not change in production.
+    #[arg(long, env = "SMB_FSTAB_PATH", default_value = "/etc/fstab")]
+    smb_fstab_path: String,
+
     /// Validate services.toml (parsing + SSRF rules) and exit without
     /// connecting to Vaultwarden or binding any port.
     ///
@@ -899,7 +930,13 @@ async fn start_server(
     // MCP server mode: expose Vaultwarden management tools over stdio.
     // Runs instead of the HTTP proxy — the binary becomes a stdio MCP server.
     if args.mcp {
-        return crate::mcp_server::run(vault_arc, args.vault_folder.clone()).await;
+        let smb = crate::proxy::SmbConfig {
+            helper_path: args.smb_helper_path.clone(),
+            mount_root: args.smb_mount_root.clone(),
+            creds_dir: args.smb_creds_dir.clone(),
+            fstab_path: args.smb_fstab_path.clone(),
+        };
+        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb).await;
     }
 
     if let Some(ref server_name) = args.launch {
@@ -1460,6 +1497,12 @@ async fn start_server(
         reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
         // iter-62: serialises concurrent audit runs (background task vs HTTP).
         audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        smb: crate::proxy::SmbConfig {
+            helper_path: args.smb_helper_path.clone(),
+            mount_root: args.smb_mount_root.clone(),
+            creds_dir: args.smb_creds_dir.clone(),
+            fstab_path: args.smb_fstab_path.clone(),
+        },
     });
 
     // Build router with rate limiting on sensitive endpoints.
@@ -1531,7 +1574,16 @@ async fn start_server(
         // Gated behind the internal bearer token — the permissions map reveals
         // which tools are allowed/blocked/logged, which is security-relevant
         // configuration an unauthenticated caller should not see.
-        .route("/vault/permissions", get(handle_get_permissions));
+        .route("/vault/permissions", get(handle_get_permissions))
+        // Durably change a cipher's password in Bitwarden cloud (source of
+        // truth) by VW item id. Bypasses the update_item folder-scope guard,
+        // so it is bearer-token-gated like the other sensitive internal routes.
+        // Needed because mirrored items get folder_id cleared on the VW side
+        // (unmapped cloud folders), which the folder guard would reject.
+        .route(
+            "/vault/cloud/update-password",
+            post(handlers::cloud_update_password),
+        );
 
     // iter-81: merge browser routes only when the `browser` feature is on.
     // /browser/* requests return 404 when the feature is off (routes absent).
@@ -1578,6 +1630,8 @@ async fn start_server(
         .route("/vault/items/update", post(handlers::update_item))
         .route("/vault/items/move", post(handlers::move_item))
         .route("/vault/inject-creds", post(handlers::inject_creds))
+        .route("/vault/smb/mount", post(crate::vault::smb::smb_mount))
+        .route("/vault/smb/unmount", post(crate::vault::smb::smb_unmount))
         .route("/vault/check-permission", get(handlers::check_permission))
         .route("/vault/resync", post(handlers::vault_resync))
         .route("/sync/status", get(handlers::sync_status))
@@ -3552,6 +3606,7 @@ mod browser_rotate_guard_tests {
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            smb: crate::proxy::SmbConfig::default(),
         })
     }
 
@@ -3688,6 +3743,7 @@ mod browser_status_tests {
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            smb: crate::proxy::SmbConfig::default(),
         })
     }
 

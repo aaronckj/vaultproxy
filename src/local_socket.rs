@@ -138,31 +138,13 @@ async fn handle_conn(stream: UnixStream, vault: Arc<VaultManager>) -> anyhow::Re
                 std::collections::BTreeMap::new();
             let mut error: Option<String> = None;
             for f in &fields {
-                if f == "password" {
-                    match vault.decrypt_password(&item) {
-                        Ok(buf) => match std::str::from_utf8(&buf) {
-                            Ok(s) => {
-                                out.insert(f.clone(), s.to_string());
-                            }
-                            Err(e) => {
-                                error = Some(format!("password not utf-8: {}", e));
-                                break;
-                            }
-                        },
-                        Err(e) => {
-                            error = Some(format!("decrypt failed: {}", e));
-                            break;
-                        }
+                match vault.get_field_resolved(&item, f).await {
+                    Ok(v) => {
+                        out.insert(f.clone(), v);
                     }
-                } else {
-                    match vault.get_field_by_item_name(&item, f).await {
-                        Ok(v) => {
-                            out.insert(f.clone(), v);
-                        }
-                        Err(e) => {
-                            error = Some(format!("field '{}' fetch failed: {}", f, e));
-                            break;
-                        }
+                    Err(e) => {
+                        error = Some(format!("field '{}' fetch failed: {}", f, e));
+                        break;
                     }
                 }
             }

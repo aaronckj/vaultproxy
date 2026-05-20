@@ -240,6 +240,29 @@ pub struct AppState {
     ///
     /// Wrapped in `Arc` for the same reason as `reload_mutex`.
     pub audit_mutex: Arc<tokio::sync::Mutex<()>>,
+
+    /// SMB setup configuration. Empty `helper_path` disables the SMB mount
+    /// endpoints (501). See `vault/smb.rs` and the `--smb-*` CLI flags.
+    pub smb: SmbConfig,
+}
+
+/// Configuration for the SMB mount helper. Populated from CLI flags
+/// (`--smb-helper-path`, `--smb-mount-root`, `--smb-creds-dir`,
+/// `--smb-fstab-path`). All fields validated at startup.
+///
+/// When `helper_path` is empty the SMB endpoints return 501 — the helper is
+/// the privilege boundary, so disabling the helper disables the feature.
+#[derive(Clone, Debug, Default)]
+pub struct SmbConfig {
+    /// Absolute path to the setuid helper binary. Empty = feature disabled.
+    pub helper_path: String,
+    /// Allowed root directory for mount points (e.g. `/mnt`). Caller-supplied
+    /// `mount_point` values must begin with `<root>/`.
+    pub mount_root: String,
+    /// Directory the helper writes credential files into.
+    pub creds_dir: String,
+    /// Path to /etc/fstab (overridable for tests).
+    pub fstab_path: String,
 }
 
 // -------------------------------------------------------------------------- //
@@ -1426,6 +1449,7 @@ impl AppState {
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            smb: SmbConfig::default(),
         }
     }
 }
@@ -1670,6 +1694,7 @@ mod integration_tests {
             proxy_timeout: 120,
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            smb: SmbConfig::default(),
         })
     }
 

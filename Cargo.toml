@@ -22,6 +22,14 @@ name = "vaultproxy"
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
+[[bin]]
+name = "mcp-bearer-bridge"
+path = "src/bin/mcp_bearer_bridge.rs"
+
+[[bin]]
+name = "vaultproxy-mount-helper"
+path = "src/bin/mount_helper.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }

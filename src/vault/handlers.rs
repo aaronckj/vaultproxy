@@ -1313,6 +1313,15 @@ pub async fn update_item(
 
     match state.vault.update_cipher(&req.id, &updated).await {
         Ok(()) => {
+            // Persist a password change upstream to Bitwarden cloud (source of
+            // truth). Without this the next cloud→VW reconcile reverts the VW
+            // mirror back to the old cloud value. Only the password is
+            // propagated; name/username/notes edits remain mirror-local.
+            if let (Some(ref sync), Some(ref pw)) = (&state.cloud_sync, &req.password) {
+                if let Err(e) = sync.update_password_in_cloud(&req.id, pw).await {
+                    tracing::warn!("cloud password push for '{}' failed: {:#}", req.id, e);
+                }
+            }
             if let Err(e) = state.vault.sync().await {
                 tracing::warn!("post-update sync failed: {}", e);
             }
@@ -1334,6 +1343,41 @@ pub async fn update_item(
                 Json(json!({"ok": false, "error": e.to_string()})),
             )
         }
+    }
+}
+
+/// Request body for `cloud_update_password`.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)] // fields read by serde deserialization
+pub struct CloudUpdatePasswordRequest {
+    /// VW-side item id whose password should be changed upstream in cloud.
+    pub id: String,
+    pub password: String,
+}
+
+/// `POST /vault/cloud/update-password` — durably change a cipher's password in
+/// Bitwarden cloud (source of truth) by VW item id. Bearer-token gated.
+pub async fn cloud_update_password(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CloudUpdatePasswordRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(ref sync) = state.cloud_sync else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"ok": false, "error": "cloud sync not enabled"})),
+        );
+    };
+    match sync.update_password_in_cloud(&req.id, &req.password).await {
+        Ok(()) => {
+            if let Err(e) = state.vault.sync().await {
+                tracing::warn!("post cloud-update sync failed: {}", e);
+            }
+            (StatusCode::OK, Json(json!({"ok": true, "id": req.id})))
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": format!("{:#}", e)})),
+        ),
     }
 }
 

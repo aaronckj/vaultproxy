@@ -292,6 +292,17 @@ impl SyncManager {
         vw_cipher.organization_id = None;
         vw_cipher.collection_ids = None;
 
+        // Drop any folder id that VW doesn't know about. re_encrypt_cipher
+        // carries over the cloud-side folder_id, which is meaningless on the VW
+        // instance — pushing it makes VW reject the cipher with 400 "Invalid
+        // folder". Collection-mapped items already had folder_id rewritten to a
+        // real VW folder above; everything else lands unfiled.
+        if let Some(ref fid) = vw_cipher.folder_id {
+            if !self.vw.folder_id_exists(fid).await {
+                vw_cipher.folder_id = None;
+            }
+        }
+
         // Create or update in VW.
         if let Some(vw_id) = map.get_vw_id(&cipher.id).map(|s| s.to_string()) {
             // Update existing.
@@ -372,6 +383,49 @@ impl SyncManager {
 
         map.save(SYNC_MAP_PATH)
             .context("failed to save sync map after cloud push")?;
+
+        Ok(())
+    }
+
+    /// Durably change ONLY the password of a cipher in Bitwarden cloud
+    /// (the source of truth), given its VW-side id.
+    ///
+    /// Edits made to the VW mirror alone are reverted on the next cloud→VW
+    /// reconcile, so credential changes must be written upstream. This does a
+    /// minimal field-preserving edit: fetch the live cloud cipher, re-encrypt
+    /// just the password with that cipher's resolved keys, and PUT it back —
+    /// leaving folder/org/all other fields exactly as cloud has them (avoids
+    /// the "Invalid folder" rejection a re-encrypted whole-cipher push hits).
+    pub async fn update_password_in_cloud(&self, vw_id: &str, new_password: &str) -> Result<()> {
+        let cloud_id = {
+            let map = self.map.read().await;
+            map.get_cloud_id(vw_id)
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("no cloud mapping for VW item '{}'", vw_id))?
+        };
+
+        let mut cloud = self.cloud.write().await;
+        let mut cloud_cipher = cloud
+            .get_cipher(&cloud_id)
+            .await
+            .with_context(|| format!("fetch cloud cipher '{}'", cloud_id))?;
+
+        let (enc, mac) = cloud
+            .resolve_cipher_keys(&cloud_cipher)
+            .context("resolve cloud cipher keys")?;
+        let enc_pw = encrypt_to_cipher_string(new_password, &enc, &mac)
+            .context("encrypt new password with cloud keys")?;
+
+        let login = cloud_cipher
+            .login
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("cloud cipher '{}' has no login", cloud_id))?;
+        login.password = Some(enc_pw);
+
+        cloud
+            .update_cipher(&cloud_id, &cloud_cipher)
+            .await
+            .with_context(|| format!("update cloud cipher '{}'", cloud_id))?;
 
         Ok(())
     }

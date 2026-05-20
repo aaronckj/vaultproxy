@@ -669,15 +669,19 @@ impl CloudClient {
     /// Update an existing cipher by ID.
     #[allow(dead_code)] // needed for cloud write operations
     pub async fn update_cipher(&self, id: &str, cipher: &EncryptedCipher) -> Result<()> {
-        self.http
+        let resp = self
+            .http
             .put(format!("{}/ciphers/{}", self.api_url, id))
             .bearer_auth(&self.access_token)
             .json(cipher)
             .send()
             .await
-            .context("update cipher request failed")?
-            .error_for_status()
-            .context("update cipher returned error status")?;
+            .context("update cipher request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_else(|_| "<no body>".into());
+            anyhow::bail!("update cipher returned {}: {}", status, body);
+        }
 
         Ok(())
     }
