@@ -6,7 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 // -------------------------------------------------------------------------- //
@@ -31,8 +31,6 @@ pub trait MintExecutor: Send + Sync {
     /// it in returned errors.
     async fn mint(&self, username: &str, password: &str) -> anyhow::Result<Zeroizing<String>>;
 }
-
-use std::path::Path;
 
 /// Vault read/write surface needed by `rotate_wi_mcp`. Production impl wraps
 /// `AppState` (see `crate::rotate::wi_mcp_adapter`); tests substitute a fake.
@@ -166,6 +164,14 @@ pub async fn bootstrap_unifi_api_key(
 const WI_MCP_BEARER_ITEM: &str = "WI MCP - Bearer";
 const WI_MCP_ADMIN_ITEM: &str = "WI MCP - Admin";
 
+fn wi_mcp_err(message: impl Into<String>) -> RotationResult {
+    RotationResult {
+        service: "wi-mcp".to_string(),
+        status: "error".to_string(),
+        message: message.into(),
+    }
+}
+
 /// Rotate the `wi-mcp` bearer token: read admin creds from the vault,
 /// mint a fresh token via the injected `MintExecutor`, write the new token
 /// back to the bearer item.
@@ -180,57 +186,29 @@ pub async fn rotate_wi_mcp<E: MintExecutor + ?Sized>(
     // --- admin lookup ----------------------------------------------------
     let username = match ctx.decrypt_username(WI_MCP_ADMIN_ITEM) {
         Ok(u) => u,
-        Err(e) => {
-            return RotationResult {
-                service: "wi-mcp".to_string(),
-                status: "error".to_string(),
-                message: format!("admin-lookup: {}", e),
-            };
-        }
+        Err(e) => return wi_mcp_err(format!("admin-lookup: {}", e)),
     };
     let password = match ctx.decrypt_password(WI_MCP_ADMIN_ITEM) {
         Ok(p) => p,
-        Err(e) => {
-            return RotationResult {
-                service: "wi-mcp".to_string(),
-                status: "error".to_string(),
-                message: format!("admin-lookup: {}", e),
-            };
-        }
+        Err(e) => return wi_mcp_err(format!("admin-lookup: {}", e)),
     };
-    let user_str: &str = &username;
-    if user_str.is_empty() {
-        return RotationResult {
-            service: "wi-mcp".to_string(),
-            status: "error".to_string(),
-            message: format!(
-                "admin-lookup: item '{}' has empty 'username'",
-                WI_MCP_ADMIN_ITEM
-            ),
-        };
+    if username.is_empty() {
+        return wi_mcp_err(format!(
+            "admin-lookup: item '{}' has empty 'username'",
+            WI_MCP_ADMIN_ITEM,
+        ));
     }
-    let pass_str: &str = &password;
-    if pass_str.is_empty() {
-        return RotationResult {
-            service: "wi-mcp".to_string(),
-            status: "error".to_string(),
-            message: format!(
-                "admin-lookup: item '{}' has empty 'password'",
-                WI_MCP_ADMIN_ITEM
-            ),
-        };
+    if password.is_empty() {
+        return wi_mcp_err(format!(
+            "admin-lookup: item '{}' has empty 'password'",
+            WI_MCP_ADMIN_ITEM,
+        ));
     }
 
     // --- mint ------------------------------------------------------------
-    let new_token = match mint_executor.mint(user_str, pass_str).await {
+    let new_token = match mint_executor.mint(&username, &password).await {
         Ok(t) => t,
-        Err(e) => {
-            return RotationResult {
-                service: "wi-mcp".to_string(),
-                status: "error".to_string(),
-                message: format!("mint: {}", e),
-            };
-        }
+        Err(e) => return wi_mcp_err(format!("mint: {}", e)),
     };
 
     // --- persist ---------------------------------------------------------
@@ -240,14 +218,10 @@ pub async fn rotate_wi_mcp<E: MintExecutor + ?Sized>(
             Ok(p) => p.display().to_string(),
             Err(rerr) => format!("<recovery write failed: {}>", rerr),
         };
-        return RotationResult {
-            service: "wi-mcp".to_string(),
-            status: "error".to_string(),
-            message: format!(
-                "persist: vault write failed: {}; token written to {}",
-                e, path_str
-            ),
-        };
+        return wi_mcp_err(format!(
+            "persist: vault write failed: {}; token written to {}",
+            e, path_str
+        ));
     }
 
     RotationResult {
