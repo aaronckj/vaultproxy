@@ -386,4 +386,124 @@ mod tests {
         assert_eq!(minted.0, "admin");
         assert_eq!(minted.1, "hunter2");
     }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_username_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mint = Arc::new(FakeMintExecutor {
+            result: Ok("tok".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Err("item 'WI MCP - Admin' not found in vault".to_string()),
+            password: Ok("hunter2".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp(&ctx, mint.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.starts_with("admin-lookup:"),
+            "got: {}",
+            result.message
+        );
+        // Mint must NOT have been called.
+        assert!(mint.last_call.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_username_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mint = Arc::new(FakeMintExecutor {
+            result: Ok("tok".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok("".to_string()),
+            password: Ok("hunter2".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp(&ctx, mint.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.contains("empty 'username'"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_mint_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let mint = Arc::new(FakeMintExecutor {
+            result: Err("ssh exit=1; stderr=ERROR: authentication failed".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok("admin".to_string()),
+            password: Ok("hunter2".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp(&ctx, mint.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.starts_with("mint:"),
+            "got: {}",
+            result.message
+        );
+        // update_password must NOT have been called.
+        assert!(ctx.last_update.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_persist_fails_writes_recovery_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mint = Arc::new(FakeMintExecutor {
+            result: Ok("tok_xyz".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok("admin".to_string()),
+            password: Ok("hunter2".to_string()),
+            update_should_fail: true,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp(&ctx, mint.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.contains("persist: vault write failed"),
+            "got: {}",
+            result.message
+        );
+        // Recovery file exists and contains the token.
+        let mut found: Option<std::path::PathBuf> = None;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let p = entry.unwrap().path();
+            if p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("wi-mcp-token-recovery-")
+            {
+                found = Some(p);
+                break;
+            }
+        }
+        let path = found.expect("recovery file should exist");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("tok_xyz"), "body: {}", body);
+        assert!(body.contains("WI MCP - Bearer"), "body: {}", body);
+        // Mode is 0600 on unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "recovery file should be 0600, got {:o}", mode);
+        }
+    }
 }
