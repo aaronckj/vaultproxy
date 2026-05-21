@@ -127,6 +127,10 @@ pub struct AppState {
     pub permissions: Arc<tokio::sync::RwLock<crate::security::permissions::ToolPermissions>>,
     /// Audit log for tool invocations.
     pub audit_log: Arc<crate::security::audit_log::AuditLog>,
+    /// Production mint channel for the wi-mcp bearer rotation strategy.
+    /// Constructed from env at startup; tests can substitute via the
+    /// `RotateContext` trait directly.
+    pub mint_wi_mcp: Arc<dyn crate::rotate::strategies::MintExecutor>,
     /// Push notification sender (ntfy.sh).
     pub notifier: Arc<crate::notify::Notifier>,
     /// One-time handshake flag — prevents key exfiltration after first retrieval.
@@ -1438,6 +1442,9 @@ impl AppState {
                 "/nonexistent/tool-permissions.json",
             ))),
             audit_log: Arc::new(AuditLog::new(&audit_path)),
+            mint_wi_mcp: Arc::new(
+                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(AtomicBool::new(false)),
             vault_folder,
@@ -1683,6 +1690,9 @@ mod integration_tests {
                 "/nonexistent/tool-permissions.json",
             ))),
             audit_log: Arc::new(AuditLog::new(&audit_path)),
+            mint_wi_mcp: Arc::new(
+                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vault_folder: "vault-proxy".to_string(),
