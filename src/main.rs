@@ -1478,6 +1478,9 @@ async fn start_server(
         browser: None,
         permissions,
         audit_log,
+        mint_wi_mcp: Arc::new(
+            crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+        ),
         notifier,
         handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         vault_folder: args.vault_folder.clone(),
@@ -3595,6 +3598,9 @@ mod browser_rotate_guard_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-rotate-{n}.json"
             ))),
+            mint_wi_mcp: Arc::new(
+                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vault_folder: "vault-proxy".to_string(),
@@ -3732,6 +3738,9 @@ mod browser_status_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-status-{n}.json"
             ))),
+            mint_wi_mcp: Arc::new(
+                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vault_folder: "vault-proxy".to_string(),
