@@ -131,6 +131,9 @@ pub struct AppState {
     /// Constructed from env at startup; tests can substitute via the
     /// `RotateContext` trait directly.
     pub mint_wi_mcp: Arc<dyn crate::rotate::strategies::MintExecutor>,
+    /// Production admin-password change channel for the `wi-mcp-admin`
+    /// rotation strategy. Same env knobs as `mint_wi_mcp`.
+    pub change_wi_mcp_admin: Arc<dyn crate::rotate::strategies::AdminPasswordChanger>,
     /// Push notification sender (ntfy.sh).
     pub notifier: Arc<crate::notify::Notifier>,
     /// One-time handshake flag — prevents key exfiltration after first retrieval.
@@ -1445,6 +1448,9 @@ impl AppState {
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
+            change_wi_mcp_admin: Arc::new(
+                crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
+            ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(AtomicBool::new(false)),
             vault_folder,
@@ -1692,6 +1698,9 @@ mod integration_tests {
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            ),
+            change_wi_mcp_admin: Arc::new(
+                crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
             ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),

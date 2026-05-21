@@ -97,6 +97,13 @@ pub async fn handle_rotate(
             );
             strategies::rotate_wi_mcp(&ctx, state.mint_wi_mcp.as_ref()).await
         }
+        "wi-mcp-admin" => {
+            let ctx = wi_mcp_adapter::AppStateRotateContext::new(
+                state.clone(),
+                std::path::PathBuf::from(state.config_dir.clone()),
+            );
+            strategies::rotate_wi_mcp_admin(&ctx, state.change_wi_mcp_admin.as_ref()).await
+        }
         other => RotationResult {
             service: other.to_string(),
             status: "error".to_string(),
