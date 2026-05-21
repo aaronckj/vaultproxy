@@ -617,79 +617,23 @@ pub async fn launch(
     }
     // '=' is intentionally NOT rejected — it is valid in POSIX env var values.
 
-    // Issue (iter-17): Prevent duplicate launches of the same MCP server.
+    // Note (iter-17 removal): the per-server `flock` guard previously held
+    // here for the lifetime of the launch process prevented duplicate
+    // `vault-proxy --launch <name>` invocations. That guard was designed for
+    // the single-MCP-client case (one raven, one claude). In a multi-client
+    // setup (multiple `~/.claude-*` instances, each spawning their own
+    // `--launch <name>` stdio child), the lock breaks legitimate concurrent
+    // launches: each client's MCP loader times out waiting for the lock and
+    // reports the server as "failed to start".
     //
-    // Two processes running `vault-proxy --launch <name>` simultaneously would
-    // both resolve the same vault credentials, both spawn the same MCP server
-    // binary, and both write the same env vars — resulting in two competing MCP
-    // server instances attached to the same stdio session, which corrupts the
-    // MCP protocol stream.
+    // Each `--launch` process owns its own stdio session (its parent client
+    // pipes stdin/stdout to it directly), so two concurrent `--launch X`
+    // processes do NOT corrupt the MCP protocol stream — they serve different
+    // clients on different fd pairs.
     //
-    // Guard: create a lock file named after the server in the config directory.
-    // If the file already exists and is locked (another vault-proxy instance
-    // holds it via fcntl advisory lock), abort with a clear error. The lock is
-    // released automatically when the process exits (advisory locks are not
-    // inherited across exec).
-    //
-    // Using a name-based lock (not a PID file) means the check is
-    // instantaneous — we don't need to read a PID and probe /proc.
-    //
-    // Non-Unix builds fall back to a best-effort file existence check (advisory
-    // locks are not available on Windows).
-    let lock_path = Path::new(config_dir).join(format!(".launch-lock-{}.lock", server_name));
-    let _lock_file = {
-        let f = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_path)
-            .with_context(|| format!("could not open launch lock file {:?}", lock_path))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            // Try non-blocking first so the common (uncontended) path stays
-            // fast. If busy — typically because a peer raven process is
-            // mid-launch of the same MCP — poll-acquire for up to
-            // VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S seconds (default 30) before
-            // giving up. Polling cadence is 100ms.
-            let timeout_s: u64 = std::env::var("VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(30);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
-            let mut acquired = false;
-            let mut logged_wait = false;
-            loop {
-                let ret = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-                if ret == 0 {
-                    acquired = true;
-                    break;
-                }
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-                if !logged_wait {
-                    tracing::info!(
-                        "launch lock for {} held by peer; waiting up to {}s",
-                        server_name,
-                        timeout_s
-                    );
-                    logged_wait = true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            if !acquired {
-                anyhow::bail!(
-                    "another vault-proxy --launch {} is already running (lock file {:?} is held). \
-                     Waited {}s; raise VAULT_PROXY_LAUNCH_LOCK_TIMEOUT_S or kill the duplicate process.",
-                    server_name,
-                    lock_path,
-                    timeout_s
-                );
-            }
-        }
-        f
-    };
+    // If a stale `.launch-lock-<name>.lock` file from a previous build is
+    // present, leave it untouched — it is harmless without active flock
+    // holders and operators can prune them at their leisure.
 
     // Safe env vars to inherit from parent (non-sensitive, needed for child to function).
     // XDG_RUNTIME_DIR is intentionally excluded: it points to /run/user/<uid>
