@@ -87,6 +87,16 @@ pub async fn handle_rotate(
     let result = match req.service.as_str() {
         "sonarr" => strategies::rotate_sonarr().await,
         "radarr" => strategies::rotate_radarr().await,
+        "wi-mcp" => {
+            // AppState.config_dir is a String (CLI `--config-dir` captured at
+            // startup); convert to PathBuf for the adapter, which is the type
+            // exposed by `RotateContext::config_dir()`.
+            let ctx = wi_mcp_adapter::AppStateRotateContext::new(
+                state.clone(),
+                std::path::PathBuf::from(state.config_dir.clone()),
+            );
+            strategies::rotate_wi_mcp(&ctx, state.mint_wi_mcp.as_ref()).await
+        }
         other => RotationResult {
             service: other.to_string(),
             status: "error".to_string(),
