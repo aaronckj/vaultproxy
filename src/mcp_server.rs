@@ -74,6 +74,14 @@ pub struct CloneItemParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct RotateParams {
+    /// Registered rotation service name (e.g. "wi-mcp", "wi-mcp-admin").
+    pub service: String,
+    /// Rotation strategy. Currently only "api" is accepted; defaults to "api".
+    pub strategy: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct SmbMountParams {
     /// Vaultwarden cipher id (uuid) whose login holds the SMB username + password.
     /// You never pass the credentials yourself — vault-proxy resolves them.
@@ -349,6 +357,44 @@ impl VaultMcpServer {
         };
         let (_, body) = smb::perform_unmount(&self.smb, req).await;
         body.to_string()
+    }
+
+    /// Trigger credential rotation for a registered service via the running
+    /// vault-proxy daemon. The MCP process posts to the daemon's `/rotate`
+    /// HTTP endpoint with the internal bearer token from disk.
+    #[tool(description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim.")]
+    pub async fn rotate(&self, Parameters(p): Parameters<RotateParams>) -> String {
+        let config_dir = std::env::var("CONFIG_DIR").unwrap_or_default();
+        if config_dir.is_empty() {
+            return r#"{"ok":false,"error":"CONFIG_DIR env not set; cannot locate internal-token"}"#.to_string();
+        }
+        let token_path = format!("{}/internal-token", config_dir);
+        let internal_token = match std::fs::read_to_string(&token_path) {
+            Ok(s) => s.trim().to_string(),
+            Err(e) => return format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e),
+        };
+        let vp_url =
+            std::env::var("VP_URL").unwrap_or_else(|_| "http://127.0.0.1:3201".to_string());
+        let strategy = p.strategy.unwrap_or_else(|| "api".to_string());
+        let body = serde_json::json!({"service": p.service, "strategy": strategy});
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap();
+        let resp = match client
+            .post(format!("{}/rotate", vp_url))
+            .header("Authorization", format!("Bearer {}", internal_token))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e),
+        };
+        match resp.text().await {
+            Ok(t) => t,
+            Err(e) => format!(r#"{{"ok":false,"error":"read response body: {}"}}"#, e),
+        }
     }
 }
 
