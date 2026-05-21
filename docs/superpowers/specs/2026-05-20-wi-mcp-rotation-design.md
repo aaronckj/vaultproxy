@@ -165,3 +165,45 @@ Integration smoke (`tests/rotate_wi_mcp.rs`, manual `--ignored` because it touch
 - Auto-rotate on 401 inside `mcp-bearer-bridge` with single-flight semantics.
 - Scheduled pre-expiry refresh (`auth-refresh-token` is already an option upstream).
 - Dashboard UI button to trigger rotation.
+
+## Operator Runbook
+
+### One-time setup
+
+1. Create Vaultwarden item **`WI MCP - Admin`** in the `Connecterr` folder.
+   - `username` = the dashboard auth username currently typed into `docker exec wi-mcp python main.py auth-mint-token --username <u>`
+   - `password` = the dashboard auth password for that user
+2. Verify vp can reach Tower over SSH: `ssh unraid docker exec wi-mcp echo ok` returns `ok` as the vp user.
+
+### Routine rotation
+
+```bash
+INTERNAL=$(cat "$CONFIG_DIR/internal-token")
+curl -fsS \
+  -H "Authorization: Bearer $INTERNAL" \
+  -H "Content-Type: application/json" \
+  -d '{"service":"wi-mcp","strategy":"api"}' \
+  http://127.0.0.1:3201/rotate
+# {"ok":true,"service":"wi-mcp","status":"success","message":"rotated wi-mcp bearer; token len=64"}
+```
+
+Then verify: `claude mcp list | grep wi-mcp` should show ✓ Connected within a few seconds.
+
+### Recovery (vault write failed but token minted)
+
+If the rotate response message contains `token written to <path>`:
+
+1. `cat <path>` — note the new token.
+2. Open Vaultwarden, edit item **`WI MCP - Bearer`**, paste the new token into the `password` field, save.
+3. Delete the recovery file: `shred -u <path>`.
+
+Recovery files are mode 0600 in `$CONFIG_DIR`. Investigate the underlying vault-write failure before the next rotation.
+
+### Configuration knobs
+
+Env vars (read at startup by `SshDockerMintExecutor::from_env`):
+
+- `WI_MCP_SSH_HOST` (default `unraid`) — SSH alias or hostname for the box running the `wi-mcp` container.
+- `WI_MCP_CONTAINER` (default `wi-mcp`) — Docker container name.
+- `WI_MCP_SSH_PATH` (default `ssh`) — Path to the SSH client binary.
+- `WI_MCP_MINT_TIMEOUT_SECS` (default `30`) — Hard timeout for the mint exec.
