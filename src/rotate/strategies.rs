@@ -388,6 +388,264 @@ impl MintExecutor for SshDockerMintExecutor {
     }
 }
 
+// -------------------------------------------------------------------------- //
+// wi-mcp admin password rotation                                              //
+// -------------------------------------------------------------------------- //
+
+/// Abstracts the channel used to change the wi-mcp dashboard auth password.
+/// Production impl is `SshDockerAdminPasswordChanger`; tests substitute a fake.
+#[async_trait::async_trait]
+pub trait AdminPasswordChanger: Send + Sync {
+    /// Change `username`'s password from `current` to `new` on the wi-mcp side.
+    /// Implementations MUST NOT log either password.
+    async fn change(&self, username: &str, current: &str, new: &str) -> anyhow::Result<()>;
+}
+
+fn wi_mcp_admin_err(message: impl Into<String>) -> RotationResult {
+    RotationResult {
+        service: "wi-mcp-admin".to_string(),
+        status: "error".to_string(),
+        message: message.into(),
+    }
+}
+
+/// Generate an alphanumeric password using the system RNG (OsRng).
+///
+/// Alphanumeric (no symbols) because the password is shipped through an
+/// SSH+docker exec pipeline; alphanumeric avoids shell-escape concerns.
+/// At length 32 this is ~190 bits of entropy — well above the threshold
+/// where collision matters.
+pub(crate) fn generate_admin_password(len: usize) -> zeroize::Zeroizing<String> {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut buf = vec![0u8; len];
+    OsRng.fill_bytes(&mut buf);
+    let s: String = buf
+        .into_iter()
+        .map(|b| CHARSET[(b as usize) % CHARSET.len()] as char)
+        .collect();
+    zeroize::Zeroizing::new(s)
+}
+
+/// Rotate the wi-mcp admin password: read current creds from the vault,
+/// generate a new random password, change it on the wi-mcp side, then
+/// write the new password back to the same vault item.
+///
+/// On vault-write failure the new password is persisted to a 0600 recovery
+/// file under `ctx.config_dir()`; the `RotationResult.message` points the
+/// operator at it.
+pub async fn rotate_wi_mcp_admin<C: AdminPasswordChanger + ?Sized>(
+    ctx: &dyn RotateContext,
+    changer: &C,
+) -> RotationResult {
+    // --- admin lookup ----------------------------------------------------
+    let username = match ctx.decrypt_username(WI_MCP_ADMIN_ITEM) {
+        Ok(u) => u,
+        Err(e) => return wi_mcp_admin_err(format!("admin-lookup: {}", e)),
+    };
+    let current_pw = match ctx.decrypt_password(WI_MCP_ADMIN_ITEM) {
+        Ok(p) => p,
+        Err(e) => return wi_mcp_admin_err(format!("admin-lookup: {}", e)),
+    };
+    if username.is_empty() {
+        return wi_mcp_admin_err(format!(
+            "admin-lookup: item '{}' has empty 'username'",
+            WI_MCP_ADMIN_ITEM,
+        ));
+    }
+    if current_pw.is_empty() {
+        return wi_mcp_admin_err(format!(
+            "admin-lookup: item '{}' has empty 'password'",
+            WI_MCP_ADMIN_ITEM,
+        ));
+    }
+
+    // --- generate new pw -------------------------------------------------
+    let new_pw = generate_admin_password(32);
+
+    // --- change on wi-mcp side -------------------------------------------
+    if let Err(e) = changer.change(&username, &current_pw, &new_pw).await {
+        return wi_mcp_admin_err(format!("change: {}", e));
+    }
+
+    // --- persist to vault ------------------------------------------------
+    if let Err(e) = ctx.update_password(WI_MCP_ADMIN_ITEM, &new_pw).await {
+        let recovery = write_admin_recovery_file(ctx.config_dir(), &username, &new_pw);
+        let path_str = match recovery {
+            Ok(p) => p.display().to_string(),
+            Err(rerr) => format!("<recovery write failed: {}>", rerr),
+        };
+        return wi_mcp_admin_err(format!(
+            "persist: vault write failed: {}; new pw written to {}",
+            e, path_str
+        ));
+    }
+
+    RotationResult {
+        service: "wi-mcp-admin".to_string(),
+        status: "success".to_string(),
+        message: format!(
+            "rotated wi-mcp admin pw for user '{}'; pw len={}",
+            &*username,
+            new_pw.len()
+        ),
+    }
+}
+
+/// Write the new admin password to `<config_dir>/wi-mcp-admin-pw-recovery-<ts>.txt`
+/// with mode 0600. Used as a fallback when vault write fails AFTER the wi-mcp
+/// side has already accepted the new password (vault and wi-mcp would otherwise
+/// diverge silently).
+fn write_admin_recovery_file(
+    config_dir: &std::path::Path,
+    username: &str,
+    new_password: &str,
+) -> anyhow::Result<PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = config_dir.join(format!("wi-mcp-admin-pw-recovery-{}.txt", ts));
+
+    let mut opts = OpenOptions::new();
+    opts.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&path)
+        .with_context(|| format!("open recovery file {}", path.display()))?;
+    writeln!(f, "WI MCP - Admin")?;
+    writeln!(f, "username: {}", username)?;
+    writeln!(f, "password: {}", new_password)?;
+    Ok(path)
+}
+
+/// Production `AdminPasswordChanger`: shells out to
+/// `ssh <host> docker exec -i <container> python -c '<inline>' <username>`,
+/// pipes `current\nnew\n` to stdin. The inline Python loads wi-mcp's
+/// `DashboardAuth` and calls `change_password(username, current, new)`.
+pub struct SshDockerAdminPasswordChanger {
+    pub host: String,
+    pub container: String,
+    pub ssh_path: String,
+    pub timeout: Duration,
+}
+
+impl SshDockerAdminPasswordChanger {
+    pub fn from_env() -> Self {
+        Self {
+            host: std::env::var("WI_MCP_SSH_HOST").unwrap_or_else(|_| "unraid".to_string()),
+            container: std::env::var("WI_MCP_CONTAINER")
+                .unwrap_or_else(|_| "wi-mcp".to_string()),
+            ssh_path: std::env::var("WI_MCP_SSH_PATH").unwrap_or_else(|_| "ssh".to_string()),
+            timeout: Duration::from_secs(
+                std::env::var("WI_MCP_MINT_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30),
+            ),
+        }
+    }
+}
+
+/// Inline Python script run inside the wi-mcp container. Reads `current\nnew\n`
+/// from stdin, calls `DashboardAuth.change_password`, exits non-zero on failure.
+const ADMIN_PW_CHANGE_PY: &str = "\
+import sys, yaml\n\
+from reporting.dashboard_auth import DashboardAuth\n\
+u = sys.argv[1]\n\
+data = sys.stdin.read().split('\\n')\n\
+if len(data) < 2:\n\
+    sys.stderr.write('ERROR: stdin must contain current\\\\nnew\\\\n')\n\
+    sys.exit(2)\n\
+current, new = data[0], data[1]\n\
+auth = DashboardAuth(yaml.safe_load(open('/data/config/config.yaml')))\n\
+if not auth.change_password(u, current, new):\n\
+    sys.stderr.write('ERROR: change_password returned False (wrong current or user not found)\\n')\n\
+    sys.exit(1)\n";
+
+#[async_trait::async_trait]
+impl AdminPasswordChanger for SshDockerAdminPasswordChanger {
+    async fn change(
+        &self,
+        username: &str,
+        current: &str,
+        new: &str,
+    ) -> anyhow::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        use tokio::process::Command;
+
+        let mut child = Command::new(&self.ssh_path)
+            .arg(&self.host)
+            .arg("docker")
+            .arg("exec")
+            .arg("-i")
+            .arg(&self.container)
+            .arg("python")
+            .arg("-c")
+            .arg(ADMIN_PW_CHANGE_PY)
+            .arg(username)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("change: spawn '{}' failed", self.ssh_path))?;
+
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("change: stdin pipe missing"))?;
+            stdin
+                .write_all(current.as_bytes())
+                .await
+                .context("change: write current pw to stdin")?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .context("change: write newline")?;
+            stdin
+                .write_all(new.as_bytes())
+                .await
+                .context("change: write new pw to stdin")?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .context("change: write newline")?;
+            stdin.shutdown().await.context("change: close stdin")?;
+        }
+
+        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
+            Ok(r) => r.context("change: wait_with_output")?,
+            Err(_) => {
+                anyhow::bail!("change: timeout after {}s", self.timeout.as_secs());
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let scrubbed = scrub_password(&stderr, current);
+            let scrubbed = scrub_password(&scrubbed, new);
+            let truncated: String = scrubbed.chars().take(512).collect();
+            anyhow::bail!(
+                "change: ssh exit={}; stderr={}",
+                output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
+                truncated
+            );
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,5 +934,177 @@ mod tests {
         // Edge: empty password must not turn the whole string into `***PASSWORD***`s.
         let raw = "no creds in here";
         assert_eq!(scrub_password(raw, ""), raw);
+    }
+
+    // ---------------------------------------------------------------- //
+    // wi-mcp-admin rotation tests                                       //
+    // ---------------------------------------------------------------- //
+
+    struct FakeAdminPasswordChanger {
+        result: Result<(), String>,
+        last_call: tokio::sync::Mutex<Option<(String, String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AdminPasswordChanger for FakeAdminPasswordChanger {
+        async fn change(
+            &self,
+            username: &str,
+            current: &str,
+            new: &str,
+        ) -> anyhow::Result<()> {
+            *self.last_call.lock().await =
+                Some((username.to_string(), current.to_string(), new.to_string()));
+            match &self.result {
+                Ok(()) => Ok(()),
+                Err(m) => Err(anyhow::anyhow!("{}", m)),
+            }
+        }
+    }
+
+    fn make_admin_fakes(
+        user: &str,
+        current_pw: &str,
+        update_should_fail: bool,
+    ) -> (Arc<FakeAdminPasswordChanger>, FakeRotateContext, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let changer = Arc::new(FakeAdminPasswordChanger {
+            result: Ok(()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok(user.to_string()),
+            password: Ok(current_pw.to_string()),
+            update_should_fail,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        (changer, ctx, dir)
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_happy_path() {
+        let (changer, ctx, _dir) = make_admin_fakes("vp-rotator", "old-pw", false);
+        let result = rotate_wi_mcp_admin(&ctx, changer.as_ref()).await;
+        assert_eq!(result.service, "wi-mcp-admin");
+        assert_eq!(result.status, "success", "msg={}", result.message);
+        assert!(
+            result.message.contains("vp-rotator"),
+            "msg should name user: {}",
+            result.message
+        );
+        let updated = ctx.last_update.lock().await.clone().unwrap();
+        assert_eq!(updated.0, "WI MCP - Admin");
+        assert_eq!(updated.1.len(), 32);
+        let called = changer.last_call.lock().await.clone().unwrap();
+        assert_eq!(called.0, "vp-rotator");
+        assert_eq!(called.1, "old-pw");
+        assert_eq!(called.2, updated.1, "changer's new pw must equal vault-written pw");
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_admin_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let changer = Arc::new(FakeAdminPasswordChanger {
+            result: Ok(()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Err("item 'WI MCP - Admin' not found in vault".to_string()),
+            password: Ok("old-pw".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp_admin(&ctx, changer.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.starts_with("admin-lookup:"),
+            "got: {}",
+            result.message
+        );
+        assert!(
+            changer.last_call.lock().await.is_none(),
+            "changer must not be called when admin lookup fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_change_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let changer = Arc::new(FakeAdminPasswordChanger {
+            result: Err("ssh exit=1; stderr=ERROR: change_password returned False".to_string()),
+            last_call: tokio::sync::Mutex::new(None),
+        });
+        let ctx = FakeRotateContext {
+            username: Ok("vp-rotator".to_string()),
+            password: Ok("old-pw".to_string()),
+            update_should_fail: false,
+            last_update: tokio::sync::Mutex::new(None),
+            config_dir: dir.path().to_path_buf(),
+        };
+        let result = rotate_wi_mcp_admin(&ctx, changer.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.starts_with("change:"),
+            "got: {}",
+            result.message
+        );
+        assert!(
+            ctx.last_update.lock().await.is_none(),
+            "vault must not be written when wi-mcp side fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_wi_mcp_admin_persist_fails_writes_recovery() {
+        let (changer, ctx, dir) = make_admin_fakes("vp-rotator", "old-pw", true);
+        let result = rotate_wi_mcp_admin(&ctx, changer.as_ref()).await;
+        assert_eq!(result.status, "error");
+        assert!(
+            result.message.contains("persist: vault write failed"),
+            "got: {}",
+            result.message
+        );
+        let mut found: Option<std::path::PathBuf> = None;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let p = entry.unwrap().path();
+            if p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("wi-mcp-admin-pw-recovery-")
+            {
+                found = Some(p);
+                break;
+            }
+        }
+        let path = found.expect("admin recovery file should exist");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("vp-rotator"), "body: {}", body);
+        assert!(body.contains("WI MCP - Admin"), "body: {}", body);
+        let new_pw = changer.last_call.lock().await.clone().unwrap().2;
+        assert!(body.contains(&new_pw), "body should contain new pw");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn generate_admin_password_shape() {
+        let pw = generate_admin_password(32);
+        assert_eq!(pw.len(), 32);
+        for c in pw.chars() {
+            assert!(
+                c.is_ascii_alphanumeric(),
+                "pw should be alphanumeric only, got {:?}",
+                c
+            );
+        }
+        // Two consecutive calls must differ (probabilistically certain at 32 chars).
+        let pw2 = generate_admin_password(32);
+        assert_ne!(&*pw, &*pw2);
     }
 }

@@ -1481,6 +1481,9 @@ async fn start_server(
         mint_wi_mcp: Arc::new(
             crate::rotate::strategies::SshDockerMintExecutor::from_env(),
         ),
+        change_wi_mcp_admin: Arc::new(
+            crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
+        ),
         notifier,
         handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         vault_folder: args.vault_folder.clone(),
