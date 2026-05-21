@@ -7,6 +7,7 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 // -------------------------------------------------------------------------- //
@@ -253,6 +254,138 @@ fn write_recovery_file(config_dir: &std::path::Path, token: &str) -> anyhow::Res
     writeln!(f, "WI MCP - Bearer")?;
     writeln!(f, "{}", token)?;
     Ok(path)
+}
+
+/// Parse the stdout of `auth-mint-token`. Per `wi-mcp/main.py
+/// cmd_auth_mint_token`, stdout on success is exactly one trimmed line: the
+/// minted token (no whitespace inside it).
+fn parse_mint_stdout(stdout: &str) -> anyhow::Result<String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("mint: empty stdout");
+    }
+    let parts: Vec<&str> = trimmed.split_ascii_whitespace().collect();
+    if parts.len() != 1 {
+        anyhow::bail!(
+            "mint: unexpected stdout shape (got {} whitespace-delimited tokens)",
+            parts.len()
+        );
+    }
+    Ok(parts[0].to_string())
+}
+
+/// Replace every literal occurrence of `password` in `s` with
+/// `***PASSWORD***`. No-op when `password` is empty (otherwise every byte
+/// boundary would match).
+fn scrub_password(s: &str, password: &str) -> String {
+    if password.is_empty() {
+        return s.to_string();
+    }
+    s.replace(password, "***PASSWORD***")
+}
+
+/// Production `MintExecutor`: shells out to
+/// `ssh <host> docker exec -i <container> python main.py auth-mint-token --username <u> --password-stdin`,
+/// pipes the password to stdin, returns the trimmed stdout as the token.
+pub struct SshDockerMintExecutor {
+    pub host: String,
+    pub container: String,
+    pub ssh_path: String,
+    pub timeout: Duration,
+}
+
+impl SshDockerMintExecutor {
+    pub fn from_env() -> Self {
+        Self {
+            host: std::env::var("WI_MCP_SSH_HOST").unwrap_or_else(|_| "unraid".to_string()),
+            container: std::env::var("WI_MCP_CONTAINER")
+                .unwrap_or_else(|_| "wi-mcp".to_string()),
+            ssh_path: std::env::var("WI_MCP_SSH_PATH").unwrap_or_else(|_| "ssh".to_string()),
+            timeout: Duration::from_secs(
+                std::env::var("WI_MCP_MINT_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30),
+            ),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl MintExecutor for SshDockerMintExecutor {
+    async fn mint(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> anyhow::Result<Zeroizing<String>> {
+        use tokio::io::AsyncWriteExt;
+        use tokio::process::Command;
+
+        let mut child = Command::new(&self.ssh_path)
+            .arg(&self.host)
+            .arg("docker")
+            .arg("exec")
+            .arg("-i")
+            .arg(&self.container)
+            .arg("python")
+            .arg("main.py")
+            .arg("auth-mint-token")
+            .arg("--username")
+            .arg(username)
+            .arg("--password-stdin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!("mint: spawn '{}' failed", self.ssh_path)
+            })?;
+
+        // Pipe password to stdin (no trailing newline-mangling: Python's
+        // `sys.stdin.readline().rstrip("\n")` strips the newline we write here).
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("mint: stdin pipe missing"))?;
+            stdin
+                .write_all(password.as_bytes())
+                .await
+                .context("mint: write password to stdin")?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .context("mint: write newline to stdin")?;
+            stdin.shutdown().await.context("mint: close stdin")?;
+        }
+
+        let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
+            Ok(r) => r.context("mint: wait_with_output")?,
+            Err(_) => {
+                anyhow::bail!("mint: timeout after {}s", self.timeout.as_secs());
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let scrubbed = scrub_password(&stderr, password);
+            let truncated: String = scrubbed.chars().take(512).collect();
+            anyhow::bail!(
+                "mint: ssh exit={}; stderr={}",
+                output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
+                truncated
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .context("mint: stdout is not valid UTF-8")?;
+        let token = parse_mint_stdout(&stdout)?;
+        Ok(Zeroizing::new(token))
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +638,43 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "recovery file should be 0600, got {:o}", mode);
         }
+    }
+
+    #[test]
+    fn parse_mint_stdout_single_line() {
+        assert_eq!(parse_mint_stdout("abc123\n").unwrap(), "abc123");
+        assert_eq!(parse_mint_stdout("\nabc123\n").unwrap(), "abc123");
+        assert_eq!(parse_mint_stdout("abc123").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn parse_mint_stdout_empty_errors() {
+        let err = parse_mint_stdout("   \n\n").unwrap_err().to_string();
+        assert!(err.contains("empty"), "got: {}", err);
+    }
+
+    #[test]
+    fn parse_mint_stdout_multi_token_errors() {
+        let err = parse_mint_stdout("abc def\n").unwrap_err().to_string();
+        assert!(
+            err.contains("unexpected stdout shape"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn scrub_password_replaces_literal_occurrences() {
+        let raw = "ERROR: bad pw=hunter2\nstack:\nhunter2";
+        let scrubbed = scrub_password(raw, "hunter2");
+        assert!(!scrubbed.contains("hunter2"));
+        assert_eq!(scrubbed.matches("***PASSWORD***").count(), 2);
+    }
+
+    #[test]
+    fn scrub_password_empty_returns_raw() {
+        // Edge: empty password must not turn the whole string into `***PASSWORD***`s.
+        let raw = "no creds in here";
+        assert_eq!(scrub_password(raw, ""), raw);
     }
 }
