@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use zeroize::Zeroizing;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -65,22 +66,34 @@ struct Inner {
 impl AccessLog {
     /// Open (and lock) the log at `log_path` using the HMAC key at
     /// `key_path`. On first open the key file is generated with mode 0600;
-    /// subsequent opens reuse it. The log file is also chmodded to 0600 so
-    /// only the daemon user can read it.
+    /// subsequent opens reuse it. When we create the log file ourselves it is
+    /// chmodded to 0600 so only the daemon user can read it; if the file
+    /// already existed we leave its mode alone so an operator-set policy like
+    /// 0640 (audit-group read) is preserved.
     pub fn open(log_path: PathBuf, key_path: PathBuf) -> Result<Self> {
         let hmac_key = load_or_generate_key(&key_path)?;
         let last = compute_last_hmac(&log_path)?;
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
+        // Snapshot existence BEFORE we open with `create(true)` so we can
+        // distinguish "we just created this file" from "it already existed".
+        // Only the create path applies the 0600 default — preserving any
+        // operator-set mode (e.g. 0640 for an audit group) on reopen.
+        let existed_before = log_path.exists();
         let file = OpenOptions::new()
             .create(true)
             .append(true)
+            // `mode` only takes effect when create() actually creates the
+            // file; the chmod below is a defensive fallback for filesystems
+            // that ignore the open-time mode (e.g. some FUSE mounts).
+            .mode(0o600)
             .open(&log_path)
             .with_context(|| format!("open access log {}", log_path.display()))?;
-        // Tighten log file perms to 0600 (matches the key file).
-        std::fs::set_permissions(&log_path, Permissions::from_mode(0o600))
-            .with_context(|| format!("chmod 0600 {}", log_path.display()))?;
+        if !existed_before {
+            std::fs::set_permissions(&log_path, Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", log_path.display()))?;
+        }
         Ok(Self {
             inner: Mutex::new(Inner {
                 file,
@@ -135,8 +148,13 @@ impl AccessLog {
     /// Does NOT generate a key — verification of a log without its key is
     /// impossible by design.
     pub fn verify(log_path: &Path, key_path: &Path) -> Result<()> {
-        let hmac_key = std::fs::read(key_path)
-            .with_context(|| format!("read key {}", key_path.display()))?;
+        // Wrap in Zeroizing so the key bytes are wiped from the allocator on
+        // drop. The raw Vec<u8> would otherwise leak the 32-byte HMAC secret
+        // across the heap until reused.
+        let hmac_key = Zeroizing::new(
+            std::fs::read(key_path)
+                .with_context(|| format!("read key {}", key_path.display()))?,
+        );
         if hmac_key.len() != 32 {
             bail!(
                 "hmac key at {} is {} bytes; expected 32",
@@ -174,7 +192,7 @@ impl AccessLog {
                 outcome: &stored.outcome,
             };
             let body = serde_json::to_string(&ev)?;
-            let mut mac = <HmacSha256 as Mac>::new_from_slice(&hmac_key)
+            let mut mac = <HmacSha256 as Mac>::new_from_slice(&hmac_key[..])
                 .map_err(|e| anyhow!("hmac init: {e}"))?;
             mac.update(stored.prev_hmac.as_bytes());
             mac.update(body.as_bytes());
@@ -207,14 +225,22 @@ fn load_or_generate_key(key_path: &Path) -> Result<SecretSlice<u8>> {
     let mut key = vec![0u8; 32];
     rand::thread_rng().fill_bytes(&mut key);
     {
+        // Open with mode 0600 at create time (O_CREAT|O_EXCL via create_new,
+        // plus mode= via OpenOptionsExt) so the file is never visible with a
+        // wider mode — closing the TOCTOU window between create and chmod
+        // under a permissive umask.
         let mut f = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(key_path)
             .with_context(|| format!("create key {}", key_path.display()))?;
         f.write_all(&key)?;
         f.sync_data()?;
     }
+    // Belt-and-braces: explicit chmod for filesystems that ignore the
+    // open-time mode argument (some FUSE mounts, network filesystems). With
+    // `.mode(0o600)` above this is no longer load-bearing.
     std::fs::set_permissions(key_path, Permissions::from_mode(0o600))?;
     Ok(SecretSlice::from(key))
 }

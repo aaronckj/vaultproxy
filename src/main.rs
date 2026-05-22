@@ -1019,6 +1019,13 @@ async fn start_server(
     // Background tokio tasks spawned below are never reached in this branch.
     // MCP server mode: expose Vaultwarden management tools over stdio.
     // Runs instead of the HTTP proxy — the binary becomes a stdio MCP server.
+    //
+    // The MCP server intentionally does NOT receive an AccessLog handle: all
+    // privileged actions surfaced by the MCP server (currently just `rotate`)
+    // proxy back to the daemon over HTTP, and the daemon records the audit
+    // entry on the server side. Logging from both sides would mean two
+    // separate processes appending to the same file without a shared
+    // in-process Mutex, which can interleave lines larger than PIPE_BUF.
     if args.mcp {
         let smb = crate::proxy::SmbConfig {
             helper_path: args.smb_helper_path.clone(),
@@ -1026,8 +1033,7 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        let access_log = build_access_log(&args.access_log_path)?;
-        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb, access_log).await;
+        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb, None).await;
     }
 
     if let Some(ref addr_str) = args.mcp_http {
@@ -1039,8 +1045,7 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        let access_log = build_access_log(&args.access_log_path)?;
-        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, access_log).await;
+        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, None).await;
     }
 
     if let Some(ref server_name) = args.launch {
@@ -1492,6 +1497,13 @@ async fn start_server(
         config_dir
     )));
 
+    // Build the HMAC-chained access log up front so both the local credential
+    // socket and the daemon-side /rotate handler share the same in-process
+    // `Mutex<File>` — opening twice in the same process would also be safe
+    // (Mutex<File> guards the writer) but sharing one Arc keeps a single
+    // chain head and avoids the cross-process write race on >PIPE_BUF lines.
+    let access_log = build_access_log(&args.access_log_path)?;
+
     // Initialize notifier (supports ntfy, email queue, or disabled).
     //
     // Issue (iter-13): Warn when NOTIFY_CHANNEL is set to a channel that
@@ -1582,6 +1594,7 @@ async fn start_server(
         browser: None,
         permissions,
         audit_log,
+        access_log: access_log.clone(),
         mint_wi_mcp: Arc::new(
             crate::rotate::strategies::SshDockerMintExecutor::from_env(),
         ),
@@ -2819,7 +2832,11 @@ async fn start_server(
             }
         });
 
-        let access_log = build_access_log(&args.access_log_path)?;
+        // Reuse the AccessLog Arc we built before AppState construction so
+        // the daemon-side /rotate handler and the local socket share one
+        // in-process Mutex<File>. Opening a second AccessLog on the same
+        // path would create a separate file handle whose writes could
+        // interleave with the first.
         let socket_vault = vault_arc.clone();
         let socket_cache = cred_cache.clone();
         let socket_log = access_log.clone();
@@ -3738,6 +3755,7 @@ mod browser_rotate_guard_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-rotate-{n}.json"
             ))),
+            access_log: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
@@ -3878,6 +3896,7 @@ mod browser_status_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-status-{n}.json"
             ))),
+            access_log: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),

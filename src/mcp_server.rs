@@ -119,10 +119,6 @@ pub struct VaultMcpServer {
     vault: Arc<VaultManager>,
     vault_folder: String,
     smb: SmbConfig,
-    /// Optional HMAC-chained access log shared with the daemon. `None`
-    /// disables logging (e.g. tests, or operators who haven't set
-    /// `--access-log-path`).
-    access_log: Option<Arc<AccessLog>>,
 }
 
 impl VaultMcpServer {
@@ -132,43 +128,12 @@ impl VaultMcpServer {
             vault,
             vault_folder,
             smb: SmbConfig::default(),
-            access_log: None,
         }
     }
 
     /// Construct a server with SMB mount tools wired to the given config.
     pub fn with_smb(vault: Arc<VaultManager>, vault_folder: String, smb: SmbConfig) -> Self {
-        Self { vault, vault_folder, smb, access_log: None }
-    }
-
-    /// Attach an access log so privileged tools (currently `rotate`) record
-    /// each invocation. Returns `self` for builder-style chaining.
-    pub fn with_access_log(mut self, access_log: Option<Arc<AccessLog>>) -> Self {
-        self.access_log = access_log;
-        self
-    }
-
-    /// Best-effort record of a rotate-tool invocation. Failures are logged
-    /// via tracing but never propagate — a logging fault must not prevent
-    /// the rotate response from reaching the caller.
-    fn log_rotate(&self, service: &str, outcome: &str) {
-        let Some(ref log) = self.access_log else { return; };
-        // peer_pid/uid/cmdline are not meaningful here — the MCP server
-        // process IS the peer of the daemon-side audit perspective, and
-        // SO_PEERCRED isn't available over the stdio JSON-RPC channel. We
-        // leave them None so verifiers don't infer false attribution.
-        if let Err(e) = log.record(&crate::access_log::Event {
-            ts: chrono::Utc::now(),
-            action: "rotate",
-            item: Some(service),
-            fields: &[],
-            peer_pid: None,
-            peer_uid: None,
-            peer_cmdline: None,
-            outcome,
-        }) {
-            tracing::error!("access log record (rotate) failed: {}", e);
-        }
+        Self { vault, vault_folder, smb }
     }
 }
 
@@ -403,22 +368,24 @@ impl VaultMcpServer {
     /// Trigger credential rotation for a registered service via the running
     /// vault-proxy daemon. The MCP process posts to the daemon's `/rotate`
     /// HTTP endpoint with the internal bearer token from disk.
+    ///
+    /// Audit logging is handled by the daemon: when this tool proxies a
+    /// rotation request to `POST /rotate`, the daemon writes the
+    /// HMAC-chained access-log entry inside its own process. The MCP server
+    /// deliberately does not write to the access log itself, because two
+    /// separate processes appending to the same file would interleave
+    /// lines once a payload exceeds PIPE_BUF.
     #[tool(description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim.")]
     pub async fn rotate(&self, Parameters(p): Parameters<RotateParams>) -> String {
-        let service_name = p.service.clone();
         let config_dir = std::env::var("CONFIG_DIR").unwrap_or_default();
         if config_dir.is_empty() {
-            let body = r#"{"ok":false,"error":"CONFIG_DIR env not set; cannot locate internal-token"}"#.to_string();
-            self.log_rotate(&service_name, "error");
-            return body;
+            return r#"{"ok":false,"error":"CONFIG_DIR env not set; cannot locate internal-token"}"#.to_string();
         }
         let token_path = format!("{}/internal-token", config_dir);
         let internal_token = match std::fs::read_to_string(&token_path) {
             Ok(s) => s.trim().to_string(),
             Err(e) => {
-                let body = format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e);
-                self.log_rotate(&service_name, "error");
-                return body;
+                return format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e);
             }
         };
         let vp_url =
@@ -438,29 +405,13 @@ impl VaultMcpServer {
         {
             Ok(r) => r,
             Err(e) => {
-                let body = format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e);
-                self.log_rotate(&service_name, "error");
-                return body;
+                return format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e);
             }
         };
-        let response_body = match resp.text().await {
+        match resp.text().await {
             Ok(t) => t,
-            Err(e) => {
-                let body = format!(r#"{{"ok":false,"error":"read response body: {}"}}"#, e);
-                self.log_rotate(&service_name, "error");
-                return body;
-            }
-        };
-        // Best-effort heuristic — the daemon returns `{"ok": true, ...}` on
-        // success. We accept both JSON-encoded and plain-text-substring
-        // matches because the body is opaque-ish at this layer.
-        let outcome = if response_body.contains("\"ok\":true") || response_body.contains("\"ok\": true") {
-            "ok"
-        } else {
-            "error"
-        };
-        self.log_rotate(&service_name, outcome);
-        response_body
+            Err(e) => format!(r#"{{"ok":false,"error":"read response body: {}"}}"#, e),
+        }
     }
 }
 
@@ -472,11 +423,14 @@ pub async fn run(
     vault: Arc<VaultManager>,
     vault_folder: String,
     smb: SmbConfig,
-    access_log: Option<Arc<AccessLog>>,
+    // Kept in the signature so callers in `main.rs` don't have to special-case
+    // MCP startup. The MCP server itself no longer writes to the access log
+    // (rotate logging is now consolidated daemon-side); callers should pass
+    // `None`. A non-None value is silently ignored.
+    _access_log: Option<Arc<AccessLog>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting vault-proxy MCP server on stdio");
-    let server = VaultMcpServer::with_smb(vault, vault_folder, smb)
-        .with_access_log(access_log);
+    let server = VaultMcpServer::with_smb(vault, vault_folder, smb);
     let service = server.serve(transport::stdio()).await?;
     service.waiting().await?;
     Ok(())
@@ -487,7 +441,8 @@ pub async fn run_http(
     vault_folder: String,
     smb: SmbConfig,
     listen_addr: std::net::SocketAddr,
-    access_log: Option<Arc<AccessLog>>,
+    // See `run` above — kept for signature symmetry only.
+    _access_log: Option<Arc<AccessLog>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting vault-proxy MCP HTTP server on {listen_addr}");
     let ct = CancellationToken::new();
@@ -497,14 +452,12 @@ pub async fn run_http(
                 let vault = vault.clone();
                 let vault_folder = vault_folder.clone();
                 let smb = smb.clone();
-                let access_log = access_log.clone();
                 move || {
                     Ok(VaultMcpServer::with_smb(
                         vault.clone(),
                         vault_folder.clone(),
                         smb.clone(),
-                    )
-                    .with_access_log(access_log.clone()))
+                    ))
                 }
             },
             Default::default(),
