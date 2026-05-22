@@ -30,4 +30,4 @@ jobs:
         run: cargo build --release --bins
 
       - name: Test
-        run: cargo test --tests --release
+        run: cargo test --release --features test-utils
