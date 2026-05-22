@@ -91,6 +91,8 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 async-trait = "0.1"
 toml = "0.8"
 shell-words = "1"
+tera = { version = "1", default-features = false, features = ["builtins"] }
+tempfile = "3"
 # hyper-util is a transitive dependency of axum; we declare it explicitly to
 # call http1().timer(TokioTimer).header_read_timeout(5s) on the serve loop.
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1"] }

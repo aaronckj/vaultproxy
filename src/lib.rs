@@ -25,6 +25,7 @@ mod secure;
 mod security;
 mod setup;
 mod sync;
+pub mod template;
 mod tls;
 mod totp;
 mod tpm;

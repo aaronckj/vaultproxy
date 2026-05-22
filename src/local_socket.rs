@@ -293,4 +293,33 @@ pub mod client {
             .cloned()
             .ok_or_else(|| anyhow!("socket response missing field '{}'", field))
     }
+
+    /// Synchronous variant of [`get_field`] used by Tera template functions,
+    /// which are required to be synchronous. Implemented over `std::os::unix::net`
+    /// so it does not require a tokio runtime to call.
+    pub fn get_field_sync(socket: &std::path::Path, item: &str, field: &str) -> Result<String> {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let mut s = UnixStream::connect(socket)
+            .with_context(|| format!("connect {}", socket.display()))?;
+        let req = serde_json::json!({"op": "get_item_fields", "item": item, "fields": [field]});
+        writeln!(s, "{}", serde_json::to_string(&req)?)?;
+        s.shutdown(std::net::Shutdown::Write)?;
+        let mut buf = String::new();
+        s.read_to_string(&mut buf)?;
+        let resp: serde_json::Value = serde_json::from_str(buf.trim())
+            .with_context(|| format!("parse response: {}", buf.trim()))?;
+        if resp.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            let err = resp
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(no error message)");
+            anyhow::bail!("socket get_item_fields: {err}");
+        }
+        resp.get("fields")
+            .and_then(|f| f.get(field))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+            .ok_or_else(|| anyhow!("field {field} missing in response: {}", buf.trim()))
+    }
 }

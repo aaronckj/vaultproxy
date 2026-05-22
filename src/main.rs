@@ -38,6 +38,7 @@ mod secure;
 mod security;
 mod setup;
 mod sync;
+mod template;
 mod tls;
 mod totp;
 mod tpm;
@@ -76,6 +77,22 @@ enum Cmd {
         /// `<log>.key`.
         #[arg(long)]
         log: std::path::PathBuf,
+    },
+
+    /// Render a config template, interpolating vault items via the daemon
+    /// socket. Writes the output 0600 with an atomic rename.
+    Render {
+        /// Template path.
+        #[arg(long = "in")]
+        input: std::path::PathBuf,
+        /// Output path. Existing files at this path are overwritten.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Optional socket path. Defaults to vault-proxy's standard
+        /// socket at `$XDG_RUNTIME_DIR/vaultproxy.sock` (or
+        /// `/tmp/vaultproxy-<uid>.sock` if XDG_RUNTIME_DIR is unset).
+        #[arg(long, env = "VAULTPROXY_SOCKET")]
+        socket: Option<std::path::PathBuf>,
     },
 }
 
@@ -431,6 +448,22 @@ async fn main() -> anyhow::Result<()> {
             "access log valid: {} ({} lines)",
             log.display(),
             line_count
+        );
+        return Ok(());
+    }
+
+    if let Some(Cmd::Render { input, out, socket }) = args.cmd.as_ref() {
+        use anyhow::Context as _;
+        let r = crate::template::Renderer::new();
+        let ctx = crate::template::RenderContext {
+            socket_path: socket.clone(),
+        };
+        r.render_file(input, out, &ctx)
+            .with_context(|| format!("render {} -> {}", input.display(), out.display()))?;
+        println!(
+            "rendered {} -> {} (mode 0600)",
+            input.display(),
+            out.display()
         );
         return Ok(());
     }
