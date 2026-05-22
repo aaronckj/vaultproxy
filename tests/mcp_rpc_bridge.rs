@@ -483,3 +483,65 @@ async fn http_client_propagates_non_401_errors() {
     let msg = format!("{err:?}");
     assert!(msg.contains("404"), "expected 404 error, got: {msg}");
 }
+
+// ---------------------------------------------------------------------------
+// Wave 3 Task 12: end-to-end pipeline test
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn end_to_end_pipeline_proxies_jsonrpc_with_injected_header() {
+    use std::sync::Arc;
+
+    // 1. Fake vault-proxy socket
+    let (_socket_dir, sock) = tmp_socket();
+    let version = Arc::new(AtomicU64::new(1));
+    let _socket_h = spawn_fake_socket(sock.clone(), version.clone());
+
+    // 2. Fake upstream MCP
+    let upstream_state = Arc::new(FakeUpstreamState::default());
+    *upstream_state.response_mode.lock().unwrap() = "json";
+    let (url, _upstream_h) = spawn_fake_upstream(upstream_state.clone()).await;
+
+    // 3. Build the bridge components manually (mirrors what run() does
+    //    after config parsing).
+    let injector = Arc::new(
+        HeaderInjector::new(
+            sock,
+            "End To End Bearer".to_string(),
+            "password".to_string(),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap(),
+    );
+    let client = Arc::new(HttpClient::new(url, injector).unwrap());
+
+    // 4. Pump one JSON-RPC request through stdio_server::serve_streams.
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+    let mut output: Vec<u8> = Vec::new();
+    vaultproxy::mcp_rpc_bridge::stdio_server::serve_streams(&input[..], &mut output, client)
+        .await
+        .unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let line = s.lines().next().expect("at least one response line");
+    let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], 1);
+    assert_eq!(parsed["result"]["method_seen"], "initialize");
+
+    let tokens = upstream_state.received_tokens.lock().unwrap();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0], "Bearer tok-v1");
+}
+
+#[test]
+fn resolve_bridge_path_uses_config_dir_when_set() {
+    use std::path::PathBuf;
+    let p = vaultproxy::mcp_rpc_bridge::test_resolve_bridge_path(
+        "hive",
+        Some(PathBuf::from("/tmp/vp-test")),
+    );
+    assert_eq!(p, PathBuf::from("/tmp/vp-test/bridges/hive.toml"));
+}
