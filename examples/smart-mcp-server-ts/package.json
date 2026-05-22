@@ -1,0 +1,19 @@
+{
+  "name": "smart-mcp-server-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal smart MCP server example for vault-proxy",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

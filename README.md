@@ -1,10 +1,8 @@
 # vaultproxy
 
-A secure credential sidecar for [MCP](https://modelcontextprotocol.io) servers.
+**Secure credential sidecar for MCP servers — backed by [Vaultwarden](https://github.com/dani-garcia/vaultwarden).**
 
-Most MCP servers store credentials in env vars or `.env` files — readable by any process running as the same user, present in shell history, and scattered across every server you run. `vaultproxy` solves this: it reads credentials from your self-hosted [Vaultwarden](https://github.com/dani-garcia/vaultwarden) instance, injects the right auth header for each downstream service, and **never exposes plaintext secrets to the MCP layer**.
-
-## How it works
+Stop pasting API keys into `.env` files. `vaultproxy` reads credentials from your self-hosted Vaultwarden, injects the right auth header for each downstream service, and **never exposes plaintext secrets to the MCP layer or the AI agent**.
 
 ```
 Claude Code → MCP Server → vaultproxy (127.0.0.1:3201) → Your Service
@@ -12,95 +10,44 @@ Claude Code → MCP Server → vaultproxy (127.0.0.1:3201) → Your Service
                                Vaultwarden (credentials stay here)
 ```
 
-Your MCP server calls `POST http://127.0.0.1:3201/proxy` with:
+---
 
-```json
-{
-  "service": "unifi_home",
-  "method": "GET",
-  "path": "/api/s/default/stat/sta"
-}
-```
+## Why vaultproxy
 
-The proxy looks up the credential for `unifi_home` in Vaultwarden, injects the appropriate auth (API key, Bearer token, Basic auth, or session cookie), forwards the request, and returns the response — credential never leaves the proxy process.
+Most MCP servers store credentials in env vars or `.env` files. These are readable by any process running as the same user, leak into shell history and `ps auxe`, and end up duplicated across every server you run. The AI agent driving your MCP server can also see them in tool responses.
 
-## Supported auth patterns
+vaultproxy fixes this with a small loopback HTTP service that:
 
-| Pattern | Example services |
-|---------|-----------------|
-| `X-Api-Key` header | Sonarr, Radarr, Overseerr |
-| `X-Plex-Token` header | Plex |
-| `Authorization: Bearer` | Home Assistant |
-| HTTP Basic | OPNsense |
-| Session (POST login → token) | Nginx Proxy Manager, Duplicati |
-| UniFi dual (API key → session fallback) | UniFi OS |
-| Query param | Tautulli |
+- Reads every credential from one place — your Vaultwarden folder.
+- Injects the correct auth pattern per service (`X-Api-Key`, Bearer, Basic, session cookie, UniFi dual-mode, query param).
+- Keeps secrets out of the MCP server's address space entirely (native `/proxy` mode), or at worst out of disk (launcher mode).
+- Detects weak / reused / pwned credentials, and (optionally) rotates them automatically via a Playwright + vision-LLM agent.
 
-## Security model
+### How it compares
 
-- The proxy listens on `127.0.0.1:3201` by default — network isolation is the primary guarantee. **Warning:** if you override `--listen` to bind a non-loopback address (e.g. `0.0.0.0:3201`), all proxy and vault endpoints become accessible to any host on that network. There is no authentication middleware — the only access control is the loopback bind. A startup warning is logged whenever a non-loopback address is used. Never expose this port beyond the local machine without a reverse proxy with mTLS or network-layer ACLs.
-- DNS rebinding guard on all `/proxy` requests
-- Rate limit: 60 req/60s on sensitive endpoints per caller (see below)
-- **Per-caller rate limiting (`X-Caller-Id`):** When multiple MCP servers run on the same host they all share `127.0.0.1`, so the rate limiter would give them a single shared budget. Set `X-Caller-Id: <unique-name>` on every request from an MCP server to receive an independent budget. Example: `X-Caller-Id: connecterr-vault` (vault operations), `X-Caller-Id: connecterr-unifi` (UniFi operations). The header value is truncated to 64 characters and validated as printable ASCII; invalid or absent values fall back to the client IP. The header is a cooperative declaration — it is not authenticated (see trust model in `src/security/rate_limit.rs`).
-- Credentials are decrypted in-process from an encrypted keystore; plaintext values never appear in logs
-- Optional TPM sealing: keystore is hardware-bound to the host machine (`--features tpm`)
-- Dashboard (optional, `--features dashboard`) listens on `127.0.0.1:3202` by default; same `--listen` non-loopback warning applies
+| | **vaultproxy** | [agent-vault](https://github.com/Infisical/agent-vault) | [wirken](https://github.com/gebruder/wirken) | [OneCLI](https://sesamedisk.com/onecli-vault-ai-agents-rust/) | [warden-mcp](https://github.com/icoretech/warden-mcp) etc. |
+|---|---|---|---|---|---|
+| Backend | **Vaultwarden** | Infisical | own vault + OS keychain | own encrypted file | Vaultwarden (as vault tool) |
+| Hides credentials from AI | ✅ | ✅ | ✅ | ✅ | ❌ exposes vault to AI |
+| Auth patterns built-in | bearer, header, basic, session, query, UniFi dual | bearer | bearer | bearer | n/a |
+| Hot-reload (SIGHUP + HTTP) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Credential audit (weak/reused/HIBP) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Auto credential rotation | ✅ Playwright + vision LLM | ❌ | ❌ | ❌ | ❌ |
+| TPM sealing | ✅ optional | ❌ | ❌ | ❌ | ❌ |
+| Dual integration: smart `/proxy` + dumb `--launch` | ✅ | proxy only | proxy only | proxy only | n/a |
+| Language / binary | Rust, single static binary | Go | Rust | Rust | TS / shells `bw` |
 
-## Configuration
+vaultproxy is opinionated for the **selfhost / homelab** crowd — *arr stack, Home Assistant, OPNsense, UniFi, Plex, Tautulli, Nginx Proxy Manager. Other brokers assume HashiCorp Vault / Infisical / Conjur backends and target generic API providers (Anthropic, GitHub, Stripe).
 
-Services are registered in `services.toml` inside your `--config-dir` (default `/config/services.toml`). Copy `services.example.toml` from the repo as a starting point.
+---
 
-> **Note:** `services.toml` is read at startup and can also be reloaded at runtime via SIGHUP (see below). `POST /vault/resync` only refreshes vault *credentials* from Vaultwarden — it does not reload `services.toml`.
+## Quickstart (Docker Compose)
 
-### Hot-reloading services.toml (SIGHUP)
+**1. Create a `vault-proxy` folder in Vaultwarden** and add one item per downstream service. The password field holds the credential (API key, Bearer token, etc.).
 
-To add, remove, or change a `[[service]]` block without restarting:
-
-```bash
-# In Docker
-docker kill --signal=HUP <container_name>
-
-# On bare metal
-kill -HUP $(pidof vaultproxy)
-```
-
-vault-proxy will:
-1. Re-parse `services.toml` and validate every entry (SSRF rules, required fields, PEM certs)
-2. Rebuild per-service CA-cert HTTP clients
-3. Atomically swap the new registry into place — in-flight requests see the old registry; new requests see the updated one
-
-**Rollback safety:** if the reloaded file would produce zero services (parse error, all entries rejected), vault-proxy keeps the previous registry and logs a `SIGHUP: rolling back` warning. Fix the file and send SIGHUP again.
-
-### HTTP reload (alternative to SIGHUP)
-
-If you prefer a synchronous HTTP trigger over sending a Unix signal, use:
-
-```bash
-TOKEN=$(cat ./config/internal-token)
-curl -X POST http://127.0.0.1:3201/vault/reload-services \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Returns JSON confirming the before/after service counts:
-
-```json
-{
-  "ok": true,
-  "prev_service_count": 3,
-  "new_service_count": 4,
-  "services": ["ha_home", "sonarr", "radarr", "plex"],
-  "note": "services.toml reloaded synchronously; CA-cert clients rebuilt. ..."
-}
-```
-
-Returns `409 Conflict` if the reload would drop to zero services (rollback safety, same as SIGHUP). Returns `503 Service Unavailable` with `Retry-After: 5` if another reload is already in progress (mutex acquisition timed out after 5 s); clients should back off and retry. Requires the internal bearer token (`Authorization: Bearer <token>` from `$CONFIG_DIR/internal-token`).
+**2. Create `services.toml`** in a local `./config/` directory:
 
 ```toml
-# Each [[service]] block registers one downstream service.
-# `name` is what you pass as "service" in POST /proxy calls.
-# `vault_item` is the name of the item in your Vaultwarden folder — 
-#   the actual credential stays in Vaultwarden, never in this file.
-
 [[service]]
 name = "ha_home"
 base_url = "http://homeassistant.local:8123"
@@ -113,592 +60,136 @@ base_url = "http://sonarr.local:8989/api/v3"
 auth = "header"
 header_name = "X-Api-Key"
 vault_item = "vault-proxy - Sonarr"
-
-[[service]]
-name = "unifi_home"
-base_url = "https://unifi.local/proxy/network"
-auth = "unifi_dual"
-vault_item = "vault-proxy - UniFi"
-login_path = "/api/auth/login"
 ```
 
-### Auth types
+Full example: [`services.example.toml`](services.example.toml).
 
-| `auth` value | Required fields | Example use |
-|-------------|-----------------|-------------|
-| `bearer` | — | Home Assistant, any Bearer token API |
-| `header` | `header_name` | Sonarr, Radarr, Plex (`X-Plex-Token`) |
-| `query_param` | `param_name` | Tautulli |
-| `basic` | `key_field`, `secret_field` | OPNsense (API key + secret) |
-| `session` | `login_path`, `token_field` | Nginx Proxy Manager, Duplicati |
-| `unifi_dual` | `login_path` | UniFi OS (API key → session fallback) |
-
-Add `insecure_tls = true` for services with self-signed certificates (e.g. OPNsense on a local LAN).
-
-> **Security warning:** `insecure_tls = true` disables all TLS certificate validation for that service. Credentials forwarded to the service are sent without certificate verification — a MITM attack on that service's IP cannot be detected. Only use this for LAN-local services with known self-signed certs. Never use it for internet-facing endpoints. A startup warning is logged for every service registered with this flag.
-
-### Vault items
-
-In Vaultwarden, create a folder named `vault-proxy` (or your `--vault-folder` value). Add one item per service named to match the `vault_item` field in `services.toml`:
-
-```
-vault-proxy - Home Assistant    ← password field = Bearer token
-vault-proxy - UniFi             ← password field = API key
-vault-proxy - OPNsense          ← custom fields: key, secret
-vault-proxy - Sonarr            ← password field = API key
-vault-proxy - Tautulli          ← password field = API key
-vault-proxy - Plex              ← password field = X-Plex-Token
-```
-
-The `vault_item` string in `services.toml` is just a reference — credentials never leave Vaultwarden.
-
-## Quickstart (Docker Compose)
-
-**Step 1:** Create your config directory and place your `services.toml` inside it:
-
-```bash
-mkdir -p ./config
-cp services.example.toml ./config/services.toml
-# Edit ./config/services.toml to match your services and vault item names
-```
-
-**Step 2:** In Vaultwarden, create a folder named `vault-proxy` and add one item per service, named to match the `vault_item` field in `services.toml` (e.g. `vault-proxy - Home Assistant`).
-
-**Step 3:** Start the setup wizard:
+**3. Run the setup wizard once** to unlock Vaultwarden:
 
 ```yaml
+# docker-compose.yml
 services:
   vaultproxy:
-    # Build locally — see Dockerfile in the repo root.
-    # A pre-built image (ghcr.io/aaronckj/vaultproxy:latest) is published
-    # automatically on each version tag via the GitHub Actions CI workflow
-    # (.github/workflows/docker-publish.yml).  If the image is not yet
-    # available for your version, use `build: .` to build it from source.
-    build: .
-    # image: ghcr.io/aaronckj/vaultproxy:latest  # uncomment once CI has published
+    build: .   # or image: ghcr.io/aaronckj/vaultproxy:latest (once published)
     restart: unless-stopped
     network_mode: host
     volumes:
       - ./config:/config
     environment:
       VAULT_FOLDER: vault-proxy
-    command: ["--setup"]   # Remove after first-run setup completes
+    command: ["--setup"]   # remove after first run
 ```
 
 ```bash
-docker compose up
-```
-
-The wizard prompts for your Vaultwarden URL, email, and master password. Credentials are stored encrypted in `/config/keystore.json`.
-
-**Step 4:** Remove `command: ["--setup"]` from your compose file and restart:
-
-```bash
-docker compose up -d
-```
-
-The proxy is now running. Verify with:
-
-```bash
+docker compose up                 # interactive setup
+# remove `command: ["--setup"]`
+docker compose up -d              # run for real
 curl http://127.0.0.1:3201/vault/health
 ```
 
-To verify that services.toml loaded correctly, use:
+**4. Use it from an MCP server:**
 
 ```bash
-curl http://127.0.0.1:3201/vault/services
-```
-
-`GET /vault/services` returns the count and list of registered services — each entry includes the service `name`, `base_url`, `auth` type (`bearer`, `header`, `query_param`, `basic`, `session`, or `unifi_dual`), and auth-type-specific detail (header name, param name, token field, etc.). `vault_item` (the Vaultwarden credential name) is intentionally omitted. This endpoint requires no authentication token; it exposes no secrets.
-
-> **Internal token:** vault-proxy generates a 64-character hex bearer token at startup and writes it to `$CONFIG_DIR/internal-token` (mode 0600). Internal endpoints (`/vault/connecterr-secrets`, `/vault/connecterr-secrets/upsert`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <token>`. The Connecterr TypeScript side reads this file automatically. If you are integrating a custom client, read `CONFIG_DIR/internal-token` and include it as `Authorization: Bearer <value>` on calls to those endpoints.
-
-> **`/browser/rotate` — requires `playwright/agent.py`:** `POST /browser/rotate` drives a Playwright browser session to log into the target site and change the password. It requires `playwright/agent.py` to be present at `/app/playwright/agent.py`, `./playwright/agent.py` (relative to the working directory), or a custom path set via `PLAYWRIGHT_AGENT_PATH`. If the file is not found, the endpoint returns `501` with an actionable error message instead of silently succeeding and failing in the background. `LITELLM_URL` and `VISION_MODEL` must also be set — missing either returns a `400` before any browser is spawned.
-
-> **`/rotate` endpoint — planned for a future release:** `POST /rotate` is defined and gated behind the internal token, but all rotation strategies (`sonarr`, `radarr`) currently return `501 Not Implemented`. The stub is present for API compatibility with planned v0.2 tooling. Do not build production workflows on this endpoint until a full strategy implementation is shipped.
-
-> **`write_env` feature:** `POST /vault/write-env` (which decrypts a vault item and writes its credentials as env-var lines to a file) is disabled by default (`501 Not Implemented`). Enable it by setting `ENV_WRITE_ROOT` to a directory that the proxy is allowed to write into (e.g. `ENV_WRITE_ROOT=/envs`). The endpoint enforces that `target_path` begins with this prefix.
-
-**With TPM (bare metal):**
-```bash
-cargo build --release --features tpm
-```
-
-## CLI reference
-
-| Flag | Env | Default | Description |
-|------|-----|---------|-------------|
-| `--listen` | — | `127.0.0.1:3201` | Proxy listen address |
-| `--config-dir` | `CONFIG_DIR` | `/config` | Keystore + config directory |
-| `--vault-folder` | `VAULT_FOLDER` | `vault-proxy` | Vaultwarden folder name |
-| `--setup` | — | — | Run interactive setup wizard |
-| `--check` | — | — | Validate services.toml (parse + SSRF rules) and exit. No Vaultwarden connection required. Exit 0 = ok. |
-| `--launch <name>` | — | — | Resolve credentials from Vaultwarden and exec the named MCP server (configured in `mcp-servers.toml`). Process is replaced — vault-proxy does not stay running. |
-| `--proxy-timeout` | `PROXY_TIMEOUT` | `120` | Upstream request timeout (seconds) |
-| `--dashboard-listen` | `DASHBOARD_LISTEN` | `127.0.0.1:3202` | Dashboard web UI listen address (only used with `--features dashboard`) |
-| `--persist-dashboard-cert` | `PERSIST_DASHBOARD_CERT` | — | Write the dashboard TLS cert to `{config_dir}/dashboard.crt` + `dashboard.key` on first run; reload on subsequent runs so the browser warning disappears after restart. |
-| `--cloud-email` | `CLOUD_EMAIL` | — | Bitwarden cloud account email. When set, enables cloud sync (Bitwarden → Vaultwarden). |
-| `--cloud-kdf-iterations` | `CLOUD_KDF_ITERATIONS` | — | Override KDF iterations for Bitwarden cloud prelogin (use only if the server returns the wrong value). |
-| `--ntfy-url` | `NTFY_URL` | — | ntfy.sh topic URL for push alerts |
-| `--notify-channel` | `NOTIFY_CHANNEL` | `disabled` | Notification channel: `"ntfy"`, `"email"`, or `"disabled"` |
-| `--notify-email` | `NOTIFY_EMAIL` | — | Email address for notifications when `--notify-channel=email` (queued to `/config/notification-queue.json`). |
-| `--litellm-url` | `LITELLM_URL` | — | LiteLLM base URL (browser rotation feature) |
-| `--litellm-api-key` | `LITELLM_API_KEY` | — | LiteLLM Bearer API key. Prefer the env var over CLI — CLI args are visible in `/proc/<pid>/cmdline`. |
-| `--vision-model` | `VISION_MODEL` | `""` | Vision model name served by LiteLLM (browser rotation feature). Must be set to the name of a vision-capable model in your LiteLLM deployment (e.g. `"gpt-4o"`). Empty = browser rotation disabled. |
-| `--allow-root` | — | — | Suppress the root-user security warning (see below) |
-| `--env-write-root` | `ENV_WRITE_ROOT` | — | Root directory that `POST /vault/write-env` is allowed to write into (e.g. `/envs`). Unset = endpoint returns 501. |
-| `--vault-refresh-interval-secs` | `VAULT_REFRESH_INTERVAL_SECS` | `0` | Background vault refresh interval in seconds. When non-zero, spawns a task that calls `POST /vault/resync` semantics automatically every N seconds. Set to `300` for 5-minute auto-sync. `0` = disabled. Setting `VAULT_REFRESH_INTERVAL_SECS=""` (empty string) is an error and vault-proxy will exit with a parse error. |
-| `--audit-interval-secs` | `AUDIT_INTERVAL_SECS` | `0` | Background credential-health audit interval in seconds. When non-zero, spawns a task that runs the same HMAC-fingerprint audit as `GET /vault/audit/run` every N seconds and logs a summary. Logs at `WARN` when weak or reused passwords are found; logs at `DEBUG` when all passwords are healthy (avoids log noise on clean vaults). Minimum recommended value is `60`; values below `60` trigger a startup warning. Set to `3600` for hourly audits. `0` = disabled. |
-| — | `VAULT_PROXY_PUBLIC_URL` | — | Public-facing URL injected as `VAULT_PROXY_URL` into MCP servers launched via `--launch`. Use this when vault-proxy sits behind a reverse proxy (nginx, Caddy, Traefik) that terminates TLS — e.g. `VAULT_PROXY_PUBLIC_URL=https://vault-proxy.example.com`. Must be a valid `http://` or `https://` URL without a trailing slash. Validated at startup and in `--check` mode. When unset, vault-proxy derives the URL from the `--listen` address. |
-| — | `UPSTREAM_BODY_LIMIT_MB` | `32` | Max upstream response body to buffer (MB) |
-
-> **`--allow-root`**: vault-proxy logs a `SECURITY:` warning when it starts as
-> uid 0 (root) because a credential broker running as root grants full system
-> access if compromised. Pass `--allow-root` only when root is genuinely
-> required — for example, when accessing `/dev/tpm0` on systems without udev
-> rules that permit non-root TPM access. Prefer a dedicated non-root user in all
-> other cases (e.g. `--user vaultproxy:vaultproxy` in Docker Compose).
-
-## Audit log
-
-vault-proxy writes an audit trail to `$CONFIG_DIR/audit-log.json` (default `/config/audit-log.json`). The file is a JSON array of objects (newest entry first), capped at 1 000 entries:
-
-```json
-[
-  {
-    "timestamp":      "2026-05-05T12:34:56.789Z",   // RFC 3339 UTC
-    "tool_name":      "ha_home__get",                // <service>__<method>
-    "args_summary":   "method=GET, path=/api/states", // truncated at 200 chars
-    "result_summary": "states=[...]",                 // truncated; sensitive fields masked
-    "permission":     "Log",                          // Allow | Log | Ask | Block
-    "trigger":        "proxy"                         // always "proxy" for /proxy calls
-  }
-]
-```
-
-Sensitive field values (`password`, `token`, `api_key`, `secret`, `bearer`, `cookie`, and related names) are replaced with `***` before writing so raw credentials never appear in the log.
-
-The file is written to disk every 10 entries or on process shutdown (whichever comes first). To ship it to a SIEM, tail the file or mount the config directory and read it directly — there is no syslog or stdout output of audit events.
-
-## Credential audit (password health scan)
-
-vault-proxy includes a built-in credential health scanner that detects weak, reused, and compromised passwords across vault items in your `vault_folder`. Four HTTP endpoints control it:
-
-| Endpoint | Auth | Description |
-|----------|------|-------------|
-| `GET /vault/audit/run` | internal bearer | In-process password health scan. Decrypts every vault password transiently, computes HMAC fingerprints with an ephemeral key, and returns weak/reused groupings. No plaintext passwords appear in the response. Rate-limited to 2 req/60 s (expensive — decrypts all vault passwords). Returns `503 Service Unavailable` with `Retry-After: 5` if the background audit task is already running (mutex acquisition timed out after 5 s). |
-| `POST /audit/credaudit/scan/start` | public | Start a new audit run against the engine sidecar. Returns `{"run_id": "..."}`. Returns `409` if a scan is already running; `503` if the engine sidecar is unreachable. |
-| `GET /audit/credaudit/review_pending/{run_id}` | public | Poll run status and retrieve flagged items awaiting review. Returns `200 [...]` on success. Returns `404` with `{"error": "run_id '...' not found — no scan has been started with this ID"}` for an unknown `run_id`. |
-| `POST /audit/credaudit/apply` | public | Apply approved rotation recommendations. Body: `{"run_id": "...", "dry_run": true, "item_ids": [...], "confirm_bulk": false}`. `dry_run` defaults to `true` — you must explicitly pass `"dry_run": false` to write changes. Returns `404` for an unknown `run_id`. Requires `confirm_bulk: true` when applying more than 50 items without explicit `item_ids`. |
-
-Results from the engine-sidecar endpoints are persisted in `$CONFIG_DIR/credential_audit.sqlite`. The scanner runs pass-1 (local weak/reuse detection) immediately and schedules pass-2 (HaveIBeenPwned k-anonymity check) asynchronously. No plaintext passwords leave the proxy — only the first 5 characters of each SHA-1 hash are sent to the HIBP API per the k-anonymity protocol.
-
-### In-process health scan (`GET /vault/audit/run`)
-
-```bash
-curl -H "Authorization: Bearer $(cat /config/internal-token)" \
-     http://127.0.0.1:3201/vault/audit/run
-```
-
-Returns a JSON object:
-```json
-{
-  "total_items": 42,
-  "weak_passwords": [
-    {
-      "name": "My Service",
-      "username": "admin",
-      "item_type": "login",
-      "password_strength": "weak",
-      "reason": "fewer than 8 characters — increase length to at least 8"
-    }
-  ],
-  "reused_passwords": [
-    [
-      {
-        "name": "Site A",
-        "username": "user@example.com",
-        "item_type": "login",
-        "password_strength": "fair",
-        "reason": "password shared with 1 other item: Site B"
-      },
-      {
-        "name": "Site B",
-        "username": "user@example.com",
-        "item_type": "login",
-        "password_strength": "fair",
-        "reason": "password shared with 1 other item: Site A"
-      }
-    ]
-  ],
-  "fair_passwords_count": 3,
-  "weak_threshold_len": 8,
-  "scoring_note": "rule-based heuristic: length + character classes only; no dictionary check — common passwords like 'password123' may score 'fair' if they meet the length threshold (weak = fewer than 8 characters); each AuditItem includes a `reason` field with an actionable explanation; reuse reason name lists are capped at 5 names per item (see reused_passwords groups for the full membership list when a group exceeds this limit)"
-}
-```
-
-- `total_items`: count of vault items that were scanned. The in-process audit (`src/audit.rs`) scans every item in `vault_folder` with no cap — `total_items` is the true vault count for that folder. (The engine-sidecar audit path in `src/credential_audit/vw_adapter.rs` enforces `SCAN_ITEM_CAP = 1_000`; that cap does not apply here.)
-- `weak_passwords`: array of `AuditItem` objects whose password is shorter than `weak_threshold_len` characters (rule-based heuristic — not zxcvbn/HIBP). Each object has `name`, `username`, `item_type`, `password_strength` (`"weak"`), and `reason` (human-readable explanation, e.g. `"fewer than 8 characters — increase length to at least 8"`). Only items scored `"weak"` appear here; `"fair"` and `"strong"` items are excluded.
-- `reused_passwords`: array of groups — each group is an array of two or more `AuditItem` objects that share the same password (detected via HMAC-SHA256 fingerprints with an ephemeral per-run key — no plaintext stored or returned). Items in reuse groups may have `password_strength` of `"weak"`, `"fair"`, or `"strong"`. The `reason` field for reuse-group items is overridden to describe the reuse: `"password shared with N other item: name"` (N=1, singular) or `"password shared with N other items: name1, name2, …"` (N≥2, plural). Names are capped at 5; `"... and N more"` suffix is appended when the group exceeds 5 other items (iter-70, iter-71).
-- **Cross-list items (weak AND reused):** An item with a short password that is also shared with other items will appear in **both** `weak_passwords` and in a `reused_passwords` group — for two different reasons. The `weak_passwords` entry carries the strength reason (`"fewer than 8 characters…"`); the `reused_passwords` entry carries the reuse reason (`"password shared with N other item(s)…"`). This is intentional: both problems are independent and both need to be resolved. Do not deduplicate these when displaying results — seeing the same item name in both lists correctly signals that the item has two distinct security issues.
-- `AuditItem.reason`: human-readable explanation of the `password_strength` classification or, for items in `reused_passwords`, a description of which other items share the same password. Always a non-empty string. Use this field to display actionable guidance to operators without requiring them to read source code.
-- `fair_passwords_count`: count of vault items whose password scored `"fair"` (8–15 characters, or 16+ characters with fewer than 3 character classes). `"fair"` items are NOT included in `weak_passwords` but are above the minimum length floor. An operator whose entire vault scores `"fair"` would otherwise see `weak_passwords: []` and might incorrectly conclude all credentials are strong. Added iter-68.
-- `password_strength` values: `"weak"` (fewer than `weak_threshold_len` characters), `"fair"` (meets minimum length but not strong), `"strong"` (16+ characters with 3+ character classes: lowercase, uppercase, digit, symbol). Only `"weak"` items appear in `weak_passwords`; `"fair"` and `"strong"` items are excluded from that list but may appear in `reused_passwords`.
-- `weak_threshold_len`: the minimum password length (exclusive) used to classify passwords as "weak". Currently `8`. Included so callers can interpret results without reading source code — e.g. "27 weak passwords (threshold: len < 8)".
-- `scoring_note`: human-readable description of the scoring algorithm and its key limitation: no dictionary check. Common passwords like `"password123"` or `"Summer2024!"` may score `"fair"` if they meet the length threshold and will NOT appear in `weak_passwords`. The note embeds the actual `weak_threshold_len` value so it stays accurate if the threshold changes (added iter-64, changed from `&'static str` to `String` in iter-65). Mentions the `reason` field added in iter-68. Mentions the reuse name-list truncation cap (5 names per item, added iter-74).
-- All decryption is transient; the ephemeral HMAC key and all password buffers are zeroized immediately after use.
-- Scoped to `vault_folder` — only items inside the configured folder are scanned.
-
-> **Scan item cap and pagination:** `SCAN_ITEM_CAP = 1_000` — the scan is hard-capped at 1,000 items. If your `vault_folder` contains more than 1,000 items, only the first 1,000 (in vault list order) are scanned; items 1,001 onward are silently excluded. There is no pagination or offset support. A `WARN` log is emitted when the cap is hit. To audit all items beyond the cap, split credentials across multiple vault folders and point separate `--vault-folder` instances at each, or raise `SCAN_ITEM_CAP` in `src/credential_audit/vw_adapter.rs` and recompile.
-
-### Complete credential audit workflow
-
-**Step 1 — Start a scan:**
-```bash
-RUN_ID=$(curl -sX POST http://127.0.0.1:3201/audit/credaudit/scan/start | jq -r .run_id)
-```
-
-**Step 2 — Poll until items appear:**
-```bash
-curl http://127.0.0.1:3201/audit/credaudit/review_pending/$RUN_ID
-```
-Returns a JSON array of flagged items. Each entry includes `item_id`, `status` (e.g. `"dead"`, `"weak"`, `"duplicate"`), `reason`, and `pass` number. An empty array (`[]`) means the scan is still running or found nothing to flag — poll again in a few seconds if the scan was just started. A `404` means the `run_id` is unknown.
-
-**Step 3 — Dry-run apply (preview only):**
-```bash
-curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
+curl -X POST http://127.0.0.1:3201/proxy \
   -H 'Content-Type: application/json' \
-  -d '{"run_id": "'$RUN_ID'", "dry_run": true}'
-```
-Returns `{"applied": 0, "would_apply": N, "failed": 0}`. No vault changes are made.
-
-**Step 4 — Apply to specific items (or all flagged items):**
-```bash
-# Apply to specific items only:
-curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
-  -H 'Content-Type: application/json' \
-  -d '{"run_id": "'$RUN_ID'", "dry_run": false, "item_ids": ["<id1>", "<id2>"]}'
-
-# Apply to all flagged items (>50 items requires confirm_bulk: true):
-curl -sX POST http://127.0.0.1:3201/audit/credaudit/apply \
-  -H 'Content-Type: application/json' \
-  -d '{"run_id": "'$RUN_ID'", "dry_run": false, "confirm_bulk": true}'
-```
-`apply` moves each flagged vault item into a Vaultwarden folder named `<vault_folder>-review-delete` (e.g. `vault-proxy-review-delete` when `VAULT_FOLDER=vault-proxy`) and appends an audit marker block to its notes field. The folder is created automatically if it does not exist. Deployments with no `vault_folder` configured use the legacy name `_review-delete`. The `confirm_bulk: true` flag is required when applying to more than 50 items without specifying `item_ids`, as a safeguard against accidental bulk operations.
-
-**Undo an apply:**
-`apply` does not delete items — it only moves them. To undo, open Vaultwarden and move the items from `<vault_folder>-review-delete` back to their original folder (or `No Folder`). The audit marker block in the notes field is inert and can be deleted manually if desired. There is no automated undo endpoint.
-
-**Migration note (iter-58 upgrade):** If you ran a credential-audit scan before upgrading to iter-58+, flagged items were placed in the old `_review-delete` folder. The `apply` endpoint now looks for `<vault_folder>-review-delete` and will not find those items. To recover: in Vaultwarden, rename `_review-delete` to `<your_vault_folder>-review-delete` (or move items manually). Deployments with `vault_folder = None` (unconfigured) are unaffected.
-
-> **BREAKING CHANGE (v1.0.0-beta.4 / iter-109): `GET /vault/items` response format**
->
-> Before iter-109, `GET /vault/items` returned a **bare JSON array** `[{...}, ...]`.
-> From iter-109 onward, the response is a **JSON object**: `{"ok": true, "items": [{...}, ...]}`.
->
-> **What to update:** Any script or client code that iterates the body of `GET /vault/items`
-> directly must be changed to unwrap `body.items` first. Example:
->
-> ```diff
-> - const items = await res.json();           // was: bare array
-> + const { items } = await res.json();       // now: {ok, items}
-> ```
->
-> The Connecterr TypeScript `SidecarClient.listVaultItems()` has been updated in iter-110 and
-> continues to return `unknown[]` transparently. No change needed if you use the sidecar client.
-
-## Operator runbook
-
-### vault-proxy won't start
-
-Look for `STARTUP:` messages in the container log. Common causes:
-- **`STARTUP: vault_folder 'X' was NOT FOUND in Vaultwarden`** — the folder name in `VAULT_FOLDER` doesn't match an existing Vaultwarden folder. Create the folder or correct the env var.
-- **`failed to parse services.toml`** — TOML syntax error. Run `--check` to get a summary: `docker run --rm -v ./config:/config vaultproxy --check`
-- **`keystore locked`** — run `--setup` or use the dashboard to unlock.
-
-### `POST /proxy` returns 404 "unknown service"
-
-The service name in your request doesn't match any entry in `services.toml`. Verify:
-```bash
-curl http://127.0.0.1:3201/vault/services
-```
-This returns the full list of registered services with their auth types and base URLs.
-
-### Credentials stopped working (upstream returns 401/403)
-
-The vault item may have changed in Vaultwarden. Force a re-sync:
-```bash
-curl -X POST http://127.0.0.1:3201/vault/resync
-```
-This re-fetches all vault items from Vaultwarden. For session-based services, the cached session token is invalidated on the next 401 and refreshed automatically.
-
-### Services return 404 / `vault_item_count: 0` after a Vaultwarden folder rename
-
-If you renamed the Vaultwarden folder that `VAULT_FOLDER` points to, vault-proxy
-loses track of all items in that folder until the configuration is corrected.
-
-Diagnose with `GET /vault/health`:
-```bash
-curl http://127.0.0.1:3201/vault/health | jq '{vault_folder_found, vault_item_count}'
+  -d '{"service":"ha_home","method":"GET","path":"/api/states"}'
 ```
 
-- `vault_folder_found: false` — the folder named in `VAULT_FOLDER` was not found.
-  Rename the folder in Vaultwarden back to its original name **or** update `VAULT_FOLDER`
-  and restart, then run `POST /vault/resync`.
-- `vault_folder_found: true, vault_item_count: 0` — folder exists but is genuinely
-  empty. This is legitimate; no action needed.
+The credential never appears in your shell, the MCP server, or the response.
 
-Without `vault_folder_found`, a `vault_item_count: 0` alert would be ambiguous
-between a folder rename and a legitimately empty vault. Use this field in monitoring
-queries to avoid false data-loss alerts on folder renames.
+Working MCP server examples (TypeScript, Python, Rust): [`examples/`](examples/).
 
-### Added a service to services.toml but it's not found
+---
 
-Send SIGHUP to reload services.toml without restarting:
-```bash
-docker kill --signal=HUP <container_name>
-```
-Then check `vault/services` to confirm it loaded. If it's still missing, check the container log for a per-service rejection reason (SSRF violation, missing field, bad base_url, etc.).
+## Auth patterns
 
-### `--setup` hangs waiting for input
+| `auth` value | Required fields | Example service |
+|---|---|---|
+| `bearer` | — | Home Assistant |
+| `header` | `header_name` | Sonarr / Radarr / Plex |
+| `query_param` | `param_name` | Tautulli |
+| `basic` | `key_field`, `secret_field` | OPNsense |
+| `session` | `login_path`, `token_field` | Nginx Proxy Manager, Duplicati |
+| `unifi_dual` | `login_path` | UniFi OS (API key → session fallback) |
 
-The setup wizard reads from stdin. If stdin is not a TTY (e.g. `docker run -d`), it will block forever. Run with `-it` to attach a TTY:
-```bash
-docker run --rm -it -v ./config:/config vaultproxy --setup
-```
+Add `insecure_tls = true` for LAN services with self-signed certs (logs a startup warning).
 
-Or use the web dashboard (`--features dashboard`) to complete setup via browser.
+---
 
-### MCP server launched with `--launch` exits immediately
+## Two integration modes
 
-Launcher mode (`--launch <name>`) resolves credentials from Vaultwarden and `exec`s the configured command, replacing the vault-proxy process. If the launched process exits immediately, check the logs for:
+1. **Native `/proxy` (Tier 1, recommended).** Your MCP server detects vault-proxy via `VAULT_PROXY_URL` env and calls `POST $VAULT_PROXY_URL/proxy`. The credential resolves inside vault-proxy and is injected into the outbound header. The MCP server never holds the secret. See [`examples/smart-mcp-server-*`](examples/).
 
-- **`WARN vault_proxy::launcher: command not found`** — the `command` in `mcp-servers.toml` is not on `PATH` or is misspelled. Verify with `which <command>` inside the container.
-- **`WARN vault_proxy::launcher`** — any other launcher warning. Run with `RUST_LOG=debug` for detailed output.
-- **`vault item '...' not found`** — the `vault_item` in `mcp-servers.toml` does not match an item name in Vaultwarden. Check for typos and confirm the item is in the correct `vault_folder`.
-- **MCP server itself crashes** — the MCP server process exited non-zero. Its stdout/stderr appears in the container log immediately after the `vault-proxy` output. Check for missing dependencies (`pip install`, `npm install`, etc.).
+2. **Launcher mode `--launch` (Tier 2).** For unmodified upstream MCP servers, vault-proxy resolves credentials from Vaultwarden and `exec`s the MCP server with credentials injected as env vars. No `.env` files on disk. Weaker than Tier 1 (env vars are readable from `/proc/<pid>/environ` by the same OS user) but stronger than file-based storage. Configure in [`mcp-servers.example.toml`](mcp-servers.example.toml).
 
-```bash
-# Check launcher logs
-docker logs <container_name> 2>&1 | grep -E "launcher|WARN|ERROR"
+---
 
-# Validate mcp-servers.toml syntax (--check only validates services.toml; mcp-servers.toml has no --check flag)
-docker run --rm -v ./config:/config vaultproxy --launch <name>  # run interactively to see errors
-```
+## Feature highlights
 
-## Building
+| Feature | Status | Where |
+|---|---|---|
+| 6 built-in auth patterns | ✅ stable | this README |
+| SIGHUP + `POST /vault/reload-services` hot-reload with atomic swap and rollback-to-empty guard | ✅ stable | [docs/operator/RELOAD.md](docs/operator/RELOAD.md) |
+| Per-caller rate limiting via `X-Caller-Id` / `VAULT_PROXY_CALLER_ID` | ✅ stable | [SECURITY.md](SECURITY.md) |
+| Credential audit (weak/reused + HIBP k-anonymity) | ✅ stable | [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) |
+| Browser-driven credential rotation (Playwright + vision LLM) | ✅ `--features browser` | [docs/operator/BROWSER-ROTATION.md](docs/operator/BROWSER-ROTATION.md) |
+| TPM-sealed keystore | ✅ `--features tpm` | [SECURITY.md](SECURITY.md) |
+| Web dashboard | ✅ `--features dashboard` (127.0.0.1:3202) | [docs/operator/DASHBOARD.md](docs/operator/DASHBOARD.md) |
+| Audit log (JSON, sensitive fields masked, 1000-entry cap) | ✅ stable | [docs/operator/AUDIT-LOG.md](docs/operator/AUDIT-LOG.md) |
+| SMB mount provisioning via vault items | ✅ stable | [docs/SMB.md](docs/SMB.md) |
 
-### Cargo (local / bare metal)
+Planned for v1.1+: transparent `HTTPS_PROXY` mode, mTLS / Unix-socket listener, OAuth flows, response prompt-injection sanitisation, SIEM audit sinks, generic `/rotate` strategies. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
-```bash
-# Headless — recommended for Docker/server deployments
-cargo build --release
+---
 
-# With TPM sealing — bare metal, requires TSS2 system libraries
-cargo build --release --features tpm
+## Security stance (one-paragraph version)
 
-# With web dashboard — adds management UI on 127.0.0.1:3202
-cargo build --release --features dashboard
+vaultproxy binds to `127.0.0.1:3201` only. The trust model is **OS-level process isolation** — any local process running as the same user can call `/proxy`. There is no mTLS or caller authentication on the proxy endpoint by design (network isolation is the primary defence; a startup warning fires on any non-loopback bind). Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/browser/*`, `/vault/notes`) require an `Authorization: Bearer <internal-token>` from `$CONFIG_DIR/internal-token` (mode 0600, rotated on every restart). Credentials are decrypted in-process from an encrypted keystore; plaintext never appears in logs. Optional TPM sealing binds the keystore to the host machine. SSRF, log-injection, path-traversal, and arbitrary-command launcher guards are enforced at config load. Full threat model: [SECURITY.md](SECURITY.md). Report vulnerabilities privately via [GitHub Security Advisories](../../security/advisories/new).
 
-# With browser-based credential rotation — requires LiteLLM + Playwright
-cargo build --release --features browser
+---
 
-# With credential-audit engine sidecar path
-cargo build --release --features engine
+## Install
 
-# Full feature set (dashboard + browser rotation + engine sidecar)
-cargo build --release --features dashboard,browser,engine
-```
-
-### Docker
-
-The published image (`ghcr.io/aaronckj/vaultproxy:latest`) is built **headless** — no dashboard, no TPM. Port 3202 is not bound.
+### Docker (recommended)
 
 ```bash
-# Headless (default) — matches the published image
-docker build -t vaultproxy:latest .
-
-# Dashboard build — enables the web UI on 127.0.0.1:3202
-docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .
-
-# TPM build — requires TSS2 libraries; add libssl-dev in Dockerfile if needed
-docker build --build-arg FEATURES=tpm -t vaultproxy:tpm .
-
-# Browser rotation build — requires LiteLLM endpoint + Playwright agent
-docker build --build-arg FEATURES=browser -t vaultproxy:browser .
-
-# Full build — dashboard + browser + engine
+docker build -t vaultproxy:latest .                                    # headless, default
+docker build --build-arg FEATURES=dashboard -t vaultproxy:dashboard .  # + web UI
 docker build --build-arg FEATURES=dashboard,browser,engine -t vaultproxy:full .
-
-# Dashboard + TPM
-docker build --build-arg FEATURES=dashboard,tpm -t vaultproxy:tpm-dashboard .
 ```
 
-To run the dashboard build with Docker Compose, add a `build` section and the `FEATURES` arg:
+A pre-built image is published to `ghcr.io/aaronckj/vaultproxy` via the GitHub Actions workflow on every tagged release.
 
-```yaml
-services:
-  vaultproxy:
-    build:
-      context: .
-      args:
-        FEATURES: dashboard
-    ports:
-      - "127.0.0.1:3202:3202"   # expose dashboard (only meaningful for dashboard builds)
-```
-
-> **Note:** passing `--build-arg FEATURES=invalid-feature-name` causes `cargo build --features invalid-feature-name` to fail with a Cargo error (unknown feature). This is expected — Cargo reports the unknown feature clearly in the build log.
-
-## Launching MCP servers (wrapper mode)
-
-For MCP servers that don't support vault-proxy natively, use launcher mode to inject credentials at spawn time:
+### Cargo (bare metal)
 
 ```bash
-vaultproxy --launch unifi-network
+cargo build --release                          # headless
+cargo build --release --features tpm           # + TPM sealing (needs libtss2-dev)
+cargo build --release --features dashboard     # + web UI on 127.0.0.1:3202
+cargo build --release --features browser       # + Playwright rotation (needs LiteLLM + Playwright)
 ```
 
-Configure servers in `mcp-servers.toml` inside your `--config-dir`:
+---
 
-```toml
-[[mcp_server]]
-name = "unifi-network"
-command = "uvx unifi-network-mcp@latest"
+## Deeper docs
 
-  [[mcp_server.env]]
-  var = "UNIFI_HOST"
-  value = "https://unifi.local"
+- [SECURITY.md](SECURITY.md) — threat model, trust boundaries, rate limits, per-folder scope guards
+- [docs/operator/QUICKSTART.md](docs/operator/QUICKSTART.md) — fuller setup walkthrough
+- [docs/operator/CONFIG.md](docs/operator/CONFIG.md) — `services.toml` reference, vault items, internal token
+- [docs/operator/CLI.md](docs/operator/CLI.md) — every CLI flag and env var
+- [docs/operator/RELOAD.md](docs/operator/RELOAD.md) — SIGHUP and `POST /vault/reload-services` semantics
+- [docs/operator/RUNBOOK.md](docs/operator/RUNBOOK.md) — diagnosing common failures
+- [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) — weak/reused/HIBP scan + apply workflow
+- [docs/operator/AUDIT-LOG.md](docs/operator/AUDIT-LOG.md) — audit log format and shipping
+- [docs/operator/BROWSER-ROTATION.md](docs/operator/BROWSER-ROTATION.md) — rotation via Playwright + vision LLM
+- [docs/operator/LAUNCHER.md](docs/operator/LAUNCHER.md) — `--launch` mode and `mcp-servers.toml`
+- [docs/operator/DASHBOARD.md](docs/operator/DASHBOARD.md) — web UI, TLS cert persistence
+- [docs/operator/UPGRADING.md](docs/operator/UPGRADING.md) — v0.2.x → v1.0.x breaking changes
+- [docs/ROADMAP.md](docs/ROADMAP.md) — what's planned for v1.1+
+- [GAPS.md](GAPS.md) — competitive landscape and pre-release tracking
 
-  [[mcp_server.env]]
-  var = "UNIFI_API_KEY"
-  vault_item = "vault-proxy - UniFi"
-  field = "password"
-```
-
-See `mcp-servers.example.toml` for all options. See `SECURITY.md` for the security tradeoffs between launcher mode and native `/proxy` integration.
-
-### Smart servers and `--launch`
-
-When a "smart" MCP server (one with native vault-proxy support) is launched via `--launch`, vault-proxy automatically injects two environment variables into the child's environment:
-
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `VAULT_PROXY_URL` | `http://127.0.0.1:3201` (or `VAULT_PROXY_PUBLIC_URL` if set) | URL of the vault-proxy sidecar — set by the proxy, not by the operator |
-| `VAULT_PROXY_CALLER_ID` | The server name from `mcp-servers.toml` | Per-caller rate-limit identity |
-
-The smart server uses `VAULT_PROXY_URL` to call `POST $VAULT_PROXY_URL/proxy` — vault-proxy injects the credential internally and forwards the request. No vault items appear in the smart server's environment.
-
-**`VAULT_PROXY_CALLER_ID` and per-caller rate limiting:** When vault-proxy receives a `/proxy` request it checks the `X-Caller-Id` header to assign the request to an isolated rate-limit bucket. Smart MCP servers should read `VAULT_PROXY_CALLER_ID` from their environment and forward it as `X-Caller-Id` on every call:
-
-```
-X-Caller-Id: <value of VAULT_PROXY_CALLER_ID>
-```
-
-This gives each `--launch`ed server its own independent rate-limit budget automatically, without manual configuration. The value is taken from `mcp-servers.toml` at deploy time — it is operator-controlled and cannot be changed by code inside the child process. Both `VAULT_PROXY_URL` and `VAULT_PROXY_CALLER_ID` are set before the per-server `[[mcp_server.env]]` list is applied, so an explicit entry in `mcp-servers.toml` can override either if needed.
-
-**Calling `/proxy` from a launched smart server:** This is the intended flow. The smart server calls `POST /proxy` with `{"service": "my_service", "method": "GET", "path": "/..."}` and vault-proxy resolves the credential, applies auth, and forwards to the downstream service. The corresponding `[[service]]` block must exist in `services.toml`.
-
-**Calling `/vault/*` endpoints from a launched smart server:** Internal endpoints (`/vault/reload-services`, `/vault/connecterr-secrets`, `/rotate`, etc.) require the internal bearer token. If your smart server needs to call these endpoints, it must read `$CONFIG_DIR/internal-token` and include it as:
-
-```
-Authorization: Bearer <token>
-```
-
-The token file is written at vault-proxy startup (mode 0600, owner = vault-proxy process user). It is separate from all Vaultwarden credentials.
-
-## `/proxy` API
-
-`POST http://127.0.0.1:3201/proxy`
-
-Request body:
-```json
-{
-  "service": "ha_home",
-  "method": "POST",
-  "path": "/api/services/light/turn_on",
-  "body": { "entity_id": "light.living_room" },
-  "headers": { "X-Custom-Header": "value" },
-  "query": { "format": "json" }
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `service` | string | yes | Registered service name (from `services.toml`) |
-| `method` | string | no | HTTP method — defaults to `"GET"` |
-| `path` | string | yes | Path appended to the service's `base_url`. Must not contain `.` or `..` segments. |
-| `body` | object | no | JSON body forwarded verbatim to the downstream service |
-| `headers` | object | no | Extra headers merged into the downstream request (string values only) |
-| `query` | object | no | Extra query parameters appended to the URL |
-
-The proxy injects the registered auth credential, forwards the request, and returns:
-- On success: the upstream HTTP status code and JSON body
-- On proxy error: a `{"error": "..."}` JSON body with a 4xx or 5xx status
-
-**Smart MCP servers** should set `VAULT_PROXY_URL` (default `http://127.0.0.1:3201`) to locate the sidecar. All proxy calls go to `$VAULT_PROXY_URL/proxy`.
-
-## Upgrading from v0.2.x to v1.0.0
-
-If you are upgrading from any v0.2.x release, the following breaking changes require updates to scripts or clients that call the vault-proxy HTTP API directly. The Connecterr TypeScript `SidecarClient` has been updated in the matching releases — no changes needed if you use the client library.
-
-### Breaking: collection endpoints now return JSON objects
-
-All collection endpoints changed from bare JSON arrays to `{"ok": true, "<key>": [...]}` envelope objects. Update any code that iterates the response body directly:
-
-| Endpoint | Old shape | New shape | Key | Since |
-|---|---|---|---|---|
-| `GET /vault/items` | `[...]` | `{"ok":true,"items":[...]}` | `items` | v1.0.0-beta.4 / iter-109 |
-| `GET /vault/folders` | `[...]` | `{"ok":true,"folders":[...]}` | `folders` | v1.0.0-beta.4 / iter-110 |
-| `GET /vault/duplicates` | `[...]` | `{"ok":true,"groups":[...]}` | `groups` | v1.0.0-beta.4 / iter-110 |
-| `GET /audit/credaudit/review_pending/:id` | `[...]` | `{"ok":true,"items":[...]}` | `items` | v1.0.0-beta.6 / iter-112 |
-
-**Migration pattern:**
-```diff
-- const items = await res.json();             // v0.2.x: bare array
-+ const { items } = await res.json();         // v1.0.0: {ok, items}
-
-- const folders = await res.json();
-+ const { folders } = await res.json();
-
-- const groups = await res.json();
-+ const { groups } = await res.json();
-```
-
-### Breaking: `"ok": true/false` sentinel on all responses
-
-Every success response now includes `"ok": true` and every error response includes `"ok": false` plus an `"error"` string. Clients that check only HTTP status codes are unaffected. Clients that inspect the body should add a guard:
-
-```diff
-- if (body.items) { ... }
-+ if (body.ok && body.items) { ... }
-```
-
-### Non-breaking changes from v0.2.x
-
-- `GET /vault/items/untracked` — now returns `{"ok": true, "count": N, "items": [...]}` (was bare array). Key is `items`.
-- `GET /vault/audit/run` — response is `{"ok": true, "n_weak": N, "n_reused": N, ...}` (unchanged since v0.2.x, but documented here for completeness).
-- All mutation endpoints (`POST /vault/items`, `POST /vault/items/update`, etc.) now include `"ok": true` on success.
-- `GET /vault/folders` (scoped, default `include_all=false`) — now also returns `"configured_vault_folder": "<name>"` alongside `"folders": [...]`. Callers that only read `body.folders` are unaffected.
-
-### New in v1.0.0-beta.7: `--persist-dashboard-cert`
-
-Dashboard users who were tired of the "certificate has changed" browser warning on every restart can now opt in to cert persistence:
-
-```bash
-# Docker Compose — add to your service environment
-PERSIST_DASHBOARD_CERT=1
-
-# Bare metal
-vaultproxy --persist-dashboard-cert
-```
-
-On the **first run** the cert is generated normally and written to `{config_dir}/dashboard.crt` and `{config_dir}/dashboard.key` (mode 0600, atomic write). On **subsequent runs** those files are loaded instead of generating a new cert — the browser warning disappears.
-
-To **force regeneration** (cert rotation): delete both files, then restart. vault-proxy will generate a fresh cert and persist it in their place.
-
-## Why not just use env vars?
-
-Env vars are readable by any process running as the same OS user, show up in `ps auxe`, persist in shell history, and end up copy-pasted across multiple `.env` files. `vaultproxy` keeps credentials in a single encrypted keystore backed by Vaultwarden — one source of truth, never in plaintext outside the proxy process.
+---
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

@@ -1,0 +1,8 @@
+smart-mcp-server-ts/node_modules/
+smart-mcp-server-ts/dist/
+smart-mcp-server-ts/package-lock.json
+smart-mcp-server-rs/target/
+smart-mcp-server-rs/Cargo.lock
+smart-mcp-server-py/.venv/
+smart-mcp-server-py/__pycache__/
+smart-mcp-server-py/*.pyc
