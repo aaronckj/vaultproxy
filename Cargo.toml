@@ -66,7 +66,7 @@ anyhow = "1"
 dashmap = "6"
 base64 = "0.22"
 rand = "0.8"
-rmcp = { version = "1.6", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "1.6", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = "1.0"
 # RUSTSEC-2023-0071: rsa 0.9 is affected by the Marvin Attack (RSA timing
 # side-channel). No fixed version exists for 0.9.x. The crate is used only
