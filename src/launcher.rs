@@ -643,6 +643,12 @@ pub async fn launch(
     let safe_parent_vars = [
         "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
         "TERM",
+        // Inherit SSH_AUTH_SOCK so launched MCP servers (notably ssh-mcp)
+        // can authenticate via the user's running ssh-agent instead of
+        // receiving a passphrase via env. The socket is per-user and
+        // permission-checked by the kernel; passing the path along is
+        // strictly less sensitive than passing a decrypted passphrase.
+        "SSH_AUTH_SOCK",
     ];
 
     // Issue (iter-39): Smart MCP servers discover the proxy via VAULT_PROXY_URL.
