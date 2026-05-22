@@ -9,6 +9,7 @@
 // lib unit tests compiling without duplicating the business logic elsewhere.
 
 mod audit;
+pub mod bearer_bridge;
 mod internal_token;
 mod keystore;
 mod launcher;

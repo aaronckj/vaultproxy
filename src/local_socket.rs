@@ -23,6 +23,14 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::vault::VaultManager;
 
 pub fn default_socket_path() -> PathBuf {
+    // Explicit override wins. Children spawned by `vaultproxy --launch` see
+    // this var instead of XDG_RUNTIME_DIR (which is intentionally stripped
+    // from their environment by the launcher).
+    if let Ok(p) = std::env::var("VAULT_PROXY_SOCKET") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(runtime_dir).join("vaultproxy.sock");
     }
