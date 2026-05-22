@@ -8,6 +8,7 @@
 // are defined in main.rs for the binary crate. The copies below keep the
 // lib unit tests compiling without duplicating the business logic elsewhere.
 
+pub mod access_log;
 mod audit;
 pub mod bearer_bridge;
 pub mod cred_cache;

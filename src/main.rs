@@ -15,6 +15,7 @@
 // All other modules (proxy, vault, keystore, tpm, notify, setup, sync, etc.)
 // receive full dead-code checking.
 
+mod access_log;
 mod audit;
 #[cfg(feature = "browser")]
 mod browser;
@@ -60,6 +61,22 @@ use vault::VaultManager;
 // -------------------------------------------------------------------------- //
 // CLI args                                                                    //
 // -------------------------------------------------------------------------- //
+
+/// Subcommands accepted by the `vaultproxy` binary.
+///
+/// When `None`, the binary runs as the long-lived daemon (the historical
+/// default). Subcommands run a one-shot utility action and exit before any
+/// daemon-startup logic.
+#[derive(clap::Subcommand, Debug, Clone)]
+enum Cmd {
+    /// Verify the integrity of an access log file produced by the daemon.
+    AuditVerify {
+        /// Path to the access log to verify. The HMAC key is read from
+        /// `<log>.key`.
+        #[arg(long)]
+        log: std::path::PathBuf,
+    },
+}
 
 #[derive(Parser, Clone)]
 #[command(
@@ -286,6 +303,23 @@ struct Args {
     #[arg(long, env = "CRED_CACHE_TTL", default_value = "60")]
     cred_cache_ttl: u64,
 
+    /// Path to the HMAC-chained access log written by the daemon for every
+    /// credential fetch over the local socket and every rotate MCP tool
+    /// invocation. Empty string disables logging entirely.
+    ///
+    /// The HMAC key lives next to the log at `<log-path>.key` with mode
+    /// 0600. On first start the daemon generates the key; subsequent starts
+    /// reuse it so the chain is verifiable across restarts.
+    ///
+    /// Verify integrity with: `vaultproxy audit-verify --log <path>`.
+    #[arg(long, env = "ACCESS_LOG_PATH", default_value = "")]
+    access_log_path: String,
+
+    /// Subcommand. Currently only `audit-verify` is supported — daemon
+    /// startup happens when no subcommand is provided.
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
     /// Background credential-health audit interval in seconds.
     ///
     /// When set to a non-zero value, vault-proxy spawns a background task that
@@ -333,6 +367,24 @@ struct Args {
 }
 
 // -------------------------------------------------------------------------- //
+// Access log construction                                                     //
+// -------------------------------------------------------------------------- //
+
+/// Build the optional [`AccessLog`] for both the daemon and the `--mcp` /
+/// `--mcp-http` paths from the CLI/env value. Empty path = disabled.
+fn build_access_log(
+    access_log_path: &str,
+) -> anyhow::Result<Option<std::sync::Arc<crate::access_log::AccessLog>>> {
+    if access_log_path.is_empty() {
+        return Ok(None);
+    }
+    let log_path = std::path::PathBuf::from(access_log_path);
+    let key_path = std::path::PathBuf::from(format!("{}.key", access_log_path));
+    let log = crate::access_log::AccessLog::open(log_path, key_path)?;
+    Ok(Some(std::sync::Arc::new(log)))
+}
+
+// -------------------------------------------------------------------------- //
 // Entry point                                                                 //
 // -------------------------------------------------------------------------- //
 
@@ -349,6 +401,23 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
+
+    // Subcommand short-circuit — runs before any daemon-startup logic so the
+    // utility action can complete without touching Vaultwarden, keystore, etc.
+    if let Some(Cmd::AuditVerify { log }) = &args.cmd {
+        let key = std::path::PathBuf::from(format!("{}.key", log.display()));
+        crate::access_log::AccessLog::verify(log, &key)?;
+        let line_count = std::fs::read_to_string(log)?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        println!(
+            "access log valid: {} ({} lines)",
+            log.display(),
+            line_count
+        );
+        return Ok(());
+    }
 
     // Issue (iter-27/28): --check validates services.toml without a live
     // Vaultwarden connection. Useful for CI, pre-deploy hooks, and Docker
@@ -957,7 +1026,8 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb).await;
+        let access_log = build_access_log(&args.access_log_path)?;
+        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb, access_log).await;
     }
 
     if let Some(ref addr_str) = args.mcp_http {
@@ -969,7 +1039,8 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr).await;
+        let access_log = build_access_log(&args.access_log_path)?;
+        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, access_log).await;
     }
 
     if let Some(ref server_name) = args.launch {
@@ -2724,6 +2795,11 @@ async fn start_server(
     // see --cred-cache-ttl. CRED_CACHE_TTL=0 disables caching (CredCache::put
     // is a no-op when default TTL is zero), so the cache is always constructed
     // and the call sites stay branch-free.
+    //
+    // An optional HMAC-chained AccessLog records each fetch and the peer's
+    // SO_PEERCRED-attested uid/pid — see --access-log-path. Open at most
+    // once per daemon process so all writers share a Mutex on the same file
+    // handle and key, keeping the chain consistent.
     {
         let cred_cache = std::sync::Arc::new(
             crate::cred_cache::CredCache::with_ttl(
@@ -2743,12 +2819,14 @@ async fn start_server(
             }
         });
 
+        let access_log = build_access_log(&args.access_log_path)?;
         let socket_vault = vault_arc.clone();
         let socket_cache = cred_cache.clone();
+        let socket_log = access_log.clone();
         let socket_path = crate::local_socket::default_socket_path();
         tokio::spawn(async move {
             if let Err(e) =
-                crate::local_socket::run(socket_vault, socket_cache, socket_path).await
+                crate::local_socket::run(socket_vault, socket_cache, socket_log, socket_path).await
             {
                 tracing::warn!("local credential socket exited: {}", e);
             }

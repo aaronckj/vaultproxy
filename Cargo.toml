@@ -43,6 +43,7 @@ aes = "0.8"
 aes-gcm = "0.10"
 argon2 = "0.5"
 cbc = { version = "0.1", features = ["alloc"] }
+hex = "0.4"
 hmac = "0.12"
 sha2 = "0.10"
 pbkdf2 = { version = "0.12", features = ["sha2"] }

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::access_log::AccessLog;
 use crate::cred_cache::CredCache;
 use crate::vault::VaultManager;
 
@@ -73,6 +74,7 @@ struct PingResponse {
 pub async fn run(
     vault: Arc<VaultManager>,
     cache: Arc<CredCache>,
+    access_log: Option<Arc<AccessLog>>,
     socket_path: PathBuf,
 ) -> anyhow::Result<()> {
     if let Some(parent) = socket_path.parent() {
@@ -95,26 +97,34 @@ pub async fn run(
                 continue;
             }
         };
-        let peer_uid = peer_uid(&stream);
-        if peer_uid != Some(self_uid) {
+        // Capture SO_PEERCRED *before* the stream moves into the worker
+        // task. The kernel guarantees the credentials snapshotted here are
+        // those of the peer at connect() time even if the peer exits later.
+        let peer_cred = peer_cred(&stream);
+        let peer_uid_val = peer_cred.map(|(uid, _)| uid);
+        if peer_uid_val != Some(self_uid) {
             tracing::warn!(
                 "local socket rejected: peer uid {:?} != self uid {}",
-                peer_uid,
+                peer_uid_val,
                 self_uid
             );
             continue;
         }
         let vault = vault.clone();
         let cache = cache.clone();
+        let log = access_log.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, vault, cache).await {
+            if let Err(e) = handle_conn(stream, vault, cache, log, peer_cred).await {
                 tracing::debug!("local socket conn error: {}", e);
             }
         });
     }
 }
 
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
+/// Read SO_PEERCRED and return `(uid, pid)` for the connected peer. The pid
+/// is best-effort — on some kernels/libc it may be 0 even on success, in
+/// which case callers should treat it as "unknown".
+fn peer_cred(stream: &UnixStream) -> Option<(u32, u32)> {
     use std::os::unix::io::AsRawFd;
     let fd = stream.as_raw_fd();
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -129,7 +139,7 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
         )
     };
     if rc == 0 {
-        Some(cred.uid)
+        Some((cred.uid, cred.pid as u32))
     } else {
         None
     }
@@ -139,6 +149,8 @@ async fn handle_conn(
     stream: UnixStream,
     vault: Arc<VaultManager>,
     cache: Arc<CredCache>,
+    access_log: Option<Arc<AccessLog>>,
+    peer_cred: Option<(u32, u32)>,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -176,6 +188,33 @@ async fn handle_conn(
                         error = Some(format!("field '{}' fetch failed: {}", f, e));
                         break;
                     }
+                }
+            }
+            // Record one access-log entry per request (not per field) — the
+            // request unit is the API surface for SO_PEERCRED accountability.
+            // Log failures are best-effort: never block the credential
+            // response on a log write.
+            if let Some(ref log) = access_log {
+                let outcome = if error.is_some() { "error" } else { "ok" };
+                let peer_uid_val = peer_cred.map(|(uid, _)| uid);
+                let peer_pid_val = peer_cred.and_then(|(_, pid)| {
+                    if pid == 0 { None } else { Some(pid) }
+                });
+                let cmdline = peer_pid_val
+                    .and_then(|pid| std::fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok())
+                    .map(|s| s.replace('\0', " ").trim().to_string());
+                let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+                if let Err(e) = log.record(&crate::access_log::Event {
+                    ts: chrono::Utc::now(),
+                    action: "get_item_fields",
+                    item: Some(&item),
+                    fields: &field_refs,
+                    peer_pid: peer_pid_val,
+                    peer_uid: peer_uid_val,
+                    peer_cmdline: cmdline.as_deref(),
+                    outcome,
+                }) {
+                    tracing::error!("access log record (get_item_fields) failed: {}", e);
                 }
             }
             if let Some(err) = error {
