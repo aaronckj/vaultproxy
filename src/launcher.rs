@@ -808,6 +808,13 @@ pub async fn launch(
                 .to_string_lossy()
                 .as_ref(),
         )
+        // Inject VAULT_PROXY_CONFIG_DIR so children can locate the
+        // internal-token file (mode 0600, owned by the launching user) to
+        // authorize calls to the daemon's HTTP `/proxy` endpoint without
+        // copying the token into env or argv. Children read the token
+        // from disk at startup; vp's file permissions already restrict
+        // it to the launching user.
+        .env("VAULT_PROXY_CONFIG_DIR", config_dir)
         // Issue (iter-87): Inject VAULT_PROXY_CALLER_ID = server_name so the
         // launched child can forward it as X-Caller-Id in requests, getting an
         // isolated rate-limit bucket automatically.  Set before per-server env
