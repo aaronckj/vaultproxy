@@ -128,6 +128,30 @@ pub async fn handle_rotate(
                 e
             );
         }
+
+        // Fire the operator-configured post-rotation hook. The hook runs
+        // AFTER the rotation has already been committed, so a failure
+        // (spawn error, non-zero exit, timeout) is logged but does NOT
+        // affect the rotate HTTP response. Spawned detached so a slow
+        // hook doesn't delay the response either; the hook itself has a
+        // 30 s internal timeout to bound runaway scripts.
+        if let Some(ref hook) = state.rotation_hook {
+            // The item_id we can offer the hook is the service name; per-
+            // strategy item identifiers aren't surfaced in RotationResult
+            // yet. The service name is enough for typical hook scripts
+            // (e.g. `docker restart $1`).
+            let hook = hook.clone();
+            let service = req.service.clone();
+            tokio::spawn(async move {
+                if let Err(e) = hook.fire(&service, &service).await {
+                    tracing::error!(
+                        service = %service,
+                        error = %e,
+                        "rotation hook fire failed"
+                    );
+                }
+            });
+        }
     }
 
     // Issue (iter-26): Audit all rotation attempts regardless of success/failure.
@@ -142,6 +166,32 @@ pub async fn handle_rotate(
         permission: "Allowed".to_string(),
         trigger: "http".to_string(),
     });
+
+    // HMAC-chained access log entry — recorded daemon-side so all writers
+    // share one in-process `Mutex<File>`. The MCP `rotate` tool used to log
+    // here itself, but that required a second cross-process writer on the
+    // same file whose lines could interleave for `peer_cmdline` payloads
+    // larger than PIPE_BUF (~4 KB). Now the MCP tool just proxies to /rotate
+    // and the daemon records the canonical entry below. Best-effort: a log
+    // write failure must not change the rotation response.
+    if let Some(ref log) = state.access_log {
+        let outcome = if result.status == "success" { "ok" } else { "error" };
+        if let Err(e) = log.record(&crate::access_log::Event {
+            ts: chrono::Utc::now(),
+            action: "rotate",
+            item: Some(&req.service),
+            fields: &[],
+            // SO_PEERCRED isn't available over HTTP, so we cannot attest the
+            // caller's pid/uid here. Leave them None so verifiers don't infer
+            // false attribution.
+            peer_pid: None,
+            peer_uid: None,
+            peer_cmdline: None,
+            outcome,
+        }) {
+            tracing::error!("access log record (rotate) failed: {}", e);
+        }
+    }
 
     // Return 501 Not Implemented when the strategy is a known stub.
     // "unsupported" means the strategy exists in code but is not yet

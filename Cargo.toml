@@ -30,6 +30,10 @@ path = "src/bin/mcp_bearer_bridge.rs"
 name = "vaultproxy-mount-helper"
 path = "src/bin/mount_helper.rs"
 
+[[bin]]
+name = "mcp-rpc-bridge"
+path = "src/bin/mcp_rpc_bridge.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
@@ -43,6 +47,8 @@ aes = "0.8"
 aes-gcm = "0.10"
 argon2 = "0.5"
 cbc = { version = "0.1", features = ["alloc"] }
+hex = "0.4"
+hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
 pbkdf2 = { version = "0.12", features = ["sha2"] }
@@ -90,6 +96,8 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 async-trait = "0.1"
 toml = "0.8"
 shell-words = "1"
+tera = { version = "1", default-features = false, features = ["builtins"] }
+tempfile = "3"
 # hyper-util is a transitive dependency of axum; we declare it explicitly to
 # call http1().timer(TokioTimer).header_read_timeout(5s) on the serve loop.
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1"] }

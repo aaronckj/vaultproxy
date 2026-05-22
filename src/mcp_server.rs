@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use rmcp::handler::server::wrapper::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use crate::access_log::AccessLog;
 use crate::proxy::SmbConfig;
 use crate::vault::smb::{self, SmbMountRequest, SmbUnmountRequest};
 use crate::vault::VaultManager;
@@ -367,6 +368,13 @@ impl VaultMcpServer {
     /// Trigger credential rotation for a registered service via the running
     /// vault-proxy daemon. The MCP process posts to the daemon's `/rotate`
     /// HTTP endpoint with the internal bearer token from disk.
+    ///
+    /// Audit logging is handled by the daemon: when this tool proxies a
+    /// rotation request to `POST /rotate`, the daemon writes the
+    /// HMAC-chained access-log entry inside its own process. The MCP server
+    /// deliberately does not write to the access log itself, because two
+    /// separate processes appending to the same file would interleave
+    /// lines once a payload exceeds PIPE_BUF.
     #[tool(description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim.")]
     pub async fn rotate(&self, Parameters(p): Parameters<RotateParams>) -> String {
         let config_dir = std::env::var("CONFIG_DIR").unwrap_or_default();
@@ -376,7 +384,9 @@ impl VaultMcpServer {
         let token_path = format!("{}/internal-token", config_dir);
         let internal_token = match std::fs::read_to_string(&token_path) {
             Ok(s) => s.trim().to_string(),
-            Err(e) => return format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e),
+            Err(e) => {
+                return format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e);
+            }
         };
         let vp_url =
             std::env::var("VP_URL").unwrap_or_else(|_| "http://127.0.0.1:3201".to_string());
@@ -394,7 +404,9 @@ impl VaultMcpServer {
             .await
         {
             Ok(r) => r,
-            Err(e) => return format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e),
+            Err(e) => {
+                return format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e);
+            }
         };
         match resp.text().await {
             Ok(t) => t,
@@ -411,6 +423,11 @@ pub async fn run(
     vault: Arc<VaultManager>,
     vault_folder: String,
     smb: SmbConfig,
+    // Kept in the signature so callers in `main.rs` don't have to special-case
+    // MCP startup. The MCP server itself no longer writes to the access log
+    // (rotate logging is now consolidated daemon-side); callers should pass
+    // `None`. A non-None value is silently ignored.
+    _access_log: Option<Arc<AccessLog>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting vault-proxy MCP server on stdio");
     let server = VaultMcpServer::with_smb(vault, vault_folder, smb);
@@ -424,6 +441,8 @@ pub async fn run_http(
     vault_folder: String,
     smb: SmbConfig,
     listen_addr: std::net::SocketAddr,
+    // See `run` above — kept for signature symmetry only.
+    _access_log: Option<Arc<AccessLog>>,
 ) -> anyhow::Result<()> {
     tracing::info!("starting vault-proxy MCP HTTP server on {listen_addr}");
     let ct = CancellationToken::new();
@@ -433,7 +452,13 @@ pub async fn run_http(
                 let vault = vault.clone();
                 let vault_folder = vault_folder.clone();
                 let smb = smb.clone();
-                move || Ok(VaultMcpServer::with_smb(vault.clone(), vault_folder.clone(), smb.clone()))
+                move || {
+                    Ok(VaultMcpServer::with_smb(
+                        vault.clone(),
+                        vault_folder.clone(),
+                        smb.clone(),
+                    ))
+                }
             },
             Default::default(),
             StreamableHttpServerConfig::default()

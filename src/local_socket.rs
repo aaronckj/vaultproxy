@@ -16,10 +16,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::access_log::AccessLog;
+use crate::cred_cache::CredCache;
 use crate::vault::VaultManager;
 
 pub fn default_socket_path() -> PathBuf {
@@ -68,7 +71,12 @@ struct PingResponse {
     pong: bool,
 }
 
-pub async fn run(vault: Arc<VaultManager>, socket_path: PathBuf) -> anyhow::Result<()> {
+pub async fn run(
+    vault: Arc<VaultManager>,
+    cache: Arc<CredCache>,
+    access_log: Option<Arc<AccessLog>>,
+    socket_path: PathBuf,
+) -> anyhow::Result<()> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -89,25 +97,34 @@ pub async fn run(vault: Arc<VaultManager>, socket_path: PathBuf) -> anyhow::Resu
                 continue;
             }
         };
-        let peer_uid = peer_uid(&stream);
-        if peer_uid != Some(self_uid) {
+        // Capture SO_PEERCRED *before* the stream moves into the worker
+        // task. The kernel guarantees the credentials snapshotted here are
+        // those of the peer at connect() time even if the peer exits later.
+        let peer_cred = peer_cred(&stream);
+        let peer_uid_val = peer_cred.map(|(uid, _)| uid);
+        if peer_uid_val != Some(self_uid) {
             tracing::warn!(
                 "local socket rejected: peer uid {:?} != self uid {}",
-                peer_uid,
+                peer_uid_val,
                 self_uid
             );
             continue;
         }
         let vault = vault.clone();
+        let cache = cache.clone();
+        let log = access_log.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, vault).await {
+            if let Err(e) = handle_conn(stream, vault, cache, log, peer_cred).await {
                 tracing::debug!("local socket conn error: {}", e);
             }
         });
     }
 }
 
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
+/// Read SO_PEERCRED and return `(uid, pid)` for the connected peer. The pid
+/// is best-effort — on some kernels/libc it may be 0 even on success, in
+/// which case callers should treat it as "unknown".
+fn peer_cred(stream: &UnixStream) -> Option<(u32, u32)> {
     use std::os::unix::io::AsRawFd;
     let fd = stream.as_raw_fd();
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -122,13 +139,19 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
         )
     };
     if rc == 0 {
-        Some(cred.uid)
+        Some((cred.uid, cred.pid as u32))
     } else {
         None
     }
 }
 
-async fn handle_conn(stream: UnixStream, vault: Arc<VaultManager>) -> anyhow::Result<()> {
+async fn handle_conn(
+    stream: UnixStream,
+    vault: Arc<VaultManager>,
+    cache: Arc<CredCache>,
+    access_log: Option<Arc<AccessLog>>,
+    peer_cred: Option<(u32, u32)>,
+) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -146,14 +169,52 @@ async fn handle_conn(stream: UnixStream, vault: Arc<VaultManager>) -> anyhow::Re
                 std::collections::BTreeMap::new();
             let mut error: Option<String> = None;
             for f in &fields {
+                // Cache hit short-circuits the VW round-trip.
+                if let Some(cached) = cache.get(&item, f) {
+                    out.insert(f.clone(), cached.expose_secret().to_string());
+                    continue;
+                }
                 match vault.get_field_resolved(&item, f).await {
                     Ok(v) => {
+                        cache.put(
+                            &item,
+                            f,
+                            secrecy::SecretString::from(v.clone()),
+                            None,
+                        );
                         out.insert(f.clone(), v);
                     }
                     Err(e) => {
                         error = Some(format!("field '{}' fetch failed: {}", f, e));
                         break;
                     }
+                }
+            }
+            // Record one access-log entry per request (not per field) — the
+            // request unit is the API surface for SO_PEERCRED accountability.
+            // Log failures are best-effort: never block the credential
+            // response on a log write.
+            if let Some(ref log) = access_log {
+                let outcome = if error.is_some() { "error" } else { "ok" };
+                let peer_uid_val = peer_cred.map(|(uid, _)| uid);
+                let peer_pid_val = peer_cred.and_then(|(_, pid)| {
+                    if pid == 0 { None } else { Some(pid) }
+                });
+                let cmdline = peer_pid_val
+                    .and_then(|pid| std::fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok())
+                    .map(|s| s.replace('\0', " ").trim().to_string());
+                let field_refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+                if let Err(e) = log.record(&crate::access_log::Event {
+                    ts: chrono::Utc::now(),
+                    action: "get_item_fields",
+                    item: Some(&item),
+                    fields: &field_refs,
+                    peer_pid: peer_pid_val,
+                    peer_uid: peer_uid_val,
+                    peer_cmdline: cmdline.as_deref(),
+                    outcome,
+                }) {
+                    tracing::error!("access log record (get_item_fields) failed: {}", e);
                 }
             }
             if let Some(err) = error {
@@ -231,5 +292,34 @@ pub mod client {
             .get(field)
             .cloned()
             .ok_or_else(|| anyhow!("socket response missing field '{}'", field))
+    }
+
+    /// Synchronous variant of [`get_field`] used by Tera template functions,
+    /// which are required to be synchronous. Implemented over `std::os::unix::net`
+    /// so it does not require a tokio runtime to call.
+    pub fn get_field_sync(socket: &std::path::Path, item: &str, field: &str) -> Result<String> {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        let mut s = UnixStream::connect(socket)
+            .with_context(|| format!("connect {}", socket.display()))?;
+        let req = serde_json::json!({"op": "get_item_fields", "item": item, "fields": [field]});
+        writeln!(s, "{}", serde_json::to_string(&req)?)?;
+        s.shutdown(std::net::Shutdown::Write)?;
+        let mut buf = String::new();
+        s.read_to_string(&mut buf)?;
+        let resp: serde_json::Value = serde_json::from_str(buf.trim())
+            .with_context(|| format!("parse response: {}", buf.trim()))?;
+        if resp.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            let err = resp
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(no error message)");
+            anyhow::bail!("socket get_item_fields: {err}");
+        }
+        resp.get("fields")
+            .and_then(|f| f.get(field))
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+            .ok_or_else(|| anyhow!("field {field} missing in response: {}", buf.trim()))
     }
 }

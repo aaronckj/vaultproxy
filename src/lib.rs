@@ -8,10 +8,14 @@
 // are defined in main.rs for the binary crate. The copies below keep the
 // lib unit tests compiling without duplicating the business logic elsewhere.
 
+pub mod access_log;
+pub mod approle;
 mod audit;
 pub mod bearer_bridge;
+pub mod cred_cache;
+pub mod hooks;
 mod internal_token;
-mod keystore;
+pub mod keystore;
 mod launcher;
 pub mod local_socket;
 mod notify;
@@ -22,11 +26,13 @@ mod secure;
 mod security;
 mod setup;
 mod sync;
+pub mod template;
 mod tls;
 mod totp;
 mod tpm;
 pub mod vault;
 pub mod mcp_server;
+pub mod mcp_rpc_bridge;
 
 use std::sync::Arc;
 use axum::{extract::State as AxumState, Json as AxumJson};

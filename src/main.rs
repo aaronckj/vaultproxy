@@ -15,13 +15,17 @@
 // All other modules (proxy, vault, keystore, tpm, notify, setup, sync, etc.)
 // receive full dead-code checking.
 
+mod access_log;
+mod approle;
 mod audit;
 #[cfg(feature = "browser")]
 mod browser;
+mod cred_cache;
 #[cfg(feature = "engine")]
 mod credential_audit;
 #[cfg(feature = "dashboard")]
 mod dashboard;
+mod hooks;
 mod internal_token;
 mod keystore;
 mod launcher;
@@ -35,6 +39,7 @@ mod secure;
 mod security;
 mod setup;
 mod sync;
+mod template;
 mod tls;
 mod totp;
 mod tpm;
@@ -59,6 +64,49 @@ use vault::VaultManager;
 // -------------------------------------------------------------------------- //
 // CLI args                                                                    //
 // -------------------------------------------------------------------------- //
+
+/// Subcommands accepted by the `vaultproxy` binary.
+///
+/// When `None`, the binary runs as the long-lived daemon (the historical
+/// default). Subcommands run a one-shot utility action and exit before any
+/// daemon-startup logic.
+#[derive(clap::Subcommand, Debug, Clone)]
+enum Cmd {
+    /// Verify the integrity of an access log file produced by the daemon.
+    AuditVerify {
+        /// Path to the access log to verify. The HMAC key is read from
+        /// `<log>.key`.
+        #[arg(long)]
+        log: std::path::PathBuf,
+    },
+
+    /// Render a config template, interpolating vault items via the daemon
+    /// socket. Writes the output 0600 with an atomic rename.
+    Render {
+        /// Template path.
+        #[arg(long = "in")]
+        input: std::path::PathBuf,
+        /// Output path. Existing files at this path are overwritten.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Optional socket path. Defaults to vault-proxy's standard
+        /// socket at `$XDG_RUNTIME_DIR/vaultproxy.sock` (or
+        /// `/tmp/vaultproxy-<uid>.sock` if XDG_RUNTIME_DIR is unset).
+        #[arg(long, env = "VAULTPROXY_SOCKET")]
+        socket: Option<std::path::PathBuf>,
+    },
+
+    /// Provision a new AppRole (role_id, secret_id) for non-TPM daemon
+    /// unlock. Reads the existing keystore via the master-password prompt
+    /// (or VAULTPROXY_MASTER_PASSWORD env) and writes an encrypted bundle
+    /// to <config-dir>/approles/<role-id>.json (mode 0600). Prints the
+    /// hex-encoded secret_id once to stdout — capture it, store in a 0600
+    /// file, and reference via --approle-secret-id-file at daemon startup.
+    ApproleSetup {
+        #[arg(long)]
+        role_id: String,
+    },
+}
 
 #[derive(Parser, Clone)]
 #[command(
@@ -271,6 +319,65 @@ struct Args {
     #[arg(long, env = "VAULT_REFRESH_INTERVAL_SECS", default_value = "0")]
     vault_refresh_interval_secs: u64,
 
+    /// TTL in seconds for credentials cached by the local-socket handler.
+    ///
+    /// On a cache hit the socket handler returns the previously-fetched
+    /// credential directly without re-reading from Vaultwarden, eliminating
+    /// the per-spawn re-auth round-trip that triggers Bitwarden cloud
+    /// rate-limits when many MCP children launch in close succession.
+    ///
+    /// Set to 0 to disable caching entirely (every socket fetch re-reads
+    /// from Vaultwarden — pre-cache behavior). Default 60 s is a sensible
+    /// balance: long enough to coalesce typical bursts of MCP launches,
+    /// short enough that rotations propagate within a minute.
+    #[arg(long, env = "CRED_CACHE_TTL", default_value = "60")]
+    cred_cache_ttl: u64,
+
+    /// Path to the HMAC-chained access log written by the daemon for every
+    /// credential fetch over the local socket and every rotate MCP tool
+    /// invocation. Empty string disables logging entirely.
+    ///
+    /// The HMAC key lives next to the log at `<log-path>.key` with mode
+    /// 0600. On first start the daemon generates the key; subsequent starts
+    /// reuse it so the chain is verifiable across restarts.
+    ///
+    /// Verify integrity with: `vaultproxy audit-verify --log <path>`.
+    #[arg(long, env = "ACCESS_LOG_PATH", default_value = "")]
+    access_log_path: String,
+
+    /// Path to a script invoked after every SUCCESSFUL rotation.
+    ///
+    /// The script receives the rotated service name and an opaque item
+    /// identifier as positional args, plus env vars VP_ROTATION_SERVICE /
+    /// VP_ROTATION_ITEM_ID / VP_ROTATION_TS. Stdin is closed; stdout/stderr
+    /// are captured and logged (info on success, warn on non-zero exit). A
+    /// 30 s timeout kills the child if it hangs.
+    ///
+    /// The hook runs AFTER the rotation has been committed to the vault, so
+    /// a non-zero exit code is logged but does NOT undo the rotation. Use
+    /// this to bounce downstream services that cache the rotated credential,
+    /// e.g. `docker restart wi-mcp` after the wi-mcp bearer rotates.
+    #[arg(long, env = "ON_ROTATION_SCRIPT", default_value = "")]
+    on_rotation: String,
+
+    /// Provisioned AppRole role_id for non-TPM unlock. Pairs with
+    /// --approle-secret-id-file. If set, the daemon reads secret_id from
+    /// the file, derives a KEK, and unlocks <config-dir>/approles/<role>.json
+    /// instead of prompting for a master password or unsealing via TPM.
+    #[arg(long, env = "APPROLE_ROLE_ID")]
+    approle_role_id: Option<String>,
+
+    /// Path to a 0600 file containing the hex-encoded secret_id generated
+    /// by `vaultproxy approle-setup --role-id <name>`. Read once at
+    /// startup, then immediately zeroized; never re-read.
+    #[arg(long, env = "APPROLE_SECRET_ID_FILE")]
+    approle_secret_id_file: Option<std::path::PathBuf>,
+
+    /// Subcommand. Currently only `audit-verify` is supported — daemon
+    /// startup happens when no subcommand is provided.
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
     /// Background credential-health audit interval in seconds.
     ///
     /// When set to a non-zero value, vault-proxy spawns a background task that
@@ -318,6 +425,24 @@ struct Args {
 }
 
 // -------------------------------------------------------------------------- //
+// Access log construction                                                     //
+// -------------------------------------------------------------------------- //
+
+/// Build the optional [`AccessLog`] for both the daemon and the `--mcp` /
+/// `--mcp-http` paths from the CLI/env value. Empty path = disabled.
+fn build_access_log(
+    access_log_path: &str,
+) -> anyhow::Result<Option<std::sync::Arc<crate::access_log::AccessLog>>> {
+    if access_log_path.is_empty() {
+        return Ok(None);
+    }
+    let log_path = std::path::PathBuf::from(access_log_path);
+    let key_path = std::path::PathBuf::from(format!("{}.key", access_log_path));
+    let log = crate::access_log::AccessLog::open(log_path, key_path)?;
+    Ok(Some(std::sync::Arc::new(log)))
+}
+
+// -------------------------------------------------------------------------- //
 // Entry point                                                                 //
 // -------------------------------------------------------------------------- //
 
@@ -334,6 +459,73 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let config_dir = args.config_dir.clone();
+
+    // Subcommand short-circuit — runs before any daemon-startup logic so the
+    // utility action can complete without touching Vaultwarden, keystore, etc.
+    if let Some(Cmd::AuditVerify { log }) = &args.cmd {
+        let key = std::path::PathBuf::from(format!("{}.key", log.display()));
+        crate::access_log::AccessLog::verify(log, &key)?;
+        let line_count = std::fs::read_to_string(log)?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        println!(
+            "access log valid: {} ({} lines)",
+            log.display(),
+            line_count
+        );
+        return Ok(());
+    }
+
+    if let Some(Cmd::Render { input, out, socket }) = args.cmd.as_ref() {
+        use anyhow::Context as _;
+        let r = crate::template::Renderer::new();
+        let ctx = crate::template::RenderContext {
+            socket_path: socket.clone(),
+        };
+        r.render_file(input, out, &ctx)
+            .with_context(|| format!("render {} -> {}", input.display(), out.display()))?;
+        println!(
+            "rendered {} -> {} (mode 0600)",
+            input.display(),
+            out.display()
+        );
+        return Ok(());
+    }
+
+    if let Some(Cmd::ApproleSetup { role_id }) = args.cmd.as_ref() {
+        use anyhow::Context as _;
+        // Read master password from env or interactive prompt. Wrap in
+        // Zeroizing so the buffer is zeroed when the variable drops; the
+        // password lives only as long as the unlock call.
+        let master = zeroize::Zeroizing::new(
+            if let Ok(m) = std::env::var("VAULTPROXY_MASTER_PASSWORD") {
+                m
+            } else {
+                rpassword::prompt_password("master password: ")
+                    .context("read master password from tty")?
+            },
+        );
+        let creds = crate::keystore::unlock_keystore(&args.config_dir, Some(master.as_str()))
+            .context("unlock keystore with master password")?;
+        drop(master);
+        let sid = crate::approle::setup_approle(
+            std::path::Path::new(&args.config_dir),
+            role_id,
+            &creds,
+        )?;
+        use secrecy::ExposeSecret;
+        println!("AppRole '{}' provisioned.", role_id);
+        println!();
+        println!("secret_id (write to a 0600 file, e.g. /etc/vp/secret-id):");
+        println!("{}", sid.expose_secret());
+        println!();
+        println!("Then start the daemon with:");
+        println!("  vaultproxy --listen ... \\");
+        println!("    --approle-role-id {} \\", role_id);
+        println!("    --approle-secret-id-file /etc/vp/secret-id");
+        return Ok(());
+    }
 
     // Issue (iter-27/28): --check validates services.toml without a live
     // Vaultwarden connection. Useful for CI, pre-deploy hooks, and Docker
@@ -685,6 +877,38 @@ async fn main() -> anyhow::Result<()> {
         return start_server(args, vault, &config_dir, creds.cloud).await;
     }
 
+    // AppRole unlock path — non-TPM unlock for cloud VMs, containers, and
+    // headless CI where MASTER_PASSWORD env would leak via /proc/<pid>/environ.
+    // Reads secret_id from a 0600 file once at startup, zeroizes it, and
+    // bypasses both the TPM and password-prompt paths.
+    if let (Some(role), Some(sid_file)) = (
+        args.approle_role_id.as_deref(),
+        args.approle_secret_id_file.as_ref(),
+    ) {
+        use anyhow::Context as _;
+        tracing::info!("unlocking keystore via AppRole '{}'", role);
+        let sid_raw = std::fs::read_to_string(sid_file).with_context(|| {
+            format!("read --approle-secret-id-file {}", sid_file.display())
+        })?;
+        let sid = zeroize::Zeroizing::new(sid_raw);
+        let creds = crate::approle::unlock_with_approle(
+            std::path::Path::new(&config_dir),
+            role,
+            sid.trim(),
+        )?;
+        // sid (Zeroizing) drops here, zeroizing the buffer.
+        drop(sid);
+        tracing::info!("connecting to Vaultwarden at {}", creds.vaultwarden.url);
+        let vault = VaultManager::new(
+            &creds.vaultwarden.url,
+            &creds.vaultwarden.email,
+            &creds.vaultwarden.master_password,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("vault init failed: {}", e))?;
+        return start_server(args, vault, &config_dir, creds.cloud).await;
+    }
+
     // Try automatic unlock (TPM or already configured)
     if keystore::is_configured(&config_dir) {
         if keystore::has_tpm_key(&config_dir) {
@@ -935,6 +1159,13 @@ async fn start_server(
     // Background tokio tasks spawned below are never reached in this branch.
     // MCP server mode: expose Vaultwarden management tools over stdio.
     // Runs instead of the HTTP proxy — the binary becomes a stdio MCP server.
+    //
+    // The MCP server intentionally does NOT receive an AccessLog handle: all
+    // privileged actions surfaced by the MCP server (currently just `rotate`)
+    // proxy back to the daemon over HTTP, and the daemon records the audit
+    // entry on the server side. Logging from both sides would mean two
+    // separate processes appending to the same file without a shared
+    // in-process Mutex, which can interleave lines larger than PIPE_BUF.
     if args.mcp {
         let smb = crate::proxy::SmbConfig {
             helper_path: args.smb_helper_path.clone(),
@@ -942,7 +1173,7 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb).await;
+        return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb, None).await;
     }
 
     if let Some(ref addr_str) = args.mcp_http {
@@ -954,7 +1185,7 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr).await;
+        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, None).await;
     }
 
     if let Some(ref server_name) = args.launch {
@@ -1406,6 +1637,40 @@ async fn start_server(
         config_dir
     )));
 
+    // Build the HMAC-chained access log up front so both the local credential
+    // socket and the daemon-side /rotate handler share the same in-process
+    // `Mutex<File>` — opening twice in the same process would also be safe
+    // (Mutex<File> guards the writer) but sharing one Arc keeps a single
+    // chain head and avoids the cross-process write race on >PIPE_BUF lines.
+    let access_log = build_access_log(&args.access_log_path)?;
+
+    // Build the optional post-rotation hook. We validate existence and the
+    // executable bit at startup so a misconfigured --on-rotation flag fails
+    // fast — otherwise the spawn would only error at the first rotation,
+    // which an operator may not notice for hours.
+    let rotation_hook: Option<std::sync::Arc<crate::hooks::RotationHook>> =
+        if args.on_rotation.is_empty() {
+            None
+        } else {
+            let path = std::path::PathBuf::from(&args.on_rotation);
+            if !path.exists() {
+                anyhow::bail!("--on-rotation script {} does not exist", path.display());
+            }
+            // Verify the file is executable by the daemon's UID — otherwise
+            // the spawn will fail at the first rotation and the operator may
+            // not notice for hours. Refuse to start instead.
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)?.permissions().mode();
+            if mode & 0o111 == 0 {
+                anyhow::bail!(
+                    "--on-rotation script {} is not executable (mode {:o})",
+                    path.display(),
+                    mode
+                );
+            }
+            Some(std::sync::Arc::new(crate::hooks::RotationHook::new(path)))
+        };
+
     // Initialize notifier (supports ntfy, email queue, or disabled).
     //
     // Issue (iter-13): Warn when NOTIFY_CHANNEL is set to a channel that
@@ -1496,6 +1761,8 @@ async fn start_server(
         browser: None,
         permissions,
         audit_log,
+        access_log: access_log.clone(),
+        rotation_hook: rotation_hook.clone(),
         mint_wi_mcp: Arc::new(
             crate::rotate::strategies::SshDockerMintExecutor::from_env(),
         ),
@@ -2704,11 +2971,48 @@ async fn start_server(
     // Local UNIX-socket RPC for colocated --launch processes. SO_PEERCRED-gated,
     // same-UID only; serves plaintext fields from the already-authed item cache
     // so launches don't have to re-auth to Bitwarden cloud (which rate-limits).
+    //
+    // A TTL'd CredCache sits in front of the VaultManager for socket fetches —
+    // see --cred-cache-ttl. CRED_CACHE_TTL=0 disables caching (CredCache::put
+    // is a no-op when default TTL is zero), so the cache is always constructed
+    // and the call sites stay branch-free.
+    //
+    // An optional HMAC-chained AccessLog records each fetch and the peer's
+    // SO_PEERCRED-attested uid/pid — see --access-log-path. Open at most
+    // once per daemon process so all writers share a Mutex on the same file
+    // handle and key, keeping the chain consistent.
     {
+        let cred_cache = std::sync::Arc::new(
+            crate::cred_cache::CredCache::with_ttl(
+                std::time::Duration::from_secs(args.cred_cache_ttl),
+            ),
+        );
+        // Sweeper task — proactively evict expired entries every 30 s so the
+        // map doesn't grow unbounded for cold keys that no one reads back.
+        let sweeper = cred_cache.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            // First tick fires immediately; skip it so the sweeper runs at +30s, not +0s.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                sweeper.purge_expired();
+            }
+        });
+
+        // Reuse the AccessLog Arc we built before AppState construction so
+        // the daemon-side /rotate handler and the local socket share one
+        // in-process Mutex<File>. Opening a second AccessLog on the same
+        // path would create a separate file handle whose writes could
+        // interleave with the first.
         let socket_vault = vault_arc.clone();
+        let socket_cache = cred_cache.clone();
+        let socket_log = access_log.clone();
         let socket_path = crate::local_socket::default_socket_path();
         tokio::spawn(async move {
-            if let Err(e) = crate::local_socket::run(socket_vault, socket_path).await {
+            if let Err(e) =
+                crate::local_socket::run(socket_vault, socket_cache, socket_log, socket_path).await
+            {
                 tracing::warn!("local credential socket exited: {}", e);
             }
         });
@@ -3619,6 +3923,7 @@ mod browser_rotate_guard_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-rotate-{n}.json"
             ))),
+            access_log: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
@@ -3759,6 +4064,7 @@ mod browser_status_tests {
             audit_log: Arc::new(AuditLog::new(&format!(
                 "/tmp/vp-test-browser-status-{n}.json"
             ))),
+            access_log: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
