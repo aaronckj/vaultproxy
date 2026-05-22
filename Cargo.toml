@@ -30,6 +30,10 @@ path = "src/bin/mcp_bearer_bridge.rs"
 name = "vaultproxy-mount-helper"
 path = "src/bin/mount_helper.rs"
 
+[[bin]]
+name = "mcp-rpc-bridge"
+path = "src/bin/mcp_rpc_bridge.rs"
+
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1", features = ["full"] }

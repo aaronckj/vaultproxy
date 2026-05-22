@@ -32,6 +32,7 @@ mod totp;
 mod tpm;
 pub mod vault;
 pub mod mcp_server;
+pub mod mcp_rpc_bridge;
 
 use std::sync::Arc;
 use axum::{extract::State as AxumState, Json as AxumJson};
