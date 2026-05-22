@@ -1,7 +1,8 @@
 //! TTL'd in-memory cache for credentials returned via the local socket.
 //! Values are wrapped in `SecretString` so they zeroize on drop and never
-//! appear in Debug output. Expiry is checked on read; a background sweeper
-//! evicts cold entries to keep memory bounded.
+//! appear in Debug output. Expiry is checked on read; `purge_expired()` is
+//! provided for callers (e.g. an interval task in a future commit) to invoke
+//! when they want to evict cold entries proactively.
 
 use dashmap::DashMap;
 use secrecy::{ExposeSecret, SecretString};
@@ -30,12 +31,11 @@ impl CredCache {
 
     pub fn get(&self, item: &str, field: &str) -> Option<SecretString> {
         let key = Key { item: item.into(), field: field.into() };
+        // Atomic: only remove if the entry we're looking at is actually expired.
+        // If a concurrent put() replaces the value between our get and remove,
+        // remove_if's predicate sees the new value and bails out.
+        self.inner.remove_if(&key, |_, e| e.expires_at <= Instant::now());
         let entry = self.inner.get(&key)?;
-        if entry.expires_at <= Instant::now() {
-            drop(entry);
-            self.inner.remove(&key);
-            return None;
-        }
         Some(SecretString::from(entry.value.expose_secret().to_string()))
     }
 

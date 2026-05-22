@@ -12,9 +12,9 @@ fn returns_cached_value_within_ttl() {
 
 #[test]
 fn evicts_on_expiry() {
-    let cache = CredCache::with_ttl(Duration::from_millis(10));
+    let cache = CredCache::with_ttl(Duration::from_millis(50));
     cache.put("svc", "k", SecretString::from("v".to_string()), None);
-    std::thread::sleep(Duration::from_millis(20));
+    std::thread::sleep(Duration::from_millis(100));
     assert!(cache.get("svc", "k").is_none());
     assert_eq!(cache.len(), 0, "expired entry removed on read");
 }
