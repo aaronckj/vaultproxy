@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 # MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
 # this crate's own syntax.  `let-chains` usage requires 1.87, but three
@@ -16,6 +16,17 @@ repository = "https://github.com/aaronckj/vaultproxy"
 homepage = "https://github.com/aaronckj/vaultproxy"
 keywords = ["mcp", "vaultwarden", "credentials", "security", "proxy"]
 categories = ["authentication", "network-programming"]
+
+# Files excluded from the published crates.io tarball. `target/`, `.git/`, and
+# anything matched by `.gitignore` are excluded by Cargo automatically; this
+# list catches things that are checked in but not useful to crates.io users.
+exclude = [
+    "playwright/__pycache__/",
+    "playwright/**/*.pyc",
+    "**/.DS_Store",
+    "dashboard/node_modules/",
+    "GAPS.md",
+]
 
 [lib]
 name = "vaultproxy"
