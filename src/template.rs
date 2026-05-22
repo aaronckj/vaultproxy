@@ -35,7 +35,7 @@ impl Renderer {
         tera.register_function("env", env_fn());
         tera.register_function("b64", b64_fn());
         // `vault` is registered per-render so each instance can capture
-        // its own socket_path; see render_with().
+        // its own socket_path; see render_string().
         Self { base_tera: tera }
     }
 
