@@ -1,0 +1,53 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    # Self-hosted runner on ubuntu-dev (the host that runs vault-proxy +
+    # mcp-rpc-bridge). If no self-hosted runner is registered, this job
+    # will queue and not run — the build artifact in the repo dir stays
+    # at the pre-merge version and the operator can deploy manually with:
+    #
+    #   cd /home/aaron/projects/mcp-vault-proxy
+    #   git pull --ff-only
+    #   cargo build --release
+    #   systemctl --user restart vault-proxy
+    #
+    # Register a runner with: forgejo-runner register ... (label: self-hosted)
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest main into the daemon's working tree
+        run: |
+          cd /home/aaron/projects/mcp-vault-proxy
+          git fetch --all --prune
+          git checkout main
+          git pull --ff-only
+
+      - name: Build release binaries
+        run: |
+          cd /home/aaron/projects/mcp-vault-proxy
+          cargo build --release --bins
+
+      - name: Verify both binaries built
+        run: |
+          test -x /home/aaron/projects/mcp-vault-proxy/target/release/vaultproxy
+          test -x /home/aaron/projects/mcp-vault-proxy/target/release/mcp-rpc-bridge
+
+      - name: Restart vault-proxy daemon
+        run: systemctl --user restart vault-proxy
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS http://127.0.0.1:3201/health >/dev/null 2>&1; then
+              echo "vault-proxy healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "vault-proxy did not come back up in 10s" >&2
+          systemctl --user status vault-proxy --no-pager | tail -20
+          exit 1
