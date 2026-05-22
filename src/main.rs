@@ -16,6 +16,7 @@
 // receive full dead-code checking.
 
 mod access_log;
+mod approle;
 mod audit;
 #[cfg(feature = "browser")]
 mod browser;
@@ -93,6 +94,17 @@ enum Cmd {
         /// `/tmp/vaultproxy-<uid>.sock` if XDG_RUNTIME_DIR is unset).
         #[arg(long, env = "VAULTPROXY_SOCKET")]
         socket: Option<std::path::PathBuf>,
+    },
+
+    /// Provision a new AppRole (role_id, secret_id) for non-TPM daemon
+    /// unlock. Reads the existing keystore via the master-password prompt
+    /// (or VAULTPROXY_MASTER_PASSWORD env) and writes an encrypted bundle
+    /// to <config-dir>/approles/<role-id>.json (mode 0600). Prints the
+    /// hex-encoded secret_id once to stdout — capture it, store in a 0600
+    /// file, and reference via --approle-secret-id-file at daemon startup.
+    ApproleSetup {
+        #[arg(long)]
+        role_id: String,
     },
 }
 
@@ -348,6 +360,19 @@ struct Args {
     #[arg(long, env = "ON_ROTATION_SCRIPT", default_value = "")]
     on_rotation: String,
 
+    /// Provisioned AppRole role_id for non-TPM unlock. Pairs with
+    /// --approle-secret-id-file. If set, the daemon reads secret_id from
+    /// the file, derives a KEK, and unlocks <config-dir>/approles/<role>.json
+    /// instead of prompting for a master password or unsealing via TPM.
+    #[arg(long, env = "APPROLE_ROLE_ID")]
+    approle_role_id: Option<String>,
+
+    /// Path to a 0600 file containing the hex-encoded secret_id generated
+    /// by `vaultproxy approle-setup --role-id <name>`. Read once at
+    /// startup, then immediately zeroized; never re-read.
+    #[arg(long, env = "APPROLE_SECRET_ID_FILE")]
+    approle_secret_id_file: Option<std::path::PathBuf>,
+
     /// Subcommand. Currently only `audit-verify` is supported — daemon
     /// startup happens when no subcommand is provided.
     #[command(subcommand)]
@@ -465,6 +490,40 @@ async fn main() -> anyhow::Result<()> {
             input.display(),
             out.display()
         );
+        return Ok(());
+    }
+
+    if let Some(Cmd::ApproleSetup { role_id }) = args.cmd.as_ref() {
+        use anyhow::Context as _;
+        // Read master password from env or interactive prompt. Wrap in
+        // Zeroizing so the buffer is zeroed when the variable drops; the
+        // password lives only as long as the unlock call.
+        let master = zeroize::Zeroizing::new(
+            if let Ok(m) = std::env::var("VAULTPROXY_MASTER_PASSWORD") {
+                m
+            } else {
+                rpassword::prompt_password("master password: ")
+                    .context("read master password from tty")?
+            },
+        );
+        let creds = crate::keystore::unlock_keystore(&args.config_dir, Some(master.as_str()))
+            .context("unlock keystore with master password")?;
+        drop(master);
+        let sid = crate::approle::setup_approle(
+            std::path::Path::new(&args.config_dir),
+            role_id,
+            &creds,
+        )?;
+        use secrecy::ExposeSecret;
+        println!("AppRole '{}' provisioned.", role_id);
+        println!();
+        println!("secret_id (write to a 0600 file, e.g. /etc/vp/secret-id):");
+        println!("{}", sid.expose_secret());
+        println!();
+        println!("Then start the daemon with:");
+        println!("  vaultproxy --listen ... \\");
+        println!("    --approle-role-id {} \\", role_id);
+        println!("    --approle-secret-id-file /etc/vp/secret-id");
         return Ok(());
     }
 
@@ -807,6 +866,38 @@ async fn main() -> anyhow::Result<()> {
 
         tracing::info!("running CLI setup wizard (--setup flag)");
         let creds = setup::run_cli_setup(&config_dir).await?;
+        tracing::info!("connecting to Vaultwarden at {}", creds.vaultwarden.url);
+        let vault = VaultManager::new(
+            &creds.vaultwarden.url,
+            &creds.vaultwarden.email,
+            &creds.vaultwarden.master_password,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("vault init failed: {}", e))?;
+        return start_server(args, vault, &config_dir, creds.cloud).await;
+    }
+
+    // AppRole unlock path — non-TPM unlock for cloud VMs, containers, and
+    // headless CI where MASTER_PASSWORD env would leak via /proc/<pid>/environ.
+    // Reads secret_id from a 0600 file once at startup, zeroizes it, and
+    // bypasses both the TPM and password-prompt paths.
+    if let (Some(role), Some(sid_file)) = (
+        args.approle_role_id.as_deref(),
+        args.approle_secret_id_file.as_ref(),
+    ) {
+        use anyhow::Context as _;
+        tracing::info!("unlocking keystore via AppRole '{}'", role);
+        let sid_raw = std::fs::read_to_string(sid_file).with_context(|| {
+            format!("read --approle-secret-id-file {}", sid_file.display())
+        })?;
+        let sid = zeroize::Zeroizing::new(sid_raw);
+        let creds = crate::approle::unlock_with_approle(
+            std::path::Path::new(&config_dir),
+            role,
+            sid.trim(),
+        )?;
+        // sid (Zeroizing) drops here, zeroizing the buffer.
+        drop(sid);
         tracing::info!("connecting to Vaultwarden at {}", creds.vaultwarden.url);
         let vault = VaultManager::new(
             &creds.vaultwarden.url,

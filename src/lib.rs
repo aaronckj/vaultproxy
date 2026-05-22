@@ -9,12 +9,13 @@
 // lib unit tests compiling without duplicating the business logic elsewhere.
 
 pub mod access_log;
+pub mod approle;
 mod audit;
 pub mod bearer_bridge;
 pub mod cred_cache;
 pub mod hooks;
 mod internal_token;
-mod keystore;
+pub mod keystore;
 mod launcher;
 pub mod local_socket;
 mod notify;
