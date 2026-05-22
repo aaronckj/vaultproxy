@@ -24,6 +24,7 @@ mod cred_cache;
 mod credential_audit;
 #[cfg(feature = "dashboard")]
 mod dashboard;
+mod hooks;
 mod internal_token;
 mod keystore;
 mod launcher;
@@ -314,6 +315,21 @@ struct Args {
     /// Verify integrity with: `vaultproxy audit-verify --log <path>`.
     #[arg(long, env = "ACCESS_LOG_PATH", default_value = "")]
     access_log_path: String,
+
+    /// Path to a script invoked after every SUCCESSFUL rotation.
+    ///
+    /// The script receives the rotated service name and an opaque item
+    /// identifier as positional args, plus env vars VP_ROTATION_SERVICE /
+    /// VP_ROTATION_ITEM_ID / VP_ROTATION_TS. Stdin is closed; stdout/stderr
+    /// are captured and logged (info on success, warn on non-zero exit). A
+    /// 30 s timeout kills the child if it hangs.
+    ///
+    /// The hook runs AFTER the rotation has been committed to the vault, so
+    /// a non-zero exit code is logged but does NOT undo the rotation. Use
+    /// this to bounce downstream services that cache the rotated credential,
+    /// e.g. `docker restart wi-mcp` after the wi-mcp bearer rotates.
+    #[arg(long, env = "ON_ROTATION_SCRIPT", default_value = "")]
+    on_rotation: String,
 
     /// Subcommand. Currently only `audit-verify` is supported — daemon
     /// startup happens when no subcommand is provided.
@@ -1504,6 +1520,33 @@ async fn start_server(
     // chain head and avoids the cross-process write race on >PIPE_BUF lines.
     let access_log = build_access_log(&args.access_log_path)?;
 
+    // Build the optional post-rotation hook. We validate existence and the
+    // executable bit at startup so a misconfigured --on-rotation flag fails
+    // fast — otherwise the spawn would only error at the first rotation,
+    // which an operator may not notice for hours.
+    let rotation_hook: Option<std::sync::Arc<crate::hooks::RotationHook>> =
+        if args.on_rotation.is_empty() {
+            None
+        } else {
+            let path = std::path::PathBuf::from(&args.on_rotation);
+            if !path.exists() {
+                anyhow::bail!("--on-rotation script {} does not exist", path.display());
+            }
+            // Verify the file is executable by the daemon's UID — otherwise
+            // the spawn will fail at the first rotation and the operator may
+            // not notice for hours. Refuse to start instead.
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)?.permissions().mode();
+            if mode & 0o111 == 0 {
+                anyhow::bail!(
+                    "--on-rotation script {} is not executable (mode {:o})",
+                    path.display(),
+                    mode
+                );
+            }
+            Some(std::sync::Arc::new(crate::hooks::RotationHook::new(path)))
+        };
+
     // Initialize notifier (supports ntfy, email queue, or disabled).
     //
     // Issue (iter-13): Warn when NOTIFY_CHANNEL is set to a channel that
@@ -1595,6 +1638,7 @@ async fn start_server(
         permissions,
         audit_log,
         access_log: access_log.clone(),
+        rotation_hook: rotation_hook.clone(),
         mint_wi_mcp: Arc::new(
             crate::rotate::strategies::SshDockerMintExecutor::from_env(),
         ),

@@ -128,6 +128,30 @@ pub async fn handle_rotate(
                 e
             );
         }
+
+        // Fire the operator-configured post-rotation hook. The hook runs
+        // AFTER the rotation has already been committed, so a failure
+        // (spawn error, non-zero exit, timeout) is logged but does NOT
+        // affect the rotate HTTP response. Spawned detached so a slow
+        // hook doesn't delay the response either; the hook itself has a
+        // 30 s internal timeout to bound runaway scripts.
+        if let Some(ref hook) = state.rotation_hook {
+            // The item_id we can offer the hook is the service name; per-
+            // strategy item identifiers aren't surfaced in RotationResult
+            // yet. The service name is enough for typical hook scripts
+            // (e.g. `docker restart $1`).
+            let hook = hook.clone();
+            let service = req.service.clone();
+            tokio::spawn(async move {
+                if let Err(e) = hook.fire(&service, &service).await {
+                    tracing::error!(
+                        service = %service,
+                        error = %e,
+                        "rotation hook fire failed"
+                    );
+                }
+            });
+        }
     }
 
     // Issue (iter-26): Audit all rotation attempts regardless of success/failure.

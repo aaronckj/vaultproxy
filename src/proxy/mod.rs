@@ -136,6 +136,14 @@ pub struct AppState {
     /// Populated from `--access-log-path` at startup; `None` disables
     /// logging.
     pub access_log: Option<Arc<crate::access_log::AccessLog>>,
+    /// Optional post-rotation subprocess hook. When the daemon is started
+    /// with `--on-rotation <script>`, every successful rotation fires the
+    /// script with `<service> <item_id>` args + env vars. The hook runs in
+    /// a detached `tokio::spawn` so a slow script doesn't delay the
+    /// rotation HTTP response.
+    ///
+    /// See `crate::hooks::RotationHook` and the `--on-rotation` CLI flag.
+    pub rotation_hook: Option<Arc<crate::hooks::RotationHook>>,
     /// Production mint channel for the wi-mcp bearer rotation strategy.
     /// Constructed from env at startup; tests can substitute via the
     /// `RotateContext` trait directly.
@@ -1455,6 +1463,7 @@ impl AppState {
             ))),
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             access_log: None,
+            rotation_hook: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
@@ -1707,6 +1716,7 @@ mod integration_tests {
             ))),
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             access_log: None,
+            rotation_hook: None,
             mint_wi_mcp: Arc::new(
                 crate::rotate::strategies::SshDockerMintExecutor::from_env(),
             ),
