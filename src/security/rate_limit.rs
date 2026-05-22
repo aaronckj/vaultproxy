@@ -427,7 +427,7 @@ pub async fn rate_limit_middleware(
 /// callers share a single bucket (same behaviour as before iter-85).
 ///
 /// Each MCP server configuration should set:
-/// ```
+/// ```text
 /// X-Caller-Id: <unique-name>   # e.g. "connecterr-unifi", "connecterr-vault"
 /// ```
 pub fn default_rate_limiter() -> RateLimiter {
