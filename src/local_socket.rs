@@ -16,10 +16,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::cred_cache::CredCache;
 use crate::vault::VaultManager;
 
 pub fn default_socket_path() -> PathBuf {
@@ -68,7 +70,11 @@ struct PingResponse {
     pong: bool,
 }
 
-pub async fn run(vault: Arc<VaultManager>, socket_path: PathBuf) -> anyhow::Result<()> {
+pub async fn run(
+    vault: Arc<VaultManager>,
+    cache: Arc<CredCache>,
+    socket_path: PathBuf,
+) -> anyhow::Result<()> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -99,8 +105,9 @@ pub async fn run(vault: Arc<VaultManager>, socket_path: PathBuf) -> anyhow::Resu
             continue;
         }
         let vault = vault.clone();
+        let cache = cache.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, vault).await {
+            if let Err(e) = handle_conn(stream, vault, cache).await {
                 tracing::debug!("local socket conn error: {}", e);
             }
         });
@@ -128,7 +135,11 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     }
 }
 
-async fn handle_conn(stream: UnixStream, vault: Arc<VaultManager>) -> anyhow::Result<()> {
+async fn handle_conn(
+    stream: UnixStream,
+    vault: Arc<VaultManager>,
+    cache: Arc<CredCache>,
+) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
@@ -146,8 +157,19 @@ async fn handle_conn(stream: UnixStream, vault: Arc<VaultManager>) -> anyhow::Re
                 std::collections::BTreeMap::new();
             let mut error: Option<String> = None;
             for f in &fields {
+                // Cache hit short-circuits the VW round-trip.
+                if let Some(cached) = cache.get(&item, f) {
+                    out.insert(f.clone(), cached.expose_secret().to_string());
+                    continue;
+                }
                 match vault.get_field_resolved(&item, f).await {
                     Ok(v) => {
+                        cache.put(
+                            &item,
+                            f,
+                            secrecy::SecretString::from(v.clone()),
+                            None,
+                        );
                         out.insert(f.clone(), v);
                     }
                     Err(e) => {

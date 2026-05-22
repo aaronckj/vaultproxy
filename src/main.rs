@@ -18,6 +18,7 @@
 mod audit;
 #[cfg(feature = "browser")]
 mod browser;
+mod cred_cache;
 #[cfg(feature = "engine")]
 mod credential_audit;
 #[cfg(feature = "dashboard")]
@@ -270,6 +271,20 @@ struct Args {
     /// refresh. Operators should monitor for repeated sync-failure warnings.
     #[arg(long, env = "VAULT_REFRESH_INTERVAL_SECS", default_value = "0")]
     vault_refresh_interval_secs: u64,
+
+    /// TTL in seconds for credentials cached by the local-socket handler.
+    ///
+    /// On a cache hit the socket handler returns the previously-fetched
+    /// credential directly without re-reading from Vaultwarden, eliminating
+    /// the per-spawn re-auth round-trip that triggers Bitwarden cloud
+    /// rate-limits when many MCP children launch in close succession.
+    ///
+    /// Set to 0 to disable caching entirely (every socket fetch re-reads
+    /// from Vaultwarden — pre-cache behavior). Default 60 s is a sensible
+    /// balance: long enough to coalesce typical bursts of MCP launches,
+    /// short enough that rotations propagate within a minute.
+    #[arg(long, env = "CRED_CACHE_TTL", default_value = "60")]
+    cred_cache_ttl: u64,
 
     /// Background credential-health audit interval in seconds.
     ///
@@ -2704,11 +2719,37 @@ async fn start_server(
     // Local UNIX-socket RPC for colocated --launch processes. SO_PEERCRED-gated,
     // same-UID only; serves plaintext fields from the already-authed item cache
     // so launches don't have to re-auth to Bitwarden cloud (which rate-limits).
+    //
+    // A TTL'd CredCache sits in front of the VaultManager for socket fetches —
+    // see --cred-cache-ttl. CRED_CACHE_TTL=0 disables caching (CredCache::put
+    // is a no-op when default TTL is zero), so the cache is always constructed
+    // and the call sites stay branch-free.
     {
+        let cred_cache = std::sync::Arc::new(
+            crate::cred_cache::CredCache::with_ttl(
+                std::time::Duration::from_secs(args.cred_cache_ttl),
+            ),
+        );
+        // Sweeper task — proactively evict expired entries every 30 s so the
+        // map doesn't grow unbounded for cold keys that no one reads back.
+        let sweeper = cred_cache.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            // First tick fires immediately; skip it so the sweeper runs at +30s, not +0s.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                sweeper.purge_expired();
+            }
+        });
+
         let socket_vault = vault_arc.clone();
+        let socket_cache = cred_cache.clone();
         let socket_path = crate::local_socket::default_socket_path();
         tokio::spawn(async move {
-            if let Err(e) = crate::local_socket::run(socket_vault, socket_path).await {
+            if let Err(e) =
+                crate::local_socket::run(socket_vault, socket_cache, socket_path).await
+            {
                 tracing::warn!("local credential socket exited: {}", e);
             }
         });

@@ -27,3 +27,18 @@ fn debug_does_not_leak_value() {
     let dbg = format!("{:?}", got);
     assert!(!dbg.contains("VERY-SECRET-XYZ"), "leaked: {dbg}");
 }
+
+#[test]
+fn zero_ttl_default_disables_put() {
+    let cache = CredCache::with_ttl(Duration::ZERO);
+    cache.put("svc", "k", SecretString::from("v".to_string()), None);
+    assert_eq!(cache.len(), 0, "put should be a no-op when default TTL is zero and no per-entry TTL");
+    assert!(cache.get("svc", "k").is_none());
+}
+
+#[test]
+fn zero_default_but_explicit_per_entry_ttl_still_caches() {
+    let cache = CredCache::with_ttl(Duration::ZERO);
+    cache.put("svc", "k", SecretString::from("v".to_string()), Some(Duration::from_secs(60)));
+    assert!(cache.get("svc", "k").is_some(), "explicit per-entry TTL overrides zero default");
+}
