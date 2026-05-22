@@ -8,6 +8,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use vaultproxy::mcp_rpc_bridge::header_injector::HeaderInjector;
+use vaultproxy::mcp_rpc_bridge::stdio_server::serve_streams;
+use vaultproxy::mcp_rpc_bridge::Forwarder;
 
 /// Run a one-shot socket server that listens on `path` and, for every
 /// `get_item_fields` request, replies with a token derived from the
@@ -174,4 +176,124 @@ async fn keeps_stale_token_when_refresh_fails() {
         "stale token must be preserved when refresh fails"
     );
     drop(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Wave 3 Task 10: stdio_server tests
+// ---------------------------------------------------------------------------
+
+/// Test-only forwarder that echoes the request back with a synthesized
+/// result. Used by stdio_server tests to verify framing without spinning
+/// up a real HTTP upstream.
+struct EchoForwarder;
+
+#[async_trait::async_trait]
+impl Forwarder for EchoForwarder {
+    async fn forward(&self, req: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let method = req.get("method").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        Ok(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "echo": method, "params": req.get("params").cloned() },
+        }))
+    }
+}
+
+/// Forwarder that always errors, to test the error envelope path.
+struct FailingForwarder(String);
+
+#[async_trait::async_trait]
+impl Forwarder for FailingForwarder {
+    async fn forward(&self, _: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("simulated upstream failure: {}", self.0)
+    }
+}
+
+#[tokio::test]
+async fn stdio_server_echoes_one_request() {
+    use std::sync::Arc;
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}\n";
+    let mut output: Vec<u8> = Vec::new();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let line = s.lines().next().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], 1);
+    assert_eq!(parsed["result"]["echo"], "ping");
+}
+
+#[tokio::test]
+async fn stdio_server_handles_multiple_requests_in_sequence() {
+    use std::sync::Arc;
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\",\"params\":{}}\n\
+                  {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"b\",\"params\":{}}\n\
+                  {\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"c\",\"params\":{}}\n";
+    let mut output: Vec<u8> = Vec::new();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let lines: Vec<_> = s.lines().collect();
+    assert_eq!(lines.len(), 3);
+    for (i, line) in lines.iter().enumerate() {
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["id"], (i as u64) + 1);
+        assert_eq!(parsed["result"]["echo"], ["a", "b", "c"][i]);
+    }
+}
+
+#[tokio::test]
+async fn stdio_server_returns_parse_error_envelope_on_bad_json() {
+    use std::sync::Arc;
+    let input = b"not json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"valid\",\"params\":{}}\n";
+    let mut output: Vec<u8> = Vec::new();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let lines: Vec<_> = s.lines().collect();
+    assert_eq!(lines.len(), 2, "one error envelope, then one valid response");
+
+    let parse_err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(parse_err["error"]["code"], -32700);
+    assert!(parse_err["error"]["message"].as_str().unwrap().contains("Parse error"));
+
+    let valid: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(valid["id"], 2);
+    assert_eq!(valid["result"]["echo"], "valid");
+}
+
+#[tokio::test]
+async fn stdio_server_returns_forwarder_error_envelope() {
+    use std::sync::Arc;
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"x\",\"params\":{}}\n";
+    let mut output: Vec<u8> = Vec::new();
+    serve_streams(
+        &input[..],
+        &mut output,
+        Arc::new(FailingForwarder("upstream offline".into())),
+    ).await.unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let line = s.lines().next().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], 42);
+    assert_eq!(parsed["error"]["code"], -32099);
+    assert!(parsed["error"]["message"].as_str().unwrap().contains("upstream offline"));
+}
+
+#[tokio::test]
+async fn stdio_server_skips_blank_lines() {
+    use std::sync::Arc;
+    let input = b"\n\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"go\",\"params\":{}}\n\n";
+    let mut output: Vec<u8> = Vec::new();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+
+    let s = String::from_utf8(output).unwrap();
+    let lines: Vec<_> = s.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(parsed["result"]["echo"], "go");
 }
