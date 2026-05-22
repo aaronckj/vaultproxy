@@ -180,6 +180,9 @@ impl AuthPattern {
     /// reverse map from vault item names to registry service names, so the
     /// rotation button in `items.html` can pass `unifi_service_name` and
     /// trigger UniFi session cache invalidation on a successful rotation.
+    /// The handler is feature-gated behind `dashboard`, so the default
+    /// build sees this as dead.
+    #[allow(dead_code)]
     pub fn vault_item(&self) -> &str {
         match self {
             AuthPattern::Header { vault_item, .. } => vault_item,
@@ -268,6 +271,9 @@ impl ServiceEntry {
     /// Delegates to `AuthPattern::vault_item()`.  Used by the dashboard
     /// `GET /api/items` handler (iter-125) to build the reverse map from
     /// vault item names to registry service names for the rotation button.
+    /// Handler is feature-gated behind `dashboard`; default build sees this
+    /// as dead.
+    #[allow(dead_code)]
     pub fn vault_item(&self) -> &str {
         self.auth.vault_item()
     }

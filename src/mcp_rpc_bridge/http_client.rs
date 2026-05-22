@@ -29,7 +29,11 @@ impl HttpClient {
             .timeout(Duration::from_secs(120))
             .build()
             .context("build reqwest client")?;
-        Ok(Self { upstream, injector, http })
+        Ok(Self {
+            upstream,
+            injector,
+            http,
+        })
     }
 
     /// Send a single request body to the upstream with the current

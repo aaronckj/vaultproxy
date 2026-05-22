@@ -35,15 +35,22 @@ pub struct CredCache {
 
 impl CredCache {
     pub fn with_ttl(default_ttl: Duration) -> Self {
-        Self { inner: DashMap::new(), default_ttl }
+        Self {
+            inner: DashMap::new(),
+            default_ttl,
+        }
     }
 
     pub fn get(&self, item: &str, field: &str) -> Option<SecretString> {
-        let key = Key { item: item.into(), field: field.into() };
+        let key = Key {
+            item: item.into(),
+            field: field.into(),
+        };
         // Atomic: only remove if the entry we're looking at is actually expired.
         // If a concurrent put() replaces the value between our get and remove,
         // remove_if's predicate sees the new value and bails out.
-        self.inner.remove_if(&key, |_, e| e.expires_at <= Instant::now());
+        self.inner
+            .remove_if(&key, |_, e| e.expires_at <= Instant::now());
         let entry = self.inner.get(&key)?;
         Some(SecretString::from(entry.value.expose_secret().to_string()))
     }
@@ -55,7 +62,10 @@ impl CredCache {
         if self.default_ttl.is_zero() && ttl.is_none() {
             return;
         }
-        let key = Key { item: item.into(), field: field.into() };
+        let key = Key {
+            item: item.into(),
+            field: field.into(),
+        };
         let expires_at = Instant::now() + ttl.unwrap_or(self.default_ttl);
         self.inner.insert(key, Entry { value, expires_at });
     }
@@ -70,5 +80,12 @@ impl CredCache {
     // compile time — silence the resulting dead_code warning there without
     // hiding it from the lib copy.
     #[allow(dead_code)]
-    pub fn len(&self) -> usize { self.inner.len() }
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }

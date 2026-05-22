@@ -71,8 +71,8 @@ pub async fn run() -> Result<()> {
     let path = resolve_bridge_path(&args);
     let body = std::fs::read_to_string(&path)
         .with_context(|| format!("read bridge config {}", path.display()))?;
-    let cfg: BridgeConfig = toml::from_str(&body)
-        .with_context(|| format!("parse bridge config {}", path.display()))?;
+    let cfg: BridgeConfig =
+        toml::from_str(&body).with_context(|| format!("parse bridge config {}", path.display()))?;
 
     let socket = cfg
         .socket

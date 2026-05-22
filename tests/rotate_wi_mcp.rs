@@ -11,15 +11,14 @@ use std::time::Duration;
 #[tokio::test]
 #[ignore]
 async fn live_rotate_wi_mcp() {
-    let config_dir = std::env::var("CONFIG_DIR")
-        .expect("CONFIG_DIR env var required for live test");
+    let config_dir =
+        std::env::var("CONFIG_DIR").expect("CONFIG_DIR env var required for live test");
     let token_path = format!("{}/internal-token", config_dir);
     let internal_token = std::fs::read_to_string(&token_path)
         .expect("read internal-token")
         .trim()
         .to_string();
-    let vp_url = std::env::var("VP_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3201".to_string());
+    let vp_url = std::env::var("VP_URL").unwrap_or_else(|_| "http://127.0.0.1:3201".to_string());
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))

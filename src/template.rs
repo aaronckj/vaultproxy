@@ -52,7 +52,12 @@ impl Renderer {
             .map_err(|e| anyhow!("tera render: {}", flatten_tera_err(&e)))
     }
 
-    pub fn render_file(&self, tmpl_path: &Path, out_path: &Path, ctx: &RenderContext) -> Result<()> {
+    pub fn render_file(
+        &self,
+        tmpl_path: &Path,
+        out_path: &Path,
+        ctx: &RenderContext,
+    ) -> Result<()> {
         // Refuse world-writable templates — they could be tampered with by
         // any local user, defeating the point of writing the output 0600.
         let meta = std::fs::metadata(tmpl_path)

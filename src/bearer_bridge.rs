@@ -37,7 +37,11 @@ impl std::fmt::Display for TokenError {
                  nothing to resolve",
             ),
             TokenError::SocketFailed(e) => {
-                write!(f, "VAULT_ITEM resolution via vault-proxy socket failed: {}", e)
+                write!(
+                    f,
+                    "VAULT_ITEM resolution via vault-proxy socket failed: {}",
+                    e
+                )
             }
         }
     }
@@ -74,11 +78,7 @@ where
     Err(TokenError::Missing)
 }
 
-async fn fetch_from_socket(
-    socket_path: &Path,
-    item: &str,
-    field: &str,
-) -> anyhow::Result<String> {
+async fn fetch_from_socket(socket_path: &Path, item: &str, field: &str) -> anyhow::Result<String> {
     crate::local_socket::client::get_field(socket_path, item, field)
         .await
         .with_context(|| format!("get_field('{}', '{}')", item, field))
@@ -93,7 +93,9 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixListener;
 
-    fn env_from(map: &'static HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
+    fn env_from(
+        map: &'static HashMap<&'static str, &'static str>,
+    ) -> impl Fn(&str) -> Option<String> {
         move |k: &str| map.get(k).map(|s| s.to_string())
     }
 
@@ -131,7 +133,9 @@ mod tests {
                             "fields": { field: token },
                         }),
                         Some(Err(e)) => serde_json::json!({"ok": false, "error": e}),
-                        None => serde_json::json!({"ok": false, "error": format!("unknown item '{}'", item)}),
+                        None => {
+                            serde_json::json!({"ok": false, "error": format!("unknown item '{}'", item)})
+                        }
                     };
                     let mut body = serde_json::to_string(&resp).unwrap();
                     body.push('\n');
@@ -150,7 +154,8 @@ mod tests {
         let (sock_path, _h) = spawn_fake_socket(responses).await;
         let mut env_map = HashMap::new();
         env_map.insert("VAULT_ITEM", "My Item");
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || sock_path.clone()).await;
         let tok = result.expect("should resolve");
         assert_eq!(&*tok, "tok_from_socket");
@@ -161,7 +166,8 @@ mod tests {
         // No socket needed; provider must not even be invoked.
         let mut env_map = HashMap::new();
         env_map.insert("BEARER_TOKEN", "legacy_token");
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || {
             panic!("socket provider must not be called when VAULT_ITEM is unset")
         })
@@ -178,7 +184,8 @@ mod tests {
         let mut env_map = HashMap::new();
         env_map.insert("VAULT_ITEM", "My Item");
         env_map.insert("BEARER_TOKEN", "legacy_token");
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || sock_path.clone()).await;
         let tok = result.expect("should resolve");
         assert_eq!(&*tok, "from_socket");
@@ -187,7 +194,8 @@ mod tests {
     #[tokio::test]
     async fn errors_when_neither_set() {
         let env_map: HashMap<&'static str, &'static str> = HashMap::new();
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || {
             panic!("socket provider must not be called")
         })
@@ -205,7 +213,8 @@ mod tests {
         let mut env_map = HashMap::new();
         env_map.insert("VAULT_ITEM", "Some Item");
         env_map.insert("BEARER_TOKEN", "this_should_not_be_used");
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || {
             std::path::PathBuf::from("/does/not/exist.sock")
         })
@@ -219,12 +228,16 @@ mod tests {
     #[tokio::test]
     async fn custom_vault_field_honored() {
         let mut responses = HashMap::new();
-        responses.insert("Item w/ Custom Field".to_string(), Ok("custom_value".to_string()));
+        responses.insert(
+            "Item w/ Custom Field".to_string(),
+            Ok("custom_value".to_string()),
+        );
         let (sock_path, _h) = spawn_fake_socket(responses).await;
         let mut env_map = HashMap::new();
         env_map.insert("VAULT_ITEM", "Item w/ Custom Field");
         env_map.insert("VAULT_FIELD", "custom_field");
-        let env_map_ref: &'static HashMap<&'static str, &'static str> = Box::leak(Box::new(env_map));
+        let env_map_ref: &'static HashMap<&'static str, &'static str> =
+            Box::leak(Box::new(env_map));
         let result = resolve_token(env_from(env_map_ref), || sock_path.clone()).await;
         let tok = result.expect("should resolve");
         assert_eq!(&*tok, "custom_value");

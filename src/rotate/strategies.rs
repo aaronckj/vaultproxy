@@ -142,10 +142,7 @@ pub async fn bootstrap_unifi_api_key(
         let api_key = body["data"]["apiKey"]
             .as_str()
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "bootstrap: 'apiKey' not found in UniFi response: {}",
-                    body
-                )
+                anyhow::anyhow!("bootstrap: 'apiKey' not found in UniFi response: {}", body)
             })?
             .to_string();
 
@@ -298,8 +295,7 @@ impl SshDockerMintExecutor {
     pub fn from_env() -> Self {
         Self {
             host: std::env::var("WI_MCP_SSH_HOST").unwrap_or_else(|_| "unraid".to_string()),
-            container: std::env::var("WI_MCP_CONTAINER")
-                .unwrap_or_else(|_| "wi-mcp".to_string()),
+            container: std::env::var("WI_MCP_CONTAINER").unwrap_or_else(|_| "wi-mcp".to_string()),
             ssh_path: std::env::var("WI_MCP_SSH_PATH").unwrap_or_else(|_| "ssh".to_string()),
             timeout: Duration::from_secs(
                 std::env::var("WI_MCP_MINT_TIMEOUT_SECS")
@@ -313,11 +309,7 @@ impl SshDockerMintExecutor {
 
 #[async_trait::async_trait]
 impl MintExecutor for SshDockerMintExecutor {
-    async fn mint(
-        &self,
-        username: &str,
-        password: &str,
-    ) -> anyhow::Result<Zeroizing<String>> {
+    async fn mint(&self, username: &str, password: &str) -> anyhow::Result<Zeroizing<String>> {
         use tokio::io::AsyncWriteExt;
         use tokio::process::Command;
 
@@ -337,9 +329,7 @@ impl MintExecutor for SshDockerMintExecutor {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .with_context(|| {
-                format!("mint: spawn '{}' failed", self.ssh_path)
-            })?;
+            .with_context(|| format!("mint: spawn '{}' failed", self.ssh_path))?;
 
         // Pipe password to stdin (no trailing newline-mangling: Python's
         // `sys.stdin.readline().rstrip("\n")` strips the newline we write here).
@@ -381,8 +371,7 @@ impl MintExecutor for SshDockerMintExecutor {
             );
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("mint: stdout is not valid UTF-8")?;
+        let stdout = String::from_utf8(output.stdout).context("mint: stdout is not valid UTF-8")?;
         let token = parse_mint_stdout(&stdout)?;
         Ok(Zeroizing::new(token))
     }
@@ -418,8 +407,7 @@ fn wi_mcp_admin_err(message: impl Into<String>) -> RotationResult {
 pub(crate) fn generate_admin_password(len: usize) -> zeroize::Zeroizing<String> {
     use rand::rngs::OsRng;
     use rand::RngCore;
-    const CHARSET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut buf = vec![0u8; len];
     OsRng.fill_bytes(&mut buf);
     let s: String = buf
@@ -539,8 +527,7 @@ impl SshDockerAdminPasswordChanger {
     pub fn from_env() -> Self {
         Self {
             host: std::env::var("WI_MCP_SSH_HOST").unwrap_or_else(|_| "unraid".to_string()),
-            container: std::env::var("WI_MCP_CONTAINER")
-                .unwrap_or_else(|_| "wi-mcp".to_string()),
+            container: std::env::var("WI_MCP_CONTAINER").unwrap_or_else(|_| "wi-mcp".to_string()),
             ssh_path: std::env::var("WI_MCP_SSH_PATH").unwrap_or_else(|_| "ssh".to_string()),
             timeout: Duration::from_secs(
                 std::env::var("WI_MCP_MINT_TIMEOUT_SECS")
@@ -607,9 +594,8 @@ fn base64_python_bootstrap(script: &str) -> String {
     bootstrap.push_str(&b64);
     bootstrap.push_str("\").decode(); ");
     bootstrap.push_str("__ns = {\"__name__\": \"__main__\"}; ");
-    bootstrap.push_str(
-        "getattr(__builtins__, \"exec\", None) or __builtins__.__getitem__(\"exec\"); ",
-    );
+    bootstrap
+        .push_str("getattr(__builtins__, \"exec\", None) or __builtins__.__getitem__(\"exec\"); ");
     // Use the builtins exec(...) function via getattr to dodge any
     // `exec(` substring scanners on the source code; behavior is identical.
     bootstrap.push_str("(getattr(__builtins__, \"exec\", None) or __builtins__.__getitem__(\"exec\"))(__src, __ns)");
@@ -618,12 +604,7 @@ fn base64_python_bootstrap(script: &str) -> String {
 
 #[async_trait::async_trait]
 impl AdminPasswordChanger for SshDockerAdminPasswordChanger {
-    async fn change(
-        &self,
-        username: &str,
-        current: &str,
-        new: &str,
-    ) -> anyhow::Result<()> {
+    async fn change(&self, username: &str, current: &str, new: &str) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
         use tokio::process::Command;
 
@@ -710,7 +691,10 @@ mod tests {
         // parameter types and return type. The if-false guard means the future
         // is never polled and no network call is made.
         if false {
-            let _ = bootstrap_unifi_api_key("uri", "user", "pass", false);
+            // Drop the future without awaiting; clippy's
+            // `let_underscore_future` lint requires an explicit drop rather
+            // than `let _ = <future>`.
+            drop(bootstrap_unifi_api_key("uri", "user", "pass", false));
         }
     }
 
@@ -968,11 +952,7 @@ mod tests {
     #[test]
     fn parse_mint_stdout_multi_token_errors() {
         let err = parse_mint_stdout("abc def\n").unwrap_err().to_string();
-        assert!(
-            err.contains("unexpected stdout shape"),
-            "got: {}",
-            err
-        );
+        assert!(err.contains("unexpected stdout shape"), "got: {}", err);
     }
 
     #[test]
@@ -1001,12 +981,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminPasswordChanger for FakeAdminPasswordChanger {
-        async fn change(
-            &self,
-            username: &str,
-            current: &str,
-            new: &str,
-        ) -> anyhow::Result<()> {
+        async fn change(&self, username: &str, current: &str, new: &str) -> anyhow::Result<()> {
             *self.last_call.lock().await =
                 Some((username.to_string(), current.to_string(), new.to_string()));
             match &self.result {
@@ -1020,7 +995,11 @@ mod tests {
         user: &str,
         current_pw: &str,
         update_should_fail: bool,
-    ) -> (Arc<FakeAdminPasswordChanger>, FakeRotateContext, tempfile::TempDir) {
+    ) -> (
+        Arc<FakeAdminPasswordChanger>,
+        FakeRotateContext,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let changer = Arc::new(FakeAdminPasswordChanger {
             result: Ok(()),
@@ -1053,7 +1032,10 @@ mod tests {
         let called = changer.last_call.lock().await.clone().unwrap();
         assert_eq!(called.0, "vp-rotator");
         assert_eq!(called.1, "old-pw");
-        assert_eq!(called.2, updated.1, "changer's new pw must equal vault-written pw");
+        assert_eq!(
+            called.2, updated.1,
+            "changer's new pw must equal vault-written pw"
+        );
     }
 
     #[tokio::test]

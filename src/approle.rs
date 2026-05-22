@@ -123,8 +123,7 @@ pub fn unlock_with_approle(
     let path = config_dir
         .join(APPROLE_SUBDIR)
         .join(format!("{role_id}.json"));
-    let body =
-        std::fs::read(&path).with_context(|| format!("read approle {}", path.display()))?;
+    let body = std::fs::read(&path).with_context(|| format!("read approle {}", path.display()))?;
     let stored: StoredApprole = serde_json::from_slice(&body)
         .with_context(|| format!("parse approle {}", path.display()))?;
     if stored.role_id != role_id {

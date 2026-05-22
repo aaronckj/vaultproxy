@@ -35,7 +35,7 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 fn main() -> ExitCode {
     match run() {
         Ok(()) => {
-            println!("{}", r#"{"ok":true}"#);
+            println!(r#"{{"ok":true}}"#);
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -53,7 +53,9 @@ fn run() -> Result<(), String> {
     let mut stdin = std::io::stdin().lock();
     let mut chunk = [0u8; 4096];
     loop {
-        let n = stdin.read(&mut chunk).map_err(|e| format!("read stdin: {e}"))?;
+        let n = stdin
+            .read(&mut chunk)
+            .map_err(|e| format!("read stdin: {e}"))?;
         if n == 0 {
             break;
         }
@@ -149,7 +151,10 @@ fn validate_slug(s: &str) -> Result<(), String> {
     if s.is_empty() || s.len() > 32 {
         return Err("slug length must be 1..=32".into());
     }
-    if !s.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')) {
+    if !s
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+    {
         return Err("slug must match [a-z0-9-]".into());
     }
     if s.starts_with('-') || s.ends_with('-') {
@@ -218,9 +223,7 @@ fn validate_mount_point(mp: &str, allowed_root: &str) -> Result<(), String> {
     }
     let expected_prefix = format!("{root}/");
     if !mp.starts_with(&expected_prefix) {
-        return Err(format!(
-            "mount_point must begin with {expected_prefix}"
-        ));
+        return Err(format!("mount_point must begin with {expected_prefix}"));
     }
     if mp.len() > 256 {
         return Err("mount_point too long".into());
@@ -267,8 +270,9 @@ fn validate_fs_options(opts: &[String]) -> Result<(), String> {
         return Err("too many fs_options".into());
     }
     // Reserved options the caller cannot pass — vault-proxy controls creds.
-    let reserved: BTreeSet<&str> =
-        ["credentials", "username", "password", "pass", "user"].into_iter().collect();
+    let reserved: BTreeSet<&str> = ["credentials", "username", "password", "pass", "user"]
+        .into_iter()
+        .collect();
     for o in opts {
         if o.is_empty() || o.len() > 128 {
             return Err("fs_option length must be 1..=128".into());
@@ -279,7 +283,7 @@ fn validate_fs_options(opts: &[String]) -> Result<(), String> {
                 b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b'=' | b':' | b'/'
             )
         }) {
-            return Err(format!("fs_option has invalid characters"));
+            return Err("fs_option has invalid characters".to_string());
         }
         let key = o.split('=').next().unwrap_or(o);
         if reserved.contains(&key) {
@@ -312,8 +316,7 @@ fn do_unmount(req: &Request) -> Result<(), String> {
     write_fstab_block(Path::new(&req.fstab_path), &req.slug, None)?;
     let creds_path = creds_path_for(&req.creds_dir, &req.slug);
     if creds_path.exists() {
-        fs::remove_file(&creds_path)
-            .map_err(|e| format!("remove creds: {e}"))?;
+        fs::remove_file(&creds_path).map_err(|e| format!("remove creds: {e}"))?;
     }
     Ok(())
 }
@@ -505,7 +508,10 @@ enum Value {
 
 impl MiniJson {
     fn parse(s: &str) -> Result<MiniJson, String> {
-        let mut p = Parser { src: s.as_bytes(), i: 0 };
+        let mut p = Parser {
+            src: s.as_bytes(),
+            i: 0,
+        };
         p.skip_ws();
         let obj = p.parse_object()?;
         p.skip_ws();
@@ -675,8 +681,8 @@ impl<'a> Parser<'a> {
                             }
                             let hex = std::str::from_utf8(&self.src[self.i..self.i + 4])
                                 .map_err(|_| "bad \\u escape")?;
-                            let cp = u32::from_str_radix(hex, 16)
-                                .map_err(|_| "bad \\u escape hex")?;
+                            let cp =
+                                u32::from_str_radix(hex, 16).map_err(|_| "bad \\u escape hex")?;
                             self.i += 4;
                             if let Some(c) = char::from_u32(cp) {
                                 out.push(c);
@@ -770,16 +776,24 @@ mod tests {
         let fstab = dir.join("fstab");
         fs::write(&fstab, "UUID=root / ext4 defaults 0 1\n").unwrap();
         // insert
-        write_fstab_block(&fstab, "demo", Some("//h/s /mnt/demo cifs credentials=/x 0 0"))
-            .unwrap();
+        write_fstab_block(
+            &fstab,
+            "demo",
+            Some("//h/s /mnt/demo cifs credentials=/x 0 0"),
+        )
+        .unwrap();
         let body = fs::read_to_string(&fstab).unwrap();
         assert!(body.contains("# BEGIN vaultproxy:demo"));
         assert!(body.contains("//h/s /mnt/demo cifs"));
         assert!(body.contains("# END vaultproxy:demo"));
         assert_eq!(body.matches("# BEGIN vaultproxy:demo").count(), 1);
         // replace (idempotent)
-        write_fstab_block(&fstab, "demo", Some("//h/s2 /mnt/demo cifs credentials=/x 0 0"))
-            .unwrap();
+        write_fstab_block(
+            &fstab,
+            "demo",
+            Some("//h/s2 /mnt/demo cifs credentials=/x 0 0"),
+        )
+        .unwrap();
         let body = fs::read_to_string(&fstab).unwrap();
         assert!(body.contains("//h/s2 /mnt/demo cifs"));
         assert!(!body.contains("//h/s /mnt/demo cifs"));

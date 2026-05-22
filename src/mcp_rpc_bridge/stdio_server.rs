@@ -28,11 +28,7 @@ pub async fn serve<F: Forwarder>(forwarder: Arc<F>) -> Result<()> {
 
 /// Test-injectable form of `serve`. The production entry point wraps
 /// this with `tokio::io::stdin()` / `tokio::io::stdout()`.
-pub async fn serve_streams<R, W, F>(
-    reader: R,
-    mut writer: W,
-    forwarder: Arc<F>,
-) -> Result<()>
+pub async fn serve_streams<R, W, F>(reader: R, mut writer: W, forwarder: Arc<F>) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
@@ -43,14 +39,15 @@ where
 
     loop {
         line.clear();
-        let n = buf.read_line(&mut line).await
-            .context("read from stdin")?;
+        let n = buf.read_line(&mut line).await.context("read from stdin")?;
         if n == 0 {
             tracing::debug!("stdin EOF — exiting stdio server");
             return Ok(());
         }
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         // Parse the request once so we can pull out the id for an
         // error envelope, then forward the unmodified value.
@@ -58,7 +55,13 @@ where
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %e, line = %trimmed, "failed to parse JSON-RPC request");
-                write_error(&mut writer, serde_json::Value::Null, -32700, format!("Parse error: {e}")).await?;
+                write_error(
+                    &mut writer,
+                    serde_json::Value::Null,
+                    -32700,
+                    format!("Parse error: {e}"),
+                )
+                .await?;
                 continue;
             }
         };
@@ -71,8 +74,7 @@ where
                 continue;
             }
         };
-        let line_out = serde_json::to_string(&resp)
-            .context("serialize response")?;
+        let line_out = serde_json::to_string(&resp).context("serialize response")?;
         writer.write_all(line_out.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;

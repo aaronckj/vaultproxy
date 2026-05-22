@@ -279,10 +279,7 @@ pub async fn launch(
                 .get_field_by_item_name(&bootstrap.auth_item, "uri")
                 .await
                 .with_context(|| {
-                    format!(
-                        "bootstrap: auth_item '{}' missing URI",
-                        bootstrap.auth_item
-                    )
+                    format!("bootstrap: auth_item '{}' missing URI", bootstrap.auth_item)
                 })?;
             let username = vm
                 .get_field_by_item_name(&bootstrap.auth_item, "username")
@@ -304,21 +301,19 @@ pub async fn launch(
                 })?;
 
             let api_key = match bootstrap.strategy_type.as_str() {
-                "unifi_api_key" => {
-                    crate::rotate::strategies::bootstrap_unifi_api_key(
-                        &uri,
-                        &username,
-                        &password,
-                        bootstrap.verify_ssl,
+                "unifi_api_key" => crate::rotate::strategies::bootstrap_unifi_api_key(
+                    &uri,
+                    &username,
+                    &password,
+                    bootstrap.verify_ssl,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "bootstrap: unifi_api_key strategy failed for '{}'",
+                        server_name
                     )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "bootstrap: unifi_api_key strategy failed for '{}'",
-                            server_name
-                        )
-                    })?
-                }
+                })?,
                 other => {
                     anyhow::bail!("bootstrap: unknown strategy type '{}'", other);
                 }
@@ -641,7 +636,16 @@ pub async fn launch(
     // to an untrusted MCP server child process would give it the same IPC
     // surface as the vault-proxy process, undermining the env_clear isolation.
     let safe_parent_vars = [
-        "PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
         "TERM",
         // Inherit SSH_AUTH_SOCK so launched MCP servers (notably ssh-mcp)
         // can authenticate via the user's running ssh-agent instead of
@@ -1598,7 +1602,10 @@ command = "/usr/local/bin/go-unifi-mcp"
 "#;
         let parsed: super::McpServersFile = toml::from_str(toml).unwrap();
         let server = &parsed.mcp_server[0];
-        let bs = server.bootstrap.as_ref().expect("bootstrap should be present");
+        let bs = server
+            .bootstrap
+            .as_ref()
+            .expect("bootstrap should be present");
         assert_eq!(bs.strategy_type, "unifi_api_key");
         assert_eq!(bs.auth_item, "unifi/home");
         assert_eq!(bs.key_item, "unifi/home-key");

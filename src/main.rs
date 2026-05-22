@@ -469,11 +469,7 @@ async fn main() -> anyhow::Result<()> {
             .lines()
             .filter(|l| !l.trim().is_empty())
             .count();
-        println!(
-            "access log valid: {} ({} lines)",
-            log.display(),
-            line_count
-        );
+        println!("access log valid: {} ({} lines)", log.display(), line_count);
         return Ok(());
     }
 
@@ -498,22 +494,18 @@ async fn main() -> anyhow::Result<()> {
         // Read master password from env or interactive prompt. Wrap in
         // Zeroizing so the buffer is zeroed when the variable drops; the
         // password lives only as long as the unlock call.
-        let master = zeroize::Zeroizing::new(
-            if let Ok(m) = std::env::var("VAULTPROXY_MASTER_PASSWORD") {
+        let master =
+            zeroize::Zeroizing::new(if let Ok(m) = std::env::var("VAULTPROXY_MASTER_PASSWORD") {
                 m
             } else {
                 rpassword::prompt_password("master password: ")
                     .context("read master password from tty")?
-            },
-        );
+            });
         let creds = crate::keystore::unlock_keystore(&args.config_dir, Some(master.as_str()))
             .context("unlock keystore with master password")?;
         drop(master);
-        let sid = crate::approle::setup_approle(
-            std::path::Path::new(&args.config_dir),
-            role_id,
-            &creds,
-        )?;
+        let sid =
+            crate::approle::setup_approle(std::path::Path::new(&args.config_dir), role_id, &creds)?;
         use secrecy::ExposeSecret;
         println!("AppRole '{}' provisioned.", role_id);
         println!();
@@ -887,9 +879,8 @@ async fn main() -> anyhow::Result<()> {
     ) {
         use anyhow::Context as _;
         tracing::info!("unlocking keystore via AppRole '{}'", role);
-        let sid_raw = std::fs::read_to_string(sid_file).with_context(|| {
-            format!("read --approle-secret-id-file {}", sid_file.display())
-        })?;
+        let sid_raw = std::fs::read_to_string(sid_file)
+            .with_context(|| format!("read --approle-secret-id-file {}", sid_file.display()))?;
         let sid = zeroize::Zeroizing::new(sid_raw);
         let creds = crate::approle::unlock_with_approle(
             std::path::Path::new(&config_dir),
@@ -1177,7 +1168,8 @@ async fn start_server(
     }
 
     if let Some(ref addr_str) = args.mcp_http {
-        let addr: std::net::SocketAddr = addr_str.parse()
+        let addr: std::net::SocketAddr = addr_str
+            .parse()
             .map_err(|e| anyhow::anyhow!("invalid --mcp-http address {addr_str}: {e}"))?;
         let smb = crate::proxy::SmbConfig {
             helper_path: args.smb_helper_path.clone(),
@@ -1185,14 +1177,22 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         };
-        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, None).await;
+        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr, None)
+            .await;
     }
 
     if let Some(ref server_name) = args.launch {
         // Issue (iter-39): pass listen_addr so VAULT_PROXY_URL is synthesised
         // from the actual --listen address rather than a hard-coded default.
         let cred = crate::launcher::CredSource::Vault(&vault_arc);
-        return crate::launcher::launch(server_name, config_dir, &cred, args.listen, &args.vault_folder).await;
+        return crate::launcher::launch(
+            server_name,
+            config_dir,
+            &cred,
+            args.listen,
+            &args.vault_folder,
+        )
+        .await;
     }
 
     // Cloud sync setup — activates when cloud credentials exist in keystore
@@ -1763,9 +1763,7 @@ async fn start_server(
         audit_log,
         access_log: access_log.clone(),
         rotation_hook: rotation_hook.clone(),
-        mint_wi_mcp: Arc::new(
-            crate::rotate::strategies::SshDockerMintExecutor::from_env(),
-        ),
+        mint_wi_mcp: Arc::new(crate::rotate::strategies::SshDockerMintExecutor::from_env()),
         change_wi_mcp_admin: Arc::new(
             crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
         ),
@@ -2982,11 +2980,9 @@ async fn start_server(
     // once per daemon process so all writers share a Mutex on the same file
     // handle and key, keeping the chain consistent.
     {
-        let cred_cache = std::sync::Arc::new(
-            crate::cred_cache::CredCache::with_ttl(
-                std::time::Duration::from_secs(args.cred_cache_ttl),
-            ),
-        );
+        let cred_cache = std::sync::Arc::new(crate::cred_cache::CredCache::with_ttl(
+            std::time::Duration::from_secs(args.cred_cache_ttl),
+        ));
         // Sweeper task — proactively evict expired entries every 30 s so the
         // map doesn't grow unbounded for cold keys that no one reads back.
         let sweeper = cred_cache.clone();
@@ -3924,8 +3920,10 @@ mod browser_rotate_guard_tests {
                 "/tmp/vp-test-browser-rotate-{n}.json"
             ))),
             access_log: None,
-            mint_wi_mcp: Arc::new(
-                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            rotation_hook: None,
+            mint_wi_mcp: Arc::new(crate::rotate::strategies::SshDockerMintExecutor::from_env()),
+            change_wi_mcp_admin: Arc::new(
+                crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
             ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -4065,8 +4063,10 @@ mod browser_status_tests {
                 "/tmp/vp-test-browser-status-{n}.json"
             ))),
             access_log: None,
-            mint_wi_mcp: Arc::new(
-                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
+            rotation_hook: None,
+            mint_wi_mcp: Arc::new(crate::rotate::strategies::SshDockerMintExecutor::from_env()),
+            change_wi_mcp_admin: Arc::new(
+                crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
             ),
             notifier: Arc::new(Notifier::disabled()),
             handshake_completed: Arc::new(std::sync::atomic::AtomicBool::new(false)),

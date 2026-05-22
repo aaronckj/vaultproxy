@@ -191,7 +191,11 @@ struct EchoForwarder;
 impl Forwarder for EchoForwarder {
     async fn forward(&self, req: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
-        let method = req.get("method").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+        let method = req
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
         Ok(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -215,7 +219,9 @@ async fn stdio_server_echoes_one_request() {
     use std::sync::Arc;
     let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{}}\n";
     let mut output: Vec<u8> = Vec::new();
-    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder))
+        .await
+        .unwrap();
 
     let s = String::from_utf8(output).unwrap();
     let line = s.lines().next().unwrap();
@@ -232,7 +238,9 @@ async fn stdio_server_handles_multiple_requests_in_sequence() {
                   {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"b\",\"params\":{}}\n\
                   {\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"c\",\"params\":{}}\n";
     let mut output: Vec<u8> = Vec::new();
-    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder))
+        .await
+        .unwrap();
 
     let s = String::from_utf8(output).unwrap();
     let lines: Vec<_> = s.lines().collect();
@@ -247,17 +255,27 @@ async fn stdio_server_handles_multiple_requests_in_sequence() {
 #[tokio::test]
 async fn stdio_server_returns_parse_error_envelope_on_bad_json() {
     use std::sync::Arc;
-    let input = b"not json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"valid\",\"params\":{}}\n";
+    let input =
+        b"not json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"valid\",\"params\":{}}\n";
     let mut output: Vec<u8> = Vec::new();
-    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder))
+        .await
+        .unwrap();
 
     let s = String::from_utf8(output).unwrap();
     let lines: Vec<_> = s.lines().collect();
-    assert_eq!(lines.len(), 2, "one error envelope, then one valid response");
+    assert_eq!(
+        lines.len(),
+        2,
+        "one error envelope, then one valid response"
+    );
 
     let parse_err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(parse_err["error"]["code"], -32700);
-    assert!(parse_err["error"]["message"].as_str().unwrap().contains("Parse error"));
+    assert!(parse_err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Parse error"));
 
     let valid: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
     assert_eq!(valid["id"], 2);
@@ -273,7 +291,9 @@ async fn stdio_server_returns_forwarder_error_envelope() {
         &input[..],
         &mut output,
         Arc::new(FailingForwarder("upstream offline".into())),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     let s = String::from_utf8(output).unwrap();
     let line = s.lines().next().unwrap();
@@ -281,7 +301,10 @@ async fn stdio_server_returns_forwarder_error_envelope() {
     assert_eq!(parsed["jsonrpc"], "2.0");
     assert_eq!(parsed["id"], 42);
     assert_eq!(parsed["error"]["code"], -32099);
-    assert!(parsed["error"]["message"].as_str().unwrap().contains("upstream offline"));
+    assert!(parsed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("upstream offline"));
 }
 
 #[tokio::test]
@@ -289,7 +312,9 @@ async fn stdio_server_skips_blank_lines() {
     use std::sync::Arc;
     let input = b"\n\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"go\",\"params\":{}}\n\n";
     let mut output: Vec<u8> = Vec::new();
-    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder)).await.unwrap();
+    serve_streams(&input[..], &mut output, Arc::new(EchoForwarder))
+        .await
+        .unwrap();
 
     let s = String::from_utf8(output).unwrap();
     let lines: Vec<_> = s.lines().collect();
@@ -349,10 +374,7 @@ async fn fake_handler(
 
     let mode = *state.response_mode.lock().unwrap();
     if mode == "sse" {
-        let sse_body = format!(
-            "data: {}\n\n",
-            serde_json::to_string(&body).unwrap()
-        );
+        let sse_body = format!("data: {}\n\n", serde_json::to_string(&body).unwrap());
         (
             AxumStatus::OK,
             [(axum::http::header::CONTENT_TYPE, "text/event-stream")],

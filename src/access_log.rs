@@ -152,8 +152,7 @@ impl AccessLog {
         // drop. The raw Vec<u8> would otherwise leak the 32-byte HMAC secret
         // across the heap until reused.
         let hmac_key = Zeroizing::new(
-            std::fs::read(key_path)
-                .with_context(|| format!("read key {}", key_path.display()))?,
+            std::fs::read(key_path).with_context(|| format!("read key {}", key_path.display()))?,
         );
         if hmac_key.len() != 32 {
             bail!(
@@ -162,16 +161,15 @@ impl AccessLog {
                 hmac_key.len()
             );
         }
-        let f = File::open(log_path)
-            .with_context(|| format!("open {}", log_path.display()))?;
+        let f = File::open(log_path).with_context(|| format!("open {}", log_path.display()))?;
         let mut prev = String::new();
         for (i, line) in BufReader::new(f).lines().enumerate() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            let stored: StoredEvent = serde_json::from_str(&line)
-                .with_context(|| format!("parse line {}", i + 1))?;
+            let stored: StoredEvent =
+                serde_json::from_str(&line).with_context(|| format!("parse line {}", i + 1))?;
             if stored.prev_hmac != prev {
                 bail!("line {}: prev_hmac mismatch (chain broken)", i + 1);
             }
@@ -208,8 +206,8 @@ impl AccessLog {
 
 fn load_or_generate_key(key_path: &Path) -> Result<SecretSlice<u8>> {
     if key_path.exists() {
-        let bytes = std::fs::read(key_path)
-            .with_context(|| format!("read key {}", key_path.display()))?;
+        let bytes =
+            std::fs::read(key_path).with_context(|| format!("read key {}", key_path.display()))?;
         if bytes.len() != 32 {
             bail!(
                 "hmac key at {} is {} bytes; expected 32",

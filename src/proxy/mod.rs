@@ -1464,9 +1464,7 @@ impl AppState {
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             access_log: None,
             rotation_hook: None,
-            mint_wi_mcp: Arc::new(
-                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
-            ),
+            mint_wi_mcp: Arc::new(crate::rotate::strategies::SshDockerMintExecutor::from_env()),
             change_wi_mcp_admin: Arc::new(
                 crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
             ),
@@ -1717,9 +1715,7 @@ mod integration_tests {
             audit_log: Arc::new(AuditLog::new(&audit_path)),
             access_log: None,
             rotation_hook: None,
-            mint_wi_mcp: Arc::new(
-                crate::rotate::strategies::SshDockerMintExecutor::from_env(),
-            ),
+            mint_wi_mcp: Arc::new(crate::rotate::strategies::SshDockerMintExecutor::from_env()),
             change_wi_mcp_admin: Arc::new(
                 crate::rotate::strategies::SshDockerAdminPasswordChanger::from_env(),
             ),

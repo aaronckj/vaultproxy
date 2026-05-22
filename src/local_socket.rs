@@ -45,10 +45,7 @@ pub fn default_socket_path() -> PathBuf {
 #[serde(tag = "op")]
 enum Request {
     #[serde(rename = "get_item_fields")]
-    GetItemFields {
-        item: String,
-        fields: Vec<String>,
-    },
+    GetItemFields { item: String, fields: Vec<String> },
     #[serde(rename = "ping")]
     Ping,
 }
@@ -176,12 +173,7 @@ async fn handle_conn(
                 }
                 match vault.get_field_resolved(&item, f).await {
                     Ok(v) => {
-                        cache.put(
-                            &item,
-                            f,
-                            secrecy::SecretString::from(v.clone()),
-                            None,
-                        );
+                        cache.put(&item, f, secrecy::SecretString::from(v.clone()), None);
                         out.insert(f.clone(), v);
                     }
                     Err(e) => {
@@ -197,9 +189,8 @@ async fn handle_conn(
             if let Some(ref log) = access_log {
                 let outcome = if error.is_some() { "error" } else { "ok" };
                 let peer_uid_val = peer_cred.map(|(uid, _)| uid);
-                let peer_pid_val = peer_cred.and_then(|(_, pid)| {
-                    if pid == 0 { None } else { Some(pid) }
-                });
+                let peer_pid_val =
+                    peer_cred.and_then(|(_, pid)| if pid == 0 { None } else { Some(pid) });
                 let cmdline = peer_pid_val
                     .and_then(|pid| std::fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok())
                     .map(|s| s.replace('\0', " ").trim().to_string());
@@ -300,8 +291,8 @@ pub mod client {
     pub fn get_field_sync(socket: &std::path::Path, item: &str, field: &str) -> Result<String> {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
-        let mut s = UnixStream::connect(socket)
-            .with_context(|| format!("connect {}", socket.display()))?;
+        let mut s =
+            UnixStream::connect(socket).with_context(|| format!("connect {}", socket.display()))?;
         let req = serde_json::json!({"op": "get_item_fields", "item": item, "fields": [field]});
         writeln!(s, "{}", serde_json::to_string(&req)?)?;
         s.shutdown(std::net::Shutdown::Write)?;

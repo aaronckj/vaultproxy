@@ -1,17 +1,16 @@
-use std::sync::Arc;
-use rmcp::{ServiceExt, tool, tool_router, transport};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService,
-    session::local::LocalSessionManager,
-};
-use tokio_util::sync::CancellationToken;
-use rmcp::handler::server::wrapper::Parameters;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use crate::access_log::AccessLog;
 use crate::proxy::SmbConfig;
 use crate::vault::smb::{self, SmbMountRequest, SmbUnmountRequest};
 use crate::vault::VaultManager;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+};
+use rmcp::{tool, tool_router, transport, ServiceExt};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 // -------------------------------------------------------------------------- //
 // Parameter structs                                                           //
@@ -123,6 +122,7 @@ pub struct VaultMcpServer {
 
 impl VaultMcpServer {
     /// Construct a server without SMB support enabled (default).
+    #[allow(dead_code)]
     pub fn new(vault: Arc<VaultManager>, vault_folder: String) -> Self {
         Self {
             vault,
@@ -133,7 +133,11 @@ impl VaultMcpServer {
 
     /// Construct a server with SMB mount tools wired to the given config.
     pub fn with_smb(vault: Arc<VaultManager>, vault_folder: String, smb: SmbConfig) -> Self {
-        Self { vault, vault_folder, smb }
+        Self {
+            vault,
+            vault_folder,
+            smb,
+        }
     }
 }
 
@@ -144,10 +148,18 @@ impl VaultMcpServer {
 #[tool_router(server_handler)]
 impl VaultMcpServer {
     /// List vault items scoped to vault_folder. Passwords are always masked as "***".
-    #[tool(description = "List Vaultwarden items in the configured vault folder. Passwords are always masked.")]
+    #[tool(
+        description = "List Vaultwarden items in the configured vault folder. Passwords are always masked."
+    )]
     pub async fn list_items(&self) -> String {
-        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
-        let items: Vec<_> = self.vault.list_items().await
+        let folder_id = self
+            .vault
+            .find_folder_id_by_name_async(&self.vault_folder)
+            .await;
+        let items: Vec<_> = self
+            .vault
+            .list_items()
+            .await
             .into_iter()
             .filter(|item| item.folder_id.as_deref() == folder_id.as_deref())
             .collect();
@@ -169,9 +181,14 @@ impl VaultMcpServer {
     }
 
     /// Find duplicate credentials scoped to vault_folder. Never returns plaintext passwords.
-    #[tool(description = "Find duplicate credentials in the configured vault folder. Never returns plaintext passwords.")]
+    #[tool(
+        description = "Find duplicate credentials in the configured vault folder. Never returns plaintext passwords."
+    )]
     pub async fn list_duplicates(&self) -> String {
-        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
+        let folder_id = self
+            .vault
+            .find_folder_id_by_name_async(&self.vault_folder)
+            .await;
         let dupes = match folder_id.as_deref() {
             Some(fid) => self.vault.list_duplicates_in_folder(Some(fid)).await,
             None => vec![],
@@ -185,8 +202,14 @@ impl VaultMcpServer {
     /// Check vault-proxy health: reports folder-scoped cached item count.
     #[tool(description = "Check vault-proxy health: folder-scoped cached item count.")]
     pub async fn health(&self) -> String {
-        let folder_id = self.vault.find_folder_id_by_name_async(&self.vault_folder).await;
-        let count = self.vault.list_items().await
+        let folder_id = self
+            .vault
+            .find_folder_id_by_name_async(&self.vault_folder)
+            .await;
+        let count = self
+            .vault
+            .list_items()
+            .await
             .into_iter()
             .filter(|item| item.folder_id.as_deref() == folder_id.as_deref())
             .count();
@@ -239,11 +262,10 @@ impl VaultMcpServer {
     }
 
     /// Create a new login item in Vaultwarden. Password is encrypted; never returned.
-    #[tool(description = "Create a new login item. Password is encrypted; the new item id is returned.")]
-    pub async fn create_item(
-        &self,
-        Parameters(p): Parameters<CreateItemParams>,
-    ) -> String {
+    #[tool(
+        description = "Create a new login item. Password is encrypted; the new item id is returned."
+    )]
+    pub async fn create_item(&self, Parameters(p): Parameters<CreateItemParams>) -> String {
         let uris = p.uris.unwrap_or_default();
         match self
             .vault
@@ -262,11 +284,10 @@ impl VaultMcpServer {
     }
 
     /// Update name, username, and/or password of an existing vault item.
-    #[tool(description = "Update name, username, and/or password of a vault item by id. Omit fields to keep current values.")]
-    pub async fn update_item(
-        &self,
-        Parameters(p): Parameters<UpdateItemParams>,
-    ) -> String {
+    #[tool(
+        description = "Update name, username, and/or password of a vault item by id. Omit fields to keep current values."
+    )]
+    pub async fn update_item(&self, Parameters(p): Parameters<UpdateItemParams>) -> String {
         match self
             .vault
             .update_login_item_fields(
@@ -284,10 +305,7 @@ impl VaultMcpServer {
 
     /// Soft-delete a vault item (moves it to Vaultwarden trash).
     #[tool(description = "Soft-delete a vault item by id (moves to trash).")]
-    pub async fn delete_item(
-        &self,
-        Parameters(p): Parameters<DeleteItemParams>,
-    ) -> String {
+    pub async fn delete_item(&self, Parameters(p): Parameters<DeleteItemParams>) -> String {
         match self.vault.delete_cipher(&p.id).await {
             Ok(()) => r#"{"status":"ok"}"#.to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
@@ -296,22 +314,22 @@ impl VaultMcpServer {
 
     /// Move a vault item to a different folder (looked up by name).
     #[tool(description = "Move a vault item to a folder, looked up by name.")]
-    pub async fn move_item(
-        &self,
-        Parameters(p): Parameters<MoveItemParams>,
-    ) -> String {
-        match self.vault.move_cipher_to_folder(&p.id, &p.folder_name).await {
+    pub async fn move_item(&self, Parameters(p): Parameters<MoveItemParams>) -> String {
+        match self
+            .vault
+            .move_cipher_to_folder(&p.id, &p.folder_name)
+            .await
+        {
             Ok(()) => r#"{"status":"ok"}"#.to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
 
     /// Clone an existing vault item with a new name (and optionally new username/URI/folder).
-    #[tool(description = "Clone a vault item with a new name. Optionally override username, URI, or folder.")]
-    pub async fn clone_item(
-        &self,
-        Parameters(p): Parameters<CloneItemParams>,
-    ) -> String {
+    #[tool(
+        description = "Clone a vault item with a new name. Optionally override username, URI, or folder."
+    )]
+    pub async fn clone_item(&self, Parameters(p): Parameters<CloneItemParams>) -> String {
         match self
             .vault
             .clone_cipher_with_overrides(
@@ -334,11 +352,10 @@ impl VaultMcpServer {
     /// runs mount. The plaintext password never leaves vault-proxy's address
     /// space and is never returned to the caller. Disabled unless
     /// --smb-helper-path is configured at vault-proxy startup.
-    #[tool(description = "Set up an SMB mount using a vault item. Vault-proxy never reveals the password to you — it writes the credentials file, edits /etc/fstab, and runs mount internally via a setuid helper. Returns only ok/error.")]
-    pub async fn smb_mount(
-        &self,
-        Parameters(p): Parameters<SmbMountParams>,
-    ) -> String {
+    #[tool(
+        description = "Set up an SMB mount using a vault item. Vault-proxy never reveals the password to you — it writes the credentials file, edits /etc/fstab, and runs mount internally via a setuid helper. Returns only ok/error."
+    )]
+    pub async fn smb_mount(&self, Parameters(p): Parameters<SmbMountParams>) -> String {
         let req = SmbMountRequest {
             vault_item_id: p.vault_item_id,
             share: p.share,
@@ -352,11 +369,10 @@ impl VaultMcpServer {
 
     /// Tear down a previously-installed SMB mount: unmount, remove its
     /// /etc/fstab block, and delete the credentials file.
-    #[tool(description = "Tear down an SMB mount previously created by smb_mount. Unmounts, removes the fstab block, deletes the credentials file. Returns only ok/error.")]
-    pub async fn smb_unmount(
-        &self,
-        Parameters(p): Parameters<SmbUnmountParams>,
-    ) -> String {
+    #[tool(
+        description = "Tear down an SMB mount previously created by smb_mount. Unmounts, removes the fstab block, deletes the credentials file. Returns only ok/error."
+    )]
+    pub async fn smb_unmount(&self, Parameters(p): Parameters<SmbUnmountParams>) -> String {
         let req = SmbUnmountRequest {
             slug: p.slug,
             mount_point: p.mount_point,
@@ -375,7 +391,9 @@ impl VaultMcpServer {
     /// deliberately does not write to the access log itself, because two
     /// separate processes appending to the same file would interleave
     /// lines once a payload exceeds PIPE_BUF.
-    #[tool(description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim.")]
+    #[tool(
+        description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim."
+    )]
     pub async fn rotate(&self, Parameters(p): Parameters<RotateParams>) -> String {
         let config_dir = std::env::var("CONFIG_DIR").unwrap_or_default();
         if config_dir.is_empty() {
@@ -385,7 +403,10 @@ impl VaultMcpServer {
         let internal_token = match std::fs::read_to_string(&token_path) {
             Ok(s) => s.trim().to_string(),
             Err(e) => {
-                return format!(r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#, token_path, e);
+                return format!(
+                    r#"{{"ok":false,"error":"read internal-token from {}: {}"}}"#,
+                    token_path, e
+                );
             }
         };
         let vp_url =
@@ -405,7 +426,10 @@ impl VaultMcpServer {
         {
             Ok(r) => r,
             Err(e) => {
-                return format!(r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#, vp_url, e);
+                return format!(
+                    r#"{{"ok":false,"error":"POST /rotate to {}: {}"}}"#,
+                    vp_url, e
+                );
             }
         };
         match resp.text().await {

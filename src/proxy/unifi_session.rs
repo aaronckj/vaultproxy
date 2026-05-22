@@ -89,8 +89,9 @@ impl UnifiSessionCache {
     /// or after an auth failure on a session-authenticated request).
     /// iter-124: wired into `browser_rotate` in `main.rs` — called on success
     /// when the caller supplies `unifi_service_name` in the rotate request.
-    /// iter-125: `#[allow(dead_code)]` removed — function is `pub` and has
-    /// production callers; the annotation was incorrect and misleading.
+    /// The only caller (`browser_rotate`) is feature-gated behind `browser`,
+    /// so the default build sees this as dead.
+    #[allow(dead_code)]
     pub fn invalidate(&self, service: &str) {
         if let Some(slot) = self.inner.get(service) {
             // Best-effort: we can't await here so we just try_lock; if the

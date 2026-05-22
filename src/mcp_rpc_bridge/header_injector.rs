@@ -95,7 +95,7 @@ impl HeaderInjector {
     }
 }
 
-async fn fetch(socket: &PathBuf, item: &str, field: &str) -> Result<SecretString> {
+async fn fetch(socket: &std::path::Path, item: &str, field: &str) -> Result<SecretString> {
     let v = crate::local_socket::client::get_field(socket, item, field)
         .await
         .with_context(|| format!("fetch {item}/{field} from {}", socket.display()))?;

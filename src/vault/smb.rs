@@ -204,10 +204,7 @@ fn sanity_check(
         .bytes()
         .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
     {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "slug must match [a-z0-9-]".into(),
-        ));
+        return Err((StatusCode::BAD_REQUEST, "slug must match [a-z0-9-]".into()));
     }
     if slug.starts_with('-') || slug.ends_with('-') {
         return Err((

@@ -78,7 +78,11 @@ fn log_file_is_chmod_0600_on_create() {
     let key_path = dir.path().join("k");
     let _log = AccessLog::open(log_path.clone(), key_path.clone()).unwrap();
     let mode = std::fs::metadata(&log_path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "log file must be 0600 on create, got {:o}", mode);
+    assert_eq!(
+        mode, 0o600,
+        "log file must be 0600 on create, got {:o}",
+        mode
+    );
 }
 
 #[test]

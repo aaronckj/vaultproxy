@@ -8,16 +8,33 @@
 // are defined in main.rs for the binary crate. The copies below keep the
 // lib unit tests compiling without duplicating the business logic elsewhere.
 
+// The library re-exports the modules used by the binary in `src/main.rs` and
+// by integration tests in `tests/`. Many items are only called from
+// main.rs or from tests (which compile as a separate crate), so dead-code
+// analysis from the lib crate's perspective sees them as unused. Suppress
+// the lint at the crate level rather than annotating ~100 individual items.
+// The binary crate (src/main.rs) is unaffected and still gets full
+// dead-code coverage.
+#![allow(dead_code)]
+
 pub mod access_log;
 pub mod approle;
 mod audit;
 pub mod bearer_bridge;
+#[cfg(feature = "browser")]
+mod browser;
 pub mod cred_cache;
+#[cfg(feature = "engine")]
+mod credential_audit;
+#[cfg(feature = "dashboard")]
+mod dashboard;
 pub mod hooks;
 mod internal_token;
 pub mod keystore;
 mod launcher;
 pub mod local_socket;
+pub mod mcp_rpc_bridge;
+pub mod mcp_server;
 mod notify;
 mod policy;
 mod proxy;
@@ -31,12 +48,10 @@ mod tls;
 mod totp;
 mod tpm;
 pub mod vault;
-pub mod mcp_server;
-pub mod mcp_rpc_bridge;
 
-use std::sync::Arc;
 use axum::{extract::State as AxumState, Json as AxumJson};
 use proxy::AppState;
+use std::sync::Arc;
 
 /// Re-implementation of the `require_internal_token` middleware for the lib
 /// crate context. Proxy unit tests reference `crate::require_internal_token`
@@ -68,7 +83,11 @@ pub(crate) async fn require_internal_token(
             let pb = provided_bytes.get(i).copied().unwrap_or(0);
             acc | (eb ^ pb)
         });
-    let len_diff: u8 = if provided_bytes.len() == expected_bytes.len() { 0 } else { 1 };
+    let len_diff: u8 = if provided_bytes.len() == expected_bytes.len() {
+        0
+    } else {
+        1
+    };
     let valid = (byte_diff | len_diff) == 0;
 
     if !valid {
@@ -113,7 +132,9 @@ pub(crate) async fn dns_rebinding_guard(
                 tracing::warn!("DNS rebinding blocked: Host={}", host);
                 return (
                     StatusCode::FORBIDDEN,
-                    AxumJson(serde_json::json!({"ok": false, "error": "request blocked — invalid host"})),
+                    AxumJson(
+                        serde_json::json!({"ok": false, "error": "request blocked — invalid host"}),
+                    ),
                 )
                     .into_response();
             }
@@ -132,7 +153,11 @@ pub(crate) async fn handle_get_permissions(
     };
     let permissions_path = format!("{}/tool-permissions.json", state.config_dir);
     let config_file_exists = std::path::Path::new(&permissions_path).exists();
-    let permissions_source = if config_file_exists { "file" } else { "built-in-defaults" };
+    let permissions_source = if config_file_exists {
+        "file"
+    } else {
+        "built-in-defaults"
+    };
     tracing::debug!("GET /vault/permissions — returning current tool permissions");
     AxumJson(serde_json::json!({
         "ok": true,

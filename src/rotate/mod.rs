@@ -175,7 +175,11 @@ pub async fn handle_rotate(
     // and the daemon records the canonical entry below. Best-effort: a log
     // write failure must not change the rotation response.
     if let Some(ref log) = state.access_log {
-        let outcome = if result.status == "success" { "ok" } else { "error" };
+        let outcome = if result.status == "success" {
+            "ok"
+        } else {
+            "error"
+        };
         if let Err(e) = log.record(&crate::access_log::Event {
             ts: chrono::Utc::now(),
             action: "rotate",

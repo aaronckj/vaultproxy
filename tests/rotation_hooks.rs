@@ -91,11 +91,8 @@ async fn timeout_kills_long_running_hook() {
     write_exec_script(&script, "#!/usr/bin/env bash\nsleep 120\n");
 
     let hook = RotationHook::new(script);
-    let outer = tokio::time::timeout(
-        std::time::Duration::from_secs(40),
-        hook.fire("svc", "id"),
-    )
-    .await;
+    let outer =
+        tokio::time::timeout(std::time::Duration::from_secs(40), hook.fire("svc", "id")).await;
     let inner = outer.expect("outer timeout — fire() did not return within 40s");
     assert!(inner.is_err(), "fire() should error on hook timeout");
     let msg = format!("{}", inner.unwrap_err());

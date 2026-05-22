@@ -28,7 +28,7 @@ fn unique_dir(label: &str) -> PathBuf {
 
 /// Write a bash helper script that captures stdin to `stdin.json` and prints
 /// `response` to stdout. Returns the script's absolute path.
-fn write_fake_helper(dir: &PathBuf, response: &str, exit_code: u8) -> PathBuf {
+fn write_fake_helper(dir: &std::path::Path, response: &str, exit_code: u8) -> PathBuf {
     let stdin_capture = dir.join("stdin.json");
     let script = dir.join("helper.sh");
     let body = format!(
@@ -55,7 +55,7 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
-fn cfg(dir: &PathBuf, helper: &PathBuf) -> SmbConfig {
+fn cfg(dir: &std::path::Path, helper: &std::path::Path) -> SmbConfig {
     SmbConfig {
         helper_path: helper.display().to_string(),
         mount_root: "/mnt".into(),
@@ -81,9 +81,11 @@ async fn unmount_invokes_helper_and_returns_ok() {
     assert_eq!(body.get("ok").and_then(|v| v.as_bool()), Some(true));
 
     let stdin_path = dir.join("stdin.json");
-    let captured: Value =
-        serde_json::from_str(&fs::read_to_string(&stdin_path).unwrap()).unwrap();
-    assert_eq!(captured.get("action").and_then(|v| v.as_str()), Some("unmount"));
+    let captured: Value = serde_json::from_str(&fs::read_to_string(&stdin_path).unwrap()).unwrap();
+    assert_eq!(
+        captured.get("action").and_then(|v| v.as_str()),
+        Some("unmount")
+    );
     assert_eq!(captured.get("slug").and_then(|v| v.as_str()), Some("demo"));
     assert_eq!(
         captured.get("mount_point").and_then(|v| v.as_str()),
@@ -117,10 +119,7 @@ async fn helper_error_response_propagates() {
     .await;
     assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body.get("ok").and_then(|v| v.as_bool()), Some(false));
-    assert_eq!(
-        body.get("error").and_then(|v| v.as_str()),
-        Some("bad slug")
-    );
+    assert_eq!(body.get("error").and_then(|v| v.as_str()), Some("bad slug"));
 }
 
 #[tokio::test]

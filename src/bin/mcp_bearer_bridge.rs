@@ -40,14 +40,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let token_result =
-        rt.block_on(resolve_token(|k| env::var(k).ok(), default_socket_path));
+    let token_result = rt.block_on(resolve_token(|k| env::var(k).ok(), default_socket_path));
     let token = match token_result {
         Ok(t) => t,
         Err(TokenError::Missing) => {
-            eprintln!(
-                "mcp-bearer-bridge: neither VAULT_ITEM nor BEARER_TOKEN env var is set"
-            );
+            eprintln!("mcp-bearer-bridge: neither VAULT_ITEM nor BEARER_TOKEN env var is set");
             std::process::exit(1);
         }
         Err(TokenError::SocketFailed(e)) => {
@@ -59,7 +56,14 @@ fn main() {
     let auth_header = format!("Authorization: Bearer {}", &*token);
 
     let err = Command::new("npx")
-        .args(["-y", "mcp-remote", &url, "--header", &auth_header, "--allow-http"])
+        .args([
+            "-y",
+            "mcp-remote",
+            &url,
+            "--header",
+            &auth_header,
+            "--allow-http",
+        ])
         .exec();
 
     eprintln!("mcp-bearer-bridge: exec failed: {}", err);

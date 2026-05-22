@@ -1100,7 +1100,11 @@ impl VaultManager {
             login: Some(crate::vault::types::EncryptedLogin {
                 username: enc_username,
                 password: Some(enc_password),
-                uris: if enc_uris.is_empty() { None } else { Some(enc_uris) },
+                uris: if enc_uris.is_empty() {
+                    None
+                } else {
+                    Some(enc_uris)
+                },
                 totp: None,
             }),
             card: None,
@@ -1148,12 +1152,14 @@ impl VaultManager {
             .context("encrypting name")?;
         }
 
-        let login = updated.login.get_or_insert(crate::vault::types::EncryptedLogin {
-            username: None,
-            password: None,
-            uris: None,
-            totp: None,
-        });
+        let login = updated
+            .login
+            .get_or_insert(crate::vault::types::EncryptedLogin {
+                username: None,
+                password: None,
+                uris: None,
+                totp: None,
+            });
 
         if let Some(username) = new_username {
             login.username = Some(
@@ -1652,12 +1658,9 @@ impl VaultManager {
                     .and_then(|uris| uris.first())
                     .and_then(|u| u.uri.as_deref())
                     .ok_or_else(|| anyhow!("item '{}' has no URI", item_name))?;
-                let buf = decrypt_cipher_string(
-                    uri_cs,
-                    self.enc_key.as_bytes(),
-                    self.mac_key.as_bytes(),
-                )
-                .with_context(|| format!("failed to decrypt URI for '{}'", item_name))?;
+                let buf =
+                    decrypt_cipher_string(uri_cs, self.enc_key.as_bytes(), self.mac_key.as_bytes())
+                        .with_context(|| format!("failed to decrypt URI for '{}'", item_name))?;
                 let s = std::str::from_utf8(&buf)
                     .map_err(|e| anyhow!("URI for '{}' is not valid UTF-8: {}", item_name, e))?
                     .to_string();
@@ -2191,7 +2194,9 @@ mod tests {
             key: None,
             extra: None,
         };
-        vault.seed_item_by_name("unifi/home-key".into(), cipher).await;
+        vault
+            .seed_item_by_name("unifi/home-key".into(), cipher)
+            .await;
 
         let result = vault.find_item_id_by_name("unifi/home-key").await;
         assert_eq!(result.as_deref(), Some("abc-123"));
