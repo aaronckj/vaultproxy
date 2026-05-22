@@ -10,6 +10,7 @@
 
 mod audit;
 pub mod bearer_bridge;
+pub mod cred_cache;
 mod internal_token;
 mod keystore;
 mod launcher;
