@@ -297,3 +297,189 @@ async fn stdio_server_skips_blank_lines() {
     let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(parsed["result"]["echo"], "go");
 }
+
+// ---------------------------------------------------------------------------
+// Wave 3 Task 11: http_client tests
+// ---------------------------------------------------------------------------
+
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode as AxumStatus};
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::Json;
+use axum::Router;
+use std::net::SocketAddr;
+use std::sync::Mutex;
+
+use vaultproxy::mcp_rpc_bridge::http_client::HttpClient;
+
+#[derive(Default)]
+struct FakeUpstreamState {
+    received_tokens: Mutex<Vec<String>>,
+    fail_with_401_until: Mutex<u32>, // counter; if >0, next response is 401 and counter decrements
+    response_mode: Mutex<&'static str>, // "json" | "sse"
+}
+
+async fn fake_handler(
+    State(state): State<Arc<FakeUpstreamState>>,
+    headers: HeaderMap,
+    Json(req): Json<serde_json::Value>,
+) -> axum::response::Response {
+    let tok = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    state.received_tokens.lock().unwrap().push(tok);
+
+    {
+        let mut n = state.fail_with_401_until.lock().unwrap();
+        if *n > 0 {
+            *n -= 1;
+            return (AxumStatus::UNAUTHORIZED, "no").into_response();
+        }
+    }
+
+    let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": { "method_seen": req.get("method") },
+    });
+
+    let mode = *state.response_mode.lock().unwrap();
+    if mode == "sse" {
+        let sse_body = format!(
+            "data: {}\n\n",
+            serde_json::to_string(&body).unwrap()
+        );
+        (
+            AxumStatus::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            sse_body,
+        )
+            .into_response()
+    } else {
+        (AxumStatus::OK, Json(body)).into_response()
+    }
+}
+
+async fn spawn_fake_upstream(
+    state: Arc<FakeUpstreamState>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = Router::new()
+        .route("/mcp", post(fake_handler))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let h = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    (format!("http://{}/mcp", addr), h)
+}
+
+async fn build_injector() -> (
+    tempfile::TempDir,
+    Arc<HeaderInjector>,
+    Arc<AtomicU64>,
+    tokio::task::JoinHandle<()>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("vp.sock");
+    let version = Arc::new(AtomicU64::new(1));
+    let server = spawn_fake_socket(sock.clone(), version.clone());
+    let inj = HeaderInjector::new(
+        sock,
+        "X".to_string(),
+        "password".to_string(),
+        Duration::from_secs(3600),
+    )
+    .await
+    .unwrap();
+    (dir, Arc::new(inj), version, server)
+}
+
+#[tokio::test]
+async fn http_client_injects_authorization_header_json() {
+    let (_dir, inj, _ver, _socket_h) = build_injector().await;
+    let upstream_state = Arc::new(FakeUpstreamState::default());
+    *upstream_state.response_mode.lock().unwrap() = "json";
+    let (url, _upstream_h) = spawn_fake_upstream(upstream_state.clone()).await;
+
+    let client = HttpClient::new(url, inj).unwrap();
+    let resp = client
+        .forward(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(resp["result"]["method_seen"], "ping");
+    let tokens = upstream_state.received_tokens.lock().unwrap();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tokens[0], "Bearer tok-v1");
+}
+
+#[tokio::test]
+async fn http_client_parses_sse_body() {
+    let (_dir, inj, _ver, _socket_h) = build_injector().await;
+    let upstream_state = Arc::new(FakeUpstreamState::default());
+    *upstream_state.response_mode.lock().unwrap() = "sse";
+    let (url, _upstream_h) = spawn_fake_upstream(upstream_state.clone()).await;
+
+    let client = HttpClient::new(url, inj).unwrap();
+    let resp = client
+        .forward(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "sse-test", "params": {}
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(resp["result"]["method_seen"], "sse-test");
+}
+
+#[tokio::test]
+async fn http_client_refreshes_on_401_and_retries() {
+    let (_dir, inj, version, _socket_h) = build_injector().await;
+    let upstream_state = Arc::new(FakeUpstreamState::default());
+    *upstream_state.fail_with_401_until.lock().unwrap() = 1; // first request 401s
+    let (url, _upstream_h) = spawn_fake_upstream(upstream_state.clone()).await;
+
+    let client = HttpClient::new(url, inj).unwrap();
+
+    // Between the initial token fetch and the retry, advance the version
+    // so the post-refresh token is observably different.
+    version.store(2, Ordering::SeqCst);
+
+    let resp = client
+        .forward(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}
+        }))
+        .await
+        .unwrap();
+    assert_eq!(resp["result"]["method_seen"], "ping");
+
+    let tokens = upstream_state.received_tokens.lock().unwrap();
+    assert_eq!(tokens.len(), 2, "expected initial 401 + retry");
+    assert_eq!(tokens[0], "Bearer tok-v1");
+    assert_eq!(tokens[1], "Bearer tok-v2");
+}
+
+#[tokio::test]
+async fn http_client_propagates_non_401_errors() {
+    let (_dir, inj, _ver, _socket_h) = build_injector().await;
+    let upstream_state = Arc::new(FakeUpstreamState::default());
+    let (url, _upstream_h) = spawn_fake_upstream(upstream_state.clone()).await;
+
+    // Point at a definitely-bogus path under the same host so we get a 404.
+    let bogus = url.replace("/mcp", "/does-not-exist");
+    let client = HttpClient::new(bogus, inj).unwrap();
+    let res = client
+        .forward(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "x", "params": {}
+        }))
+        .await;
+    let err = res.unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(msg.contains("404"), "expected 404 error, got: {msg}");
+}
