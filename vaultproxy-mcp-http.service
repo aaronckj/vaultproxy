@@ -1,0 +1,18 @@
+[Unit]
+Description=vaultproxy MCP HTTP server (Streamable HTTP transport for remote Claude clients)
+After=network.target
+
+[Service]
+Type=simple
+User=aaron
+Environment=VAULT_FOLDER=vault-proxy
+Environment=CONFIG_DIR=/home/aaron/projects/Connecterr/config
+ExecStart=/home/aaron/projects/mcp-vault-proxy/target/release/vaultproxy \
+    --mcp-http 10.0.0.113:3203 \
+    --config-dir /home/aaron/projects/Connecterr/config \
+    --vault-folder vault-proxy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

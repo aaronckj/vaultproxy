@@ -246,6 +246,12 @@ struct Args {
     #[arg(long)]
     mcp: bool,
 
+    /// Run as an HTTP MCP server (Streamable HTTP transport) on the given address.
+    /// Allows remote Claude clients to connect over the network.
+    /// Example: --mcp-http 0.0.0.0:3203
+    #[arg(long, value_name = "ADDR")]
+    mcp_http: Option<String>,
+
     /// Background vault refresh interval in seconds.
     ///
     /// When set to a non-zero value, vault-proxy spawns a background task that
@@ -937,6 +943,18 @@ async fn start_server(
             fstab_path: args.smb_fstab_path.clone(),
         };
         return crate::mcp_server::run(vault_arc, args.vault_folder.clone(), smb).await;
+    }
+
+    if let Some(ref addr_str) = args.mcp_http {
+        let addr: std::net::SocketAddr = addr_str.parse()
+            .map_err(|e| anyhow::anyhow!("invalid --mcp-http address {addr_str}: {e}"))?;
+        let smb = crate::proxy::SmbConfig {
+            helper_path: args.smb_helper_path.clone(),
+            mount_root: args.smb_mount_root.clone(),
+            creds_dir: args.smb_creds_dir.clone(),
+            fstab_path: args.smb_fstab_path.clone(),
+        };
+        return crate::mcp_server::run_http(vault_arc, args.vault_folder.clone(), smb, addr).await;
     }
 
     if let Some(ref server_name) = args.launch {

@@ -1,5 +1,10 @@
 use std::sync::Arc;
 use rmcp::{ServiceExt, tool, tool_router, transport};
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService,
+    session::local::LocalSessionManager,
+};
+use tokio_util::sync::CancellationToken;
 use rmcp::handler::server::wrapper::Parameters;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -411,5 +416,45 @@ pub async fn run(
     let server = VaultMcpServer::with_smb(vault, vault_folder, smb);
     let service = server.serve(transport::stdio()).await?;
     service.waiting().await?;
+    Ok(())
+}
+
+pub async fn run_http(
+    vault: Arc<VaultManager>,
+    vault_folder: String,
+    smb: SmbConfig,
+    listen_addr: std::net::SocketAddr,
+) -> anyhow::Result<()> {
+    tracing::info!("starting vault-proxy MCP HTTP server on {listen_addr}");
+    let ct = CancellationToken::new();
+    let service: StreamableHttpService<VaultMcpServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            {
+                let vault = vault.clone();
+                let vault_folder = vault_folder.clone();
+                let smb = smb.clone();
+                move || Ok(VaultMcpServer::with_smb(vault.clone(), vault_folder.clone(), smb.clone()))
+            },
+            Default::default(),
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(vec![
+                    listen_addr.ip().to_string(),
+                    "localhost".to_string(),
+                    "127.0.0.1".to_string(),
+                ])
+                .with_cancellation_token(ct.child_token()),
+        );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let tcp_listener = tokio::net::TcpListener::bind(listen_addr).await?;
+    let handle = tokio::spawn({
+        let ct = ct.clone();
+        async move {
+            axum::serve(tcp_listener, router)
+                .with_graceful_shutdown(async move { ct.cancelled_owned().await })
+                .await
+                .expect("mcp http server error");
+        }
+    });
+    handle.await?;
     Ok(())
 }
