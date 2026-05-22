@@ -70,7 +70,7 @@ Full example: [`services.example.toml`](services.example.toml).
 # docker-compose.yml
 services:
   vaultproxy:
-    build: .   # or image: ghcr.io/aaronckj/vaultproxy:latest (once published)
+    image: ghcr.io/aaronckj/vaultproxy:latest   # or pin to a tag, e.g. :1.0.4
     restart: unless-stopped
     network_mode: host
     volumes:

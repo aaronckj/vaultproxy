@@ -30,13 +30,12 @@ The `vault_item` string in `services.toml` is only a reference — credentials n
 ```yaml
 services:
   vaultproxy:
-    # Build locally — see Dockerfile in the repo root.
-    # A pre-built image (ghcr.io/aaronckj/vaultproxy:latest) is published
-    # automatically on each version tag via the GitHub Actions CI workflow
-    # (.github/workflows/docker-publish.yml).  If the image is not yet
-    # available for your version, use `build: .` to build it from source.
-    build: .
-    # image: ghcr.io/aaronckj/vaultproxy:latest  # uncomment once CI has published
+    # Pre-built image, published on every tagged release via the
+    # GitHub Actions docker-publish workflow. Pin to a specific tag
+    # (e.g. `:1.0.4`) for reproducible deploys; `:latest` always
+    # points at the most recent release.
+    image: ghcr.io/aaronckj/vaultproxy:latest
+    # build: .   # uncomment to build from source instead
     restart: unless-stopped
     network_mode: host
     volumes:
