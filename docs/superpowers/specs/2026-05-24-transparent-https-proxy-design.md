@@ -29,7 +29,7 @@ This spec adds a **transparent HTTPS proxy mode** to vaultproxy that lets zero-m
 
 - Unmodified HTTPS clients (curl, requests, fetch, third-party MCP servers, agent frameworks) can use vault credentials by setting `HTTPS_PROXY=http://127.0.0.1:3203` and trusting one CA cert.
 - Two injection modes co-exist: **host-based** (auth header injected automatically when the upstream host matches a `[[service]]` block) and **placeholder** (literal `__vault.X__` tokens in the request body/headers are swapped for the vault value).
-- Operators can opt unregistered hosts into passthrough (default) or allowlist-blocking (`--transparent-mode=allowlist`).
+- Operators can opt unregistered hosts into passthrough (default) or allowlist-blocking (`--transparent-unregistered-policy=allowlist`).
 - Existing `services.toml` files keep working unchanged. New `transparent_mode` field is optional and defaults to `"off"`.
 - Existing `/proxy` and `--launch` integrations are unaffected.
 - All transparent traffic is recorded in the existing `audit-log.json` with a `trigger = "transparent"` discriminator.
@@ -179,7 +179,7 @@ transparent_mode = "host_inject"
 
 - Per-service `transparent_mode` wins.
 - If unset, falls back to global `--transparent-default-mode` flag (default `"off"`).
-- Global `--transparent-mode = allowlist` means hosts without any `[[service]]` block get blocked at CONNECT (`HTTP/1.1 502 Bad Gateway` with JSON body). Hosts with a `[[service]]` block use that block's `transparent_mode`.
+- Global `--transparent-unregistered-policy=allowlist` means hosts without any `[[service]]` block get blocked at CONNECT (`HTTP/1.1 502 Bad Gateway` with JSON body, `transparent_error_code = "unregistered_host_blocked"`). Hosts with a `[[service]]` block use that block's `transparent_mode`.
 
 ### Host matching
 
