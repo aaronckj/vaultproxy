@@ -82,17 +82,22 @@ pub async fn run(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let (code, status) = if e
+                    let code = if e
                         .downcast_ref::<crate::proxy::transparent::inject_placeholder::PlaceholderUnresolved>()
                         .is_some()
                     {
-                        ("placeholder_unresolved", 502)
-                    } else if e.to_string().contains("resolve placeholder") {
-                        ("vault_resolution_failed", 502)
+                        crate::proxy::transparent::errors::TransparentErrorCode::PlaceholderUnresolved
                     } else {
-                        ("unexpected", 502)
+                        // Includes "resolve placeholder" vault lookup
+                        // failures + any other substitute() error.
+                        crate::proxy::transparent::errors::TransparentErrorCode::VaultResolutionFailed
                     };
-                    write_error_over_tls(&mut agent_tls, status, code, &e.to_string()).await?;
+                    crate::proxy::transparent::errors::write_error_response(
+                        &mut agent_tls,
+                        code,
+                        &e.to_string(),
+                    )
+                    .await?;
                     agent_tls.shutdown().await.ok();
                     return Ok(());
                 }
@@ -257,32 +262,6 @@ async fn forward_plaintext(target: &ConnectTarget, req: HttpRequest) -> Result<B
     let mut response = Vec::new();
     tcp.read_to_end(&mut response).await?;
     Ok(Bytes::from(response))
-}
-
-async fn write_error_over_tls<S: tokio::io::AsyncWrite + Unpin>(
-    stream: &mut S,
-    status: u16,
-    code: &str,
-    message: &str,
-) -> Result<()> {
-    let body = serde_json::json!({
-        "ok": false,
-        "error": message,
-        "transparent_error_code": code,
-    });
-    let body_bytes = serde_json::to_vec(&body)?;
-    let reason = match status {
-        502 => "Bad Gateway",
-        504 => "Gateway Timeout",
-        _ => "Error",
-    };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body_bytes.len()
-    );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&body_bytes).await?;
-    Ok(())
 }
 
 fn serialize_request(req: &HttpRequest, target_host: &str) -> Vec<u8> {

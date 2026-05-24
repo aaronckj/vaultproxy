@@ -16,6 +16,7 @@ use crate::proxy::AppState;
 
 pub mod cert_factory;
 pub mod connect;
+pub mod errors;
 pub mod init;
 pub mod inject_host;
 pub mod inject_placeholder;
@@ -184,7 +185,12 @@ async fn handle_connection(
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,
         Err(e) => {
-            return reply_error(&mut stream, 400, "malformed_connect", &e.to_string()).await;
+            return errors::write_error_response(
+                &mut stream,
+                errors::TransparentErrorCode::MalformedConnect,
+                &e.to_string(),
+            )
+            .await;
         }
     };
     info!(peer = %peer, target = %target, "transparent CONNECT received");
@@ -218,7 +224,12 @@ async fn handle_connection(
             if svc.is_none() && unregistered_policy == UnregisteredPolicy::Allowlist {
                 let msg =
                     format!("host {target} has no [[service]] block; allowlist policy active");
-                return reply_error(&mut stream, 502, "unregistered_host_blocked", &msg).await;
+                return errors::write_error_response(
+                    &mut stream,
+                    errors::TransparentErrorCode::UnregisteredHostBlocked,
+                    &msg,
+                )
+                .await;
             }
             let audit = state.audit_log.clone();
             if let Err(e) =
@@ -228,33 +239,5 @@ async fn handle_connection(
             }
         }
     }
-    Ok(())
-}
-
-async fn reply_error<S: tokio::io::AsyncWrite + Unpin>(
-    stream: &mut S,
-    status: u16,
-    code: &str,
-    message: &str,
-) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let reason = match status {
-        400 => "Bad Request",
-        502 => "Bad Gateway",
-        504 => "Gateway Timeout",
-        _ => "Error",
-    };
-    let body = serde_json::json!({
-        "ok": false,
-        "error": message,
-        "transparent_error_code": code,
-    });
-    let body_bytes = serde_json::to_vec(&body)?;
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body_bytes.len()
-    );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&body_bytes).await?;
     Ok(())
 }

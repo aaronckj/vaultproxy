@@ -90,17 +90,10 @@ pub async fn tunnel_with_audit(
 }
 
 async fn reply_502<S: tokio::io::AsyncWrite + Unpin>(stream: &mut S, msg: &str) -> Result<()> {
-    let body = serde_json::json!({
-        "ok": false,
-        "error": msg,
-        "transparent_error_code": "upstream_unreachable",
-    });
-    let body_bytes = serde_json::to_vec(&body)?;
-    let head = format!(
-        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body_bytes.len()
-    );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&body_bytes).await?;
-    Ok(())
+    super::errors::write_error_response(
+        stream,
+        super::errors::TransparentErrorCode::UpstreamUnreachable,
+        msg,
+    )
+    .await
 }
