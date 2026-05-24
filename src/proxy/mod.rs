@@ -3,6 +3,9 @@
 pub mod registry;
 pub mod unifi_session;
 
+#[cfg(feature = "transparent")]
+pub mod transparent;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
