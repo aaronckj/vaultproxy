@@ -1,5 +1,12 @@
 # vaultproxy
 
+[![crates.io](https://img.shields.io/crates/v/vaultproxy.svg?logo=rust)](https://crates.io/crates/vaultproxy)
+[![docker](https://img.shields.io/badge/ghcr.io-aaronckj%2Fvaultproxy-blue?logo=docker)](https://github.com/aaronckj/vaultproxy/pkgs/container/vaultproxy)
+[![CI](https://github.com/aaronckj/vaultproxy/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/aaronckj/vaultproxy/actions/workflows/docker-publish.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](rust-toolchain.toml)
+[![transparent: on](https://img.shields.io/badge/transparent--proxy-default--on%20v1.2-success)](docs/operator/TRANSPARENT.md)
+
 **Secure credential sidecar for MCP servers — backed by [Vaultwarden](https://github.com/dani-garcia/vaultwarden).**
 
 Stop pasting API keys into `.env` files. `vaultproxy` reads credentials from your self-hosted Vaultwarden, injects the right auth header for each downstream service, and **never exposes plaintext secrets to the MCP layer or the AI agent**.
