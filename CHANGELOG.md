@@ -5,6 +5,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.3] — 2026-05-24
+
+### Added
+
+- **Audit log archive** — entries evicted past the 1 000-entry ring
+  buffer cap now append to `<path>.archive` as JSONL (one entry per
+  line). Best-effort: archive write failures log a WARN but don't
+  block the live append path. Closes the data-loss gap that opened
+  when transparent traffic could fill the cap in minutes.
+- **`examples/smart-mcp-server-transparent/`** — minimal Python MCP
+  server demonstrating zero-credential code via the transparent
+  listener (`HTTPS_PROXY=...:3203` + `REQUESTS_CA_BUNDLE`).
+- **README badges** — crates.io, GHCR, CI, License, MSRV, and a
+  transparent-default-on shield for v1.2+.
+
+### Docs
+
+- `docs/operator/AUDIT-LOG.md` — documents the new archive file and
+  the six transparent-mode telemetry fields on `AuditEntry`.
+
+## [1.2.2] — 2026-05-24
+
+### Refactor
+
+- **Typed transparent error envelope** — `proxy::transparent::errors::TransparentErrorCode`
+  centralises the HTTP status + `transparent_error_code` discriminator across
+  all transparent error paths. Three near-duplicate inline writers
+  (`mod.rs::reply_error`, `mitm.rs::write_error_over_tls`,
+  `passthrough.rs::reply_502`) collapse into one helper. Client contract is unchanged.
+
 ## [1.2.1] — 2026-05-24
 
 ### Added
