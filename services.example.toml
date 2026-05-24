@@ -166,3 +166,38 @@ header_name = "X-Plex-Token"
 vault_item = "vault-proxy - Plex"
 # timeout_secs = 300   # optional: 5-minute budget for slow library scans
                        # (Plex /library/sections/:id/refresh can take 3–5 min)
+
+# ── Transparent HTTPS_PROXY mode (`--features transparent`) ────────────────
+#
+# Add `transparent_mode` to any service the transparent listener
+# (default 127.0.0.1:3203) should broker. Default = "off" — every
+# entry above parses unchanged. Valid values:
+#
+#   "off"          — listener ignores this host (passthrough)
+#   "host_inject"  — MITM + replace auth header with vault credential.
+#                    Supports auth = bearer | header | basic | query_param.
+#                    Rejected at parse time for session / unifi_dual.
+#   "placeholder"  — MITM + scan body/headers for __vault.<name>__ tokens,
+#                    swap each for the resolved value. Use with the
+#                    [[transparent_placeholder]] map below.
+#   "passthrough"  — explicit TCP relay. Useful with
+#                    --transparent-unregistered-policy=allowlist.
+#
+# [[service]]
+# name             = "github_api"
+# base_url         = "https://api.github.com"
+# auth             = "bearer"
+# vault_item       = "vault-proxy - GitHub PAT"
+# transparent_mode = "host_inject"
+#
+# Placeholders — credentials not tied to a single host. The token is
+# string-replaced anywhere it appears in the agent's request body
+# (when Content-Type is textual) or header values.
+#
+# [[transparent_placeholder]]
+# token      = "__vault.github_pat__"
+# vault_item = "vault-proxy - GitHub PAT"
+# # field    = "password"   # default
+#
+# See docs/operator/TRANSPARENT.md for the full guide and
+# docs/operator/TRANSPARENT-CA.md for per-platform CA install.
