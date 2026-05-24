@@ -51,6 +51,15 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
+      - name: Rust build cache
+        # Caches ~/.cargo registry/cache + target/ keyed on
+        # Cargo.lock + toolchain + workflow file hashes. Drops cold-cache
+        # CI runs from ~21min (observed on v1.0.4) to ~5min.
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "transparent-feature-matrix"
+          cache-on-failure: true
+
       - name: Check formatting
         # iter-49: enforce cargo fmt before anything else so a misformatted PR
         # fails fast with a clear message rather than a build/test failure.
