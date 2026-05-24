@@ -101,6 +101,28 @@ jobs:
       - name: Run integration tests
         run: cargo test --all-targets --features test-utils
 
+      - name: Clippy (transparent feature)
+        # iter-126 (v1.1.0-beta.2): the transparent HTTPS_PROXY listener
+        # is a separate compilation path. Without this step a clippy
+        # regression in src/proxy/transparent/* would only surface when
+        # an operator built with --features transparent.
+        run: cargo clippy --all-targets --features transparent,test-utils -- -D warnings
+
+      - name: Run tests (transparent feature)
+        # Same rationale: the host_inject / placeholder E2Es only compile
+        # under --features transparent,test-utils. --test-threads=1
+        # serialises the smoke clients (curl / python / node) because
+        # they share the VP_TRANSPARENT_TEST_HTTP env var.
+        run: cargo test --all-targets --features transparent,test-utils -- --test-threads=1
+
+      - name: Clippy (all features)
+        # All four opt-in features together — guarantees no new feature
+        # combination breaks compilation or surfaces a clippy warning.
+        run: cargo clippy --all-targets --features browser,engine,dashboard,transparent,test-utils -- -D warnings
+
+      - name: Run tests (all features)
+        run: cargo test --all-targets --features browser,engine,dashboard,transparent,test-utils -- --test-threads=1
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
