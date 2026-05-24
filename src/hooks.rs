@@ -41,9 +41,28 @@ impl RotationHook {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("spawn rotation hook {}", self.script.display()))?;
+        // Retry spawn on ETXTBSY (os error 26). The script may have been
+        // written + chmod'd milliseconds before fire() runs; under heavy
+        // parallel load on tmpfs the kernel can still see a lingering open
+        // writer on the inode and refuse exec. Five attempts with linear
+        // backoff (20/40/60/80/100ms = ~300ms max) covers the observed CI
+        // race without hiding genuine "binary is being rewritten right now"
+        // misconfigurations.
+        let mut attempts: u32 = 0;
+        let child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.raw_os_error() == Some(26) && attempts < 5 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(20 * attempts as u64)).await;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("spawn rotation hook {}", self.script.display())));
+                }
+            }
+        };
 
         let out = timeout(Duration::from_secs(30), child.wait_with_output())
             .await
