@@ -2078,6 +2078,7 @@ impl VaultManager {
     /// Issue (iter-29): integration tests need an `AppState` without a live
     /// Vaultwarden. Using this stub lets tests verify routing, 404 handling,
     /// and proxied request forwarding without a real vault dependency.
+    #[allow(dead_code)]
     pub fn new_stub() -> Self {
         VaultManager {
             vaultwarden_url: "http://localhost:0".to_string(),
@@ -2101,6 +2102,7 @@ impl VaultManager {
     /// the decryption path (e.g. `list_field_pairs`) can pre-encrypt test data
     /// with `crate::vault::crypto::encrypt_to_cipher_string` and then verify
     /// the round-trip through the vault.
+    #[allow(dead_code)]
     pub fn new_stub_with_keys(enc_key: Vec<u8>, mac_key: Vec<u8>) -> Self {
         VaultManager {
             vaultwarden_url: "http://localhost:0".to_string(),
@@ -2153,6 +2155,7 @@ impl VaultManager {
     /// method stores an explicit `item_name` in the (name, cipher) tuple so
     /// that methods which look up items by name (e.g. `list_field_pairs`) find
     /// the correct entry. Use this variant when testing name-keyed lookups.
+    #[allow(dead_code)]
     pub async fn seed_item_by_name(
         &self,
         item_name: String,

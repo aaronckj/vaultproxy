@@ -23,9 +23,9 @@ pub mod passthrough;
 /// Bind failures are returned to the caller so startup can fail fast with
 /// a clear error rather than silently leaving the listener offline.
 pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()> {
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        anyhow::anyhow!("transparent listener failed to bind {addr}: {e}")
-    })?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("transparent listener failed to bind {addr}: {e}"))?;
 
     info!(
         addr = %addr,
@@ -62,15 +62,46 @@ async fn handle_connection(
     peer: std::net::SocketAddr,
     _state: Arc<AppState>,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-
-    // Phase 1 stub: read the CONNECT line, then reject everything with 501.
-    // Real dispatch (passthrough vs MITM) lands in Task 1.3 / Phase 2.
-    let target = connect::read_connect_line(&mut stream).await?;
+    let target = match connect::read_connect_line(&mut stream).await {
+        Ok(t) => t,
+        Err(e) => {
+            return reply_error(&mut stream, 400, "malformed_connect", &e.to_string()).await;
+        }
+    };
     info!(peer = %peer, target = %target, "transparent CONNECT received");
 
-    stream
-        .write_all(b"HTTP/1.1 501 Not Implemented\r\nContent-Type: application/json\r\n\r\n{\"ok\":false,\"error\":\"transparent listener stub - Phase 1\",\"transparent_error_code\":\"not_implemented\"}\n")
-        .await?;
+    // Phase 1: every CONNECT goes to passthrough. Registry-driven
+    // dispatch lands in Phase 3 (host_inject) and Phase 5 (placeholder).
+    if let Err(e) = passthrough::tunnel(stream, target.clone()).await {
+        warn!(target = %target, error = %e, "passthrough tunnel error");
+    }
+    Ok(())
+}
+
+async fn reply_error<S: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+    status: u16,
+    code: &str,
+    message: &str,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let reason = match status {
+        400 => "Bad Request",
+        502 => "Bad Gateway",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let body = serde_json::json!({
+        "ok": false,
+        "error": message,
+        "transparent_error_code": code,
+    });
+    let body_bytes = serde_json::to_vec(&body)?;
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(&body_bytes).await?;
     Ok(())
 }

@@ -131,6 +131,14 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:3202", env = "DASHBOARD_LISTEN")]
     dashboard_listen: SocketAddr,
 
+    /// Transparent HTTPS_PROXY listen address. Agents set
+    /// `HTTPS_PROXY=http://<this-addr>` to route outbound HTTPS through
+    /// vault-proxy. Only honoured when built with `--features transparent`.
+    /// Set the env var to an empty string to disable.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_LISTEN", default_value = "127.0.0.1:3203")]
+    transparent_listen: String,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1793,6 +1801,30 @@ async fn start_server(
             fstab_path: args.smb_fstab_path.clone(),
         },
     });
+
+    // Spawn the transparent HTTPS_PROXY listener (Phase 1: passthrough only).
+    // No-op when --features transparent is not compiled in, or when the
+    // operator sets TRANSPARENT_LISTEN="" to disable.
+    #[cfg(feature = "transparent")]
+    if !args.transparent_listen.is_empty() {
+        let addr: std::net::SocketAddr = args.transparent_listen.parse().map_err(|e| {
+            anyhow::anyhow!(
+                "--transparent-listen '{}' is not a valid SocketAddr: {}",
+                args.transparent_listen,
+                e
+            )
+        })?;
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                addr = %addr,
+                "SECURITY: --transparent-listen is bound to a NON-LOOPBACK address. \
+                 Anyone on this network can use this host as an HTTPS-MITM proxy. \
+                 See SECURITY.md before exposing port {}.",
+                addr.port(),
+            );
+        }
+        crate::proxy::transparent::spawn_listener(addr, state.clone()).await?;
+    }
 
     // Build router with rate limiting on sensitive endpoints.
     //

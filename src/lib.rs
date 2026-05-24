@@ -37,17 +37,20 @@ pub mod mcp_rpc_bridge;
 pub mod mcp_server;
 mod notify;
 mod policy;
-mod proxy;
+pub mod proxy;
 mod rotate;
 mod secure;
 mod security;
 mod setup;
 mod sync;
 pub mod template;
-mod tls;
+pub mod tls;
 mod totp;
 mod tpm;
 pub mod vault;
+
+#[cfg(feature = "test-utils")]
+pub mod test_support;
 
 use axum::{extract::State as AxumState, Json as AxumJson};
 use proxy::AppState;
