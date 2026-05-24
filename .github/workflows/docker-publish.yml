@@ -99,7 +99,11 @@ jobs:
         run: cargo test --all-targets --features browser,engine,dashboard
 
       - name: Run integration tests
-        run: cargo test --all-targets --features test-utils
+        # --test-threads=1 serialises the transparent smoke clients
+        # (curl/python/node) that share the VP_TRANSPARENT_TEST_HTTP
+        # process-global env var. Removing the flag lets the smoke
+        # tests race and fail intermittently.
+        run: cargo test --all-targets --features test-utils -- --test-threads=1
 
       - name: Clippy (transparent feature)
         # iter-126 (v1.1.0-beta.2): the transparent HTTPS_PROXY listener
