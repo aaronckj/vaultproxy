@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2021"
 # MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
 # this crate's own syntax.  `let-chains` usage requires 1.87, but three
@@ -156,16 +156,13 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "s
 # (iter-19 fix: was an unconditional [dependencies] entry)
 
 [features]
-# `default` = no optional features. This is the recommended build for Docker/server
-# deployments — it includes all proxy, vault, launcher, and audit functionality
-# but omits the web dashboard, TPM hardware binding, browser rotation, and the
-# credential-audit engine sidecar path.
-#
-# NOTE: transparent HTTPS_PROXY remains opt-in via `--features transparent`.
-# Flipping default = ["transparent"] requires wiring inject_host's credential
-# lookup to the real Vaultwarden decrypt path (currently uses test stub).
-# Tracked as a v1.2 deliverable; do not flip until that wiring lands.
-default = []
+# Default build now includes the transparent HTTPS_PROXY listener
+# (v1.2 onward; was opt-in through v1.1.x). `inject_host` resolves
+# credentials via the real Vaultwarden decrypt path (test-utils
+# builds substitute the stub via `VaultManager::test_item_password`).
+# Other opt-in features (dashboard, tpm, browser, engine) remain
+# disabled by default.
+default = ["transparent"]
 
 # Expose VaultManager::new_stub() and new_stub_with_keys() outside of #[cfg(test)].
 # Used by integration tests in the `tests/` directory which cannot access

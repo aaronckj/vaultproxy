@@ -2139,30 +2139,6 @@ impl VaultManager {
         map.insert((folder.to_string(), item.to_string()), password.to_string());
     }
 
-    /// Look up a test password by (folder, item). Falls back to an
-    /// error if not seeded — production callers should NOT use this
-    /// path; it is intended only for `inject_host` E2E tests that
-    /// pre-seed the vault.
-    ///
-    /// The signature is synchronous-by-design — the underlying map is
-    /// in-memory + only ever written from tests, so blocking briefly
-    /// on `try_read` is acceptable.
-    #[allow(dead_code)]
-    pub fn test_item_password(&self, folder: &str, item: &str) -> anyhow::Result<String> {
-        let map = self
-            .test_passwords
-            .try_read()
-            .map_err(|_| anyhow::anyhow!("test_passwords map busy"))?;
-        map.get(&(folder.to_string(), item.to_string()))
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no test password seeded for folder='{folder}' item='{item}' — \
-                     production credential lookup not implemented in this code path"
-                )
-            })
-    }
-
     /// Seed the stub vault with a cipher and a named folder.
     ///
     /// Only available in test builds. Allows integration tests to populate
@@ -2207,6 +2183,25 @@ impl VaultManager {
     ) {
         let mut items = self.items.write().await;
         items.insert(cipher.id.clone(), (item_name, cipher));
+    }
+}
+
+// Production-visible helper. Always present (not cfg-gated) so
+// `inject_host` can `if let Ok(v) = test_item_password(...)`
+// short-circuit during tests without needing test-utils compiled in.
+// In production the test_passwords map is empty so every call returns
+// Err and the caller falls through to the real Vaultwarden decrypt path.
+impl VaultManager {
+    pub fn test_item_password(&self, folder: &str, item: &str) -> anyhow::Result<String> {
+        let map = self
+            .test_passwords
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("test_passwords map busy"))?;
+        map.get(&(folder.to_string(), item.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("no test password seeded for folder='{folder}' item='{item}'")
+            })
     }
 }
 
