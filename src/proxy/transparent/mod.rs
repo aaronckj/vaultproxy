@@ -155,6 +155,7 @@ async fn handle_connection(
             let service = svc.unwrap();
             let vault = state.vault.clone();
             let folder = state.vault_folder.clone();
+            let audit = state.audit_log.clone();
             if let Err(e) = mitm::run(
                 stream,
                 target.clone(),
@@ -163,6 +164,7 @@ async fn handle_connection(
                 vault,
                 folder,
                 placeholders,
+                audit,
             )
             .await
             {
@@ -177,7 +179,10 @@ async fn handle_connection(
                     format!("host {target} has no [[service]] block; allowlist policy active");
                 return reply_error(&mut stream, 502, "unregistered_host_blocked", &msg).await;
             }
-            if let Err(e) = passthrough::tunnel(stream, target.clone()).await {
+            let audit = state.audit_log.clone();
+            if let Err(e) =
+                passthrough::tunnel_with_audit(stream, target.clone(), Some(audit)).await
+            {
                 warn!(target = %target, error = %e, "passthrough tunnel error");
             }
         }

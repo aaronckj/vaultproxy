@@ -40,7 +40,7 @@ mod policy;
 pub mod proxy;
 mod rotate;
 mod secure;
-mod security;
+pub mod security;
 mod setup;
 mod sync;
 pub mod template;

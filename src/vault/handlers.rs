@@ -867,6 +867,12 @@ pub async fn list_folders(
             result_summary: format!("ok; returned {} folder(s)", all.len()),
             permission: "Allowed".to_string(),
             trigger: "http".to_string(),
+            transparent_mode: None,
+            upstream_host: None,
+            upstream_status: None,
+            bytes_in: None,
+            bytes_out: None,
+            duration_ms: None,
         });
         // iter-110: wrap in {"ok": true, "folders": [...]} for sentinel consistency.
         return Json(json!({ "ok": true, "folders": all }));
@@ -1161,6 +1167,12 @@ pub async fn create_item(
                 result_summary: format!("ok; id={}", id),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (StatusCode::CREATED, Json(json!({"ok": true, "id": id})))
         }
@@ -1333,6 +1345,12 @@ pub async fn update_item(
                 result_summary: "ok".to_string(),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (StatusCode::OK, Json(json!({"ok": true, "id": req.id})))
         }
@@ -2303,6 +2321,12 @@ pub async fn delete_folder(
                 result_summary: "ok".to_string(),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (StatusCode::OK, Json(json!({ "ok": true, "id": req.id })))
         }
@@ -2427,6 +2451,12 @@ pub async fn move_item(
                 result_summary: "ok".to_string(),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (
                 StatusCode::OK,
@@ -2551,6 +2581,12 @@ pub async fn delete_item(
                 result_summary: "ok (soft-deleted to trash)".to_string(),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (StatusCode::OK, Json(json!({ "ok": true, "id": req.id })))
         }
@@ -3782,6 +3818,12 @@ pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCo
                 result_summary: format!("ok; top_level_keys={:?}", names),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             (StatusCode::OK, Json(v))
         }
@@ -3796,6 +3838,12 @@ pub async fn connecterr_secrets(State(state): State<Arc<AppState>>) -> (StatusCo
                 result_summary: format!("error: {:#}", e),
                 permission: "Allowed".to_string(),
                 trigger: "http".to_string(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
             });
             // Issue (iter-102): add "ok": false for consistent 503 body format.
             // All other 503 paths include "ok": false; this one was missing it,
@@ -4007,6 +4055,12 @@ pub async fn upsert_connecterr_secrets(
         result_summary: format!("created={}, merged={}", created.len(), merged.len()),
         permission: "Allowed".to_string(),
         trigger: "http".to_string(),
+        transparent_mode: None,
+        upstream_host: None,
+        upstream_status: None,
+        bytes_in: None,
+        bytes_out: None,
+        duration_ms: None,
     });
     Ok(Json(json!({ "created": created, "merged": merged })))
 }

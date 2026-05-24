@@ -165,6 +165,12 @@ pub async fn handle_rotate(
         result_summary: format!("status={}: {}", result.status, result.message),
         permission: "Allowed".to_string(),
         trigger: "http".to_string(),
+        transparent_mode: None,
+        upstream_host: None,
+        upstream_status: None,
+        bytes_in: None,
+        bytes_out: None,
+        duration_ms: None,
     });
 
     // HMAC-chained access log entry — recorded daemon-side so all writers

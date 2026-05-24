@@ -40,7 +40,7 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "private_key",
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub timestamp: String,
     pub tool_name: String,
@@ -48,6 +48,23 @@ pub struct AuditEntry {
     pub result_summary: String,
     pub permission: String,
     pub trigger: String,
+    /// Transparent-mode entries only. When `trigger == "transparent"`
+    /// these carry the per-request telemetry the regular /proxy
+    /// fields cannot represent. `None` on all non-transparent entries
+    /// so the JSON file stays backwards compatible — serde will omit
+    /// the field when None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparent_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_out: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 pub struct AuditLog {
@@ -132,6 +149,45 @@ impl AuditLog {
     #[allow(dead_code)] // called by dashboard audit log endpoint (#[cfg(feature = "dashboard")])
     pub fn entries(&self) -> Vec<AuditEntry> {
         self.lock_state().entries.iter().cloned().collect()
+    }
+
+    /// Convenience for the transparent listener. Pre-fills the
+    /// shared fields and the transparent-specific fields in a single
+    /// call site so mitm.rs / passthrough.rs don't repeat the
+    /// boilerplate. `mode` is a stringified TransparentMode
+    /// (`"host_inject"` | `"placeholder"` | `"passthrough"`).
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn log_transparent(
+        &self,
+        mode: &str,
+        host: &str,
+        upstream_status: Option<u16>,
+        bytes_in: u64,
+        bytes_out: u64,
+        duration_ms: u64,
+    ) {
+        let entry = AuditEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            tool_name: format!("transparent::{mode}::{host}"),
+            args_summary: format!("host={host} mode={mode}"),
+            result_summary: format!(
+                "status={} bytes_in={} bytes_out={}",
+                upstream_status
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                bytes_in,
+                bytes_out,
+            ),
+            permission: "Log".to_string(),
+            trigger: "transparent".to_string(),
+            transparent_mode: Some(mode.to_string()),
+            upstream_host: Some(host.to_string()),
+            upstream_status,
+            bytes_in: Some(bytes_in),
+            bytes_out: Some(bytes_out),
+            duration_ms: Some(duration_ms),
+        };
+        self.log(entry);
     }
 
     /// Persist the log to disk. Uses safe_write_config to reject symlinks.

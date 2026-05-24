@@ -563,6 +563,12 @@ pub async fn handle_proxy(
             result_summary: crate::security::audit_log::AuditLog::summarize_result(&response.body),
             permission: format!("{:?}", permission),
             trigger: "proxy".to_string(),
+            transparent_mode: None,
+            upstream_host: None,
+            upstream_status: None,
+            bytes_in: None,
+            bytes_out: None,
+            duration_ms: None,
         });
     }
 

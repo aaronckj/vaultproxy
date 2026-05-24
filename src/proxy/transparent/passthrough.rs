@@ -20,7 +20,20 @@ use super::connect::ConnectTarget;
 /// The 200 Connection-established reply is written AFTER upstream connect
 /// succeeds: a failed upstream connect surfaces to the agent as 502 Bad
 /// Gateway rather than a stuck TLS handshake after a phantom 200.
-pub async fn tunnel(mut agent: TcpStream, target: ConnectTarget) -> Result<()> {
+#[allow(dead_code)]
+pub async fn tunnel(agent: TcpStream, target: ConnectTarget) -> Result<()> {
+    tunnel_with_audit(agent, target, None).await
+}
+
+/// Same as `tunnel` but logs an audit entry on successful close when
+/// `audit_log` is supplied. Used by the transparent listener (Phase 7)
+/// so passthrough traffic is recorded with `trigger=transparent`,
+/// `transparent_mode="passthrough"`.
+pub async fn tunnel_with_audit(
+    mut agent: TcpStream,
+    target: ConnectTarget,
+    audit_log: Option<std::sync::Arc<crate::security::audit_log::AuditLog>>,
+) -> Result<()> {
     let start = Instant::now();
 
     // Connect upstream with 10s budget.
@@ -47,20 +60,31 @@ pub async fn tunnel(mut agent: TcpStream, target: ConnectTarget) -> Result<()> {
         .await
         .context("write 200 to agent")?;
 
-    let mut agent = agent;
     let mut upstream = upstream;
     let (bytes_in, bytes_out) = copy_bidirectional(&mut agent, &mut upstream)
         .await
         .context("bidirectional copy")?;
 
+    let duration_ms = start.elapsed().as_millis() as u64;
     info!(
         target = %target,
         bytes_in = bytes_in,
         bytes_out = bytes_out,
-        duration_ms = start.elapsed().as_millis() as u64,
+        duration_ms = duration_ms,
         mode = "passthrough",
         "transparent tunnel closed",
     );
+
+    if let Some(al) = audit_log {
+        al.log_transparent(
+            "passthrough",
+            &target.host,
+            None,
+            bytes_in,
+            bytes_out,
+            duration_ms,
+        );
+    }
 
     Ok(())
 }

@@ -28,6 +28,7 @@ pub struct HttpRequest {
 }
 
 /// Run the MITM loop for one CONNECT request.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     mut agent_plaintext: TcpStream,
     target: ConnectTarget,
@@ -36,6 +37,7 @@ pub async fn run(
     vault: Arc<crate::vault::VaultManager>,
     vault_folder: String,
     placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
+    audit_log: Arc<crate::security::audit_log::AuditLog>,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -100,19 +102,49 @@ pub async fn run(
     };
 
     // 5. Forward to upstream over real TLS.
+    let bytes_out = injected.body.len() as u64;
     let response = forward_to_upstream(&target, injected).await?;
+    let bytes_in = response.len() as u64;
+    let upstream_status = parse_http_status(&response);
 
     // 6. Stream response back to agent.
     agent_tls.write_all(&response).await?;
     agent_tls.shutdown().await.ok();
 
+    let duration_ms = start.elapsed().as_millis() as u64;
+    let mode_str = match service.transparent_mode {
+        crate::proxy::registry::TransparentMode::HostInject => "host_inject",
+        crate::proxy::registry::TransparentMode::Placeholder => "placeholder",
+        _ => "unknown",
+    };
+    audit_log.log_transparent(
+        mode_str,
+        &target.host,
+        upstream_status,
+        bytes_in,
+        bytes_out,
+        duration_ms,
+    );
+
     info!(
         host = %target,
-        duration_ms = start.elapsed().as_millis() as u64,
-        mode = ?service.transparent_mode,
+        duration_ms = duration_ms,
+        mode = mode_str,
+        status = ?upstream_status,
+        bytes_in = bytes_in,
+        bytes_out = bytes_out,
         "transparent MITM closed",
     );
     Ok(())
+}
+
+/// Parse "HTTP/1.1 NNN " prefix from a raw HTTP response buffer.
+fn parse_http_status(buf: &[u8]) -> Option<u16> {
+    let head = &buf[..buf.len().min(64)];
+    let s = std::str::from_utf8(head).ok()?;
+    let mut parts = s.split_whitespace();
+    parts.next()?; // HTTP/1.1
+    parts.next()?.parse().ok()
 }
 
 fn build_acceptor(leaf: &LeafCert) -> Result<TlsAcceptor> {
