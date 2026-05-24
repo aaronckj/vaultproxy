@@ -112,6 +112,20 @@ vault-proxy resolves credentials from Vaultwarden and spawns the server via fork
 
 For maximum security on sensitive services, prefer Tier 1 (native integration or a fork that adds vault-proxy support).
 
+## Transparent HTTPS_PROXY (`--features transparent`, `127.0.0.1:3203`)
+
+When built with `--features transparent`, vault-proxy runs a second listener that accepts HTTPS_PROXY-style CONNECT requests. For services that opt in (`transparent_mode = "host_inject" | "placeholder"`), the listener performs a TLS MITM, decrypts the agent's HTTP/1.1 request, injects vault credentials, and forwards over a fresh TLS connection to the upstream.
+
+The MITM is enabled by a self-signed CA that vault-proxy auto-generates on first start at `$CONFIG_DIR/transparent-ca.{crt,key}` (or operator-provided via `--transparent-ca-cert` / `--transparent-ca-key`).
+
+**The transparent CA private key is a Tier-1 secret.** If it leaks, an attacker who can position themselves between an agent and any upstream the agent talks to can MITM every TLS connection from a host that trusted the CA. The key is stored 0600. vault-proxy refuses to start if the key file is not mode 0600 (no `--allow-insecure-ca` escape flag). The startup banner prints the SHA-256 fingerprint so operators can verify it on every restart.
+
+- Default loopback bind. Non-loopback `--transparent-listen` produces a `SECURITY:` startup warning.
+- The transparent port has no listener-side authentication in v1.1. Trust model = OS-level process isolation on `127.0.0.1`.
+- Pre-existing agent auth headers (`Authorization`, `X-Api-Key`, `X-Plex-Token`, `Cookie`, `Proxy-Authorization`) are stripped before vault credential injection — agents cannot smuggle in conflicting credentials.
+- Upstream cert SANs are mirrored into the locally-signed leaf so MITM is transparent to agents that pin SAN values.
+- Operator runbook: [`docs/operator/TRANSPARENT-CA.md`](docs/operator/TRANSPARENT-CA.md).
+
 ## Reporting vulnerabilities
 
 Report security issues **privately** via [GitHub Security Advisories](../../security/advisories/new) on this repository. Do not open public issues for security vulnerabilities.

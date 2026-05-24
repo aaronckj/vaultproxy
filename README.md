@@ -35,6 +35,7 @@ vaultproxy fixes this with a small loopback HTTP service that:
 | Auto credential rotation | ✅ Playwright + vision LLM | ❌ | ❌ | ❌ | ❌ |
 | TPM sealing | ✅ optional | ❌ | ❌ | ❌ | ❌ |
 | Dual integration: smart `/proxy` + dumb `--launch` | ✅ | proxy only | proxy only | proxy only | n/a |
+| Transparent `HTTPS_PROXY` (zero-mod agents) | ✅ `--features transparent` (v1.1.0 beta) | ✅ | ❌ | ✅ | n/a |
 | Language / binary | Rust, single static binary | Go | Rust | Rust | TS / shells `bw` |
 
 vaultproxy is opinionated for the **selfhost / homelab** crowd — *arr stack, Home Assistant, OPNsense, UniFi, Plex, Tautulli, Nginx Proxy Manager. Other brokers assume HashiCorp Vault / Infisical / Conjur backends and target generic API providers (Anthropic, GitHub, Stripe).
@@ -137,8 +138,9 @@ Add `insecure_tls = true` for LAN services with self-signed certs (logs a startu
 | Web dashboard | ✅ `--features dashboard` (127.0.0.1:3202) | [docs/operator/DASHBOARD.md](docs/operator/DASHBOARD.md) |
 | Audit log (JSON, sensitive fields masked, 1000-entry cap) | ✅ stable | [docs/operator/AUDIT-LOG.md](docs/operator/AUDIT-LOG.md) |
 | SMB mount provisioning via vault items | ✅ stable | [docs/SMB.md](docs/SMB.md) |
+| Transparent `HTTPS_PROXY` listener (zero-mod agents, host_inject + placeholder) | ✅ `--features transparent` (v1.1.0 beta) | [docs/operator/TRANSPARENT.md](docs/operator/TRANSPARENT.md) |
 
-Planned for v1.1+: transparent `HTTPS_PROXY` mode, mTLS / Unix-socket listener, OAuth flows, response prompt-injection sanitisation, SIEM audit sinks, generic `/rotate` strategies. See [docs/ROADMAP.md](docs/ROADMAP.md).
+Planned for v1.2+: SIGHUP rebuild of transparent registry, audit log entries for transparent traffic, mTLS / Unix-socket listener auth, OAuth flows, response prompt-injection sanitisation, SIEM audit sinks, generic `/rotate` strategies. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
