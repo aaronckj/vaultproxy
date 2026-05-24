@@ -68,7 +68,14 @@ secrecy = { version = "0.10", features = ["serde"] }
 memsec = "0.7"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
-rcgen = "0.13"
+# Used by src/tpm.rs (sealed-keystore helpers, always compiled) and the
+# transparent HTTPS_PROXY MITM cert factory (--features transparent).
+# Always pulled in; the `transparent` feature does not re-enable it.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+
+# In-memory LRU cache for transparent-mode leaf certs. Optional.
+lru = { version = "0.12", optional = true }
+
 tokio-rustls = "0.26"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tss-esapi = { version = "7", features = ["generate-bindings"], optional = true }
@@ -177,6 +184,21 @@ browser = []
 # Build: cargo build --release --features engine
 # Docker: docker build --build-arg FEATURES=engine -t vaultproxy:engine .
 engine = []
+
+# Enable the transparent HTTPS_PROXY listener (port 3203 by default).
+# When OFF (default through v1.1), the src/proxy/transparent/ module is
+# excluded from compilation, no listener binds 3203, no CA cert is
+# generated, no new CLI flags appear in `vault-proxy --help`. The binary
+# behaves identically to v1.0 for operators who do not opt in.
+#
+# When ON, vault-proxy ALSO accepts HTTPS_PROXY traffic on 3203 and can
+# inject vault credentials into upstream HTTPS requests based on
+# services.toml. See docs/operator/TRANSPARENT.md for the operator guide
+# and SECURITY.md for the threat model.
+#
+# Build: cargo build --release --features transparent
+# Docker: docker build --build-arg FEATURES=transparent -t vaultproxy:transparent .
+transparent = ["dep:lru"]
 
 # NOTE: There is intentionally no "minimal" feature flag to strip subsystems
 # (cloud sync, launcher, etc.) from Docker builds. Those subsystems are
