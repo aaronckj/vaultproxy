@@ -28,10 +28,40 @@ pub mod registry;
 ///
 /// Bind failures are returned to the caller so startup can fail fast with
 /// a clear error rather than silently leaving the listener offline.
+/// Policy for hosts that aren't in any `[[service]]` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnregisteredPolicy {
+    /// Tunnel TCP unchanged (default).
+    Passthrough,
+    /// Reject with 502 + transparent_error_code = "unregistered_host_blocked".
+    Allowlist,
+}
+
+impl UnregisteredPolicy {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        Ok(match s {
+            "passthrough" => Self::Passthrough,
+            "allowlist" => Self::Allowlist,
+            other => anyhow::bail!(
+                "unknown transparent-unregistered-policy '{other}' — valid: passthrough | allowlist"
+            ),
+        })
+    }
+}
+
 pub async fn spawn_listener_with_ca(
     addr: SocketAddr,
     state: Arc<AppState>,
     ca: Arc<crate::tls::ca::TransparentCa>,
+) -> Result<()> {
+    spawn_listener_with_policy(addr, state, ca, UnregisteredPolicy::Passthrough).await
+}
+
+pub async fn spawn_listener_with_policy(
+    addr: SocketAddr,
+    state: Arc<AppState>,
+    ca: Arc<crate::tls::ca::TransparentCa>,
+    unregistered_policy: UnregisteredPolicy,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -64,8 +94,11 @@ pub async fn spawn_listener_with_ca(
                     let cf = cert_factory.clone();
                     let tr = tr_registry.clone();
                     let ph = placeholders.clone();
+                    let policy = unregistered_policy;
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer, state, cf, tr, ph).await {
+                        if let Err(e) =
+                            handle_connection(stream, peer, state, cf, tr, ph, policy).await
+                        {
                             warn!(
                                 peer = %peer,
                                 error = %e,
@@ -105,6 +138,7 @@ async fn handle_connection(
     cert_factory: Arc<cert_factory::CertFactory>,
     tr_registry: registry::TransparentRegistryCell,
     placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
+    unregistered_policy: UnregisteredPolicy,
 ) -> Result<()> {
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,
@@ -136,7 +170,13 @@ async fn handle_connection(
             }
         }
         _ => {
-            // Off / Passthrough / unregistered: tunnel through.
+            // Off / Passthrough / unregistered. Allowlist policy blocks
+            // unregistered hosts; everything else tunnels.
+            if svc.is_none() && unregistered_policy == UnregisteredPolicy::Allowlist {
+                let msg =
+                    format!("host {target} has no [[service]] block; allowlist policy active");
+                return reply_error(&mut stream, 502, "unregistered_host_blocked", &msg).await;
+            }
             if let Err(e) = passthrough::tunnel(stream, target.clone()).await {
                 warn!(target = %target, error = %e, "passthrough tunnel error");
             }

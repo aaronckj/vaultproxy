@@ -152,6 +152,23 @@ struct Args {
     #[arg(long, env = "TRANSPARENT_CA_KEY")]
     transparent_ca_key: Option<String>,
 
+    /// Default `transparent_mode` for services that omit the field.
+    /// Reserved for future use; the per-service field always wins.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_DEFAULT_MODE", default_value = "off")]
+    transparent_default_mode: String,
+
+    /// Behaviour for hosts with no `[[service]]` block.
+    ///   passthrough — relay TCP unchanged (default)
+    ///   allowlist   — reject with 502 + transparent_error_code = "unregistered_host_blocked"
+    #[cfg(feature = "transparent")]
+    #[arg(
+        long,
+        env = "TRANSPARENT_UNREGISTERED_POLICY",
+        default_value = "passthrough"
+    )]
+    transparent_unregistered_policy: String,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1854,7 +1871,15 @@ async fn start_server(
             }
         };
         let ca = crate::proxy::transparent::init::init(&ca_source)?;
-        crate::proxy::transparent::spawn_listener_with_ca(addr, state.clone(), ca).await?;
+        let policy = crate::proxy::transparent::UnregisteredPolicy::parse(
+            &args.transparent_unregistered_policy,
+        )?;
+        // Validate transparent_default_mode parses, even though it's
+        // reserved for future use right now.
+        let _ = crate::proxy::registry::TransparentMode::parse(&args.transparent_default_mode)
+            .map_err(|e| anyhow::anyhow!("--transparent-default-mode: {e}"))?;
+        crate::proxy::transparent::spawn_listener_with_policy(addr, state.clone(), ca, policy)
+            .await?;
     }
 
     // Build router with rate limiting on sensitive endpoints.
