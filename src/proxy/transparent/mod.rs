@@ -14,7 +14,9 @@ use tracing::{error, info, warn};
 
 use crate::proxy::AppState;
 
+pub mod cert_factory;
 pub mod connect;
+pub mod init;
 pub mod passthrough;
 
 /// Spawn the transparent listener. Returns immediately; the listener task
@@ -22,10 +24,15 @@ pub mod passthrough;
 ///
 /// Bind failures are returned to the caller so startup can fail fast with
 /// a clear error rather than silently leaving the listener offline.
-pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()> {
+pub async fn spawn_listener_with_ca(
+    addr: SocketAddr,
+    state: Arc<AppState>,
+    ca: Arc<crate::tls::ca::TransparentCa>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("transparent listener failed to bind {addr}: {e}"))?;
+    let _cert_factory = Arc::new(cert_factory::CertFactory::new(ca, 1024));
 
     info!(
         addr = %addr,
@@ -55,6 +62,20 @@ pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()
     });
 
     Ok(())
+}
+
+/// Phase-1 entry point (CA-less). Kept until callers migrate to
+/// `spawn_listener_with_ca`. Tests that don't need MITM continue to use
+/// this. Internally constructs a throwaway CA so `cert_factory` has a
+/// dependency satisfied even though it isn't exercised in passthrough.
+/// Used only by integration tests; production main.rs goes through
+/// `spawn_listener_with_ca` directly.
+#[allow(dead_code)]
+pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()> {
+    let ca = Arc::new(crate::tls::ca::TransparentCa::generate(
+        "test-spawn-listener",
+    )?);
+    spawn_listener_with_ca(addr, state, ca).await
 }
 
 async fn handle_connection(

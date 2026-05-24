@@ -139,6 +139,19 @@ struct Args {
     #[arg(long, env = "TRANSPARENT_LISTEN", default_value = "127.0.0.1:3203")]
     transparent_listen: String,
 
+    /// Path to operator-provided CA cert (PEM) for the transparent MITM
+    /// listener. Pairs with --transparent-ca-key. When BOTH are set,
+    /// vault-proxy uses BYO mode and does NOT auto-generate. Default
+    /// (both unset) = auto-generate into $CONFIG_DIR.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_CA_CERT")]
+    transparent_ca_cert: Option<String>,
+
+    /// Path to operator-provided CA key (PEM). Must be mode 0600.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_CA_KEY")]
+    transparent_ca_key: Option<String>,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1823,7 +1836,25 @@ async fn start_server(
                 addr.port(),
             );
         }
-        crate::proxy::transparent::spawn_listener(addr, state.clone()).await?;
+        let ca_source = match (
+            args.transparent_ca_cert.as_deref(),
+            args.transparent_ca_key.as_deref(),
+        ) {
+            (Some(c), Some(k)) => crate::proxy::transparent::init::CaSource::Byo {
+                cert_path: c.into(),
+                key_path: k.into(),
+            },
+            (None, None) => crate::proxy::transparent::init::CaSource::Auto {
+                config_dir: args.config_dir.clone().into(),
+            },
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "--transparent-ca-cert and --transparent-ca-key must both be set or both unset"
+                ));
+            }
+        };
+        let ca = crate::proxy::transparent::init::init(&ca_source)?;
+        crate::proxy::transparent::spawn_listener_with_ca(addr, state.clone(), ca).await?;
     }
 
     // Build router with rate limiting on sensitive endpoints.

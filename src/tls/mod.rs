@@ -3,3 +3,6 @@
 //! Full mTLS enforcement (axum-server + rustls + client certificate
 //! verification) will be wired up here once the TPM key path is confirmed
 //! on the Unraid deployment target.
+
+#[cfg(feature = "transparent")]
+pub mod ca;

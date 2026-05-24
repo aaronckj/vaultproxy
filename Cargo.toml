@@ -71,10 +71,32 @@ rustls-pemfile = "2"
 # Used by src/tpm.rs (sealed-keystore helpers, always compiled) and the
 # transparent HTTPS_PROXY MITM cert factory (--features transparent).
 # Always pulled in; the `transparent` feature does not re-enable it.
-rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "aws_lc_rs", "x509-parser"] }
 
 # In-memory LRU cache for transparent-mode leaf certs. Optional.
 lru = { version = "0.12", optional = true }
+
+# Parses upstream X.509 certs in the transparent MITM cert factory so the
+# locally signed leaf can mirror the upstream's SAN list. Also used in
+# BYO-CA validation to enforce basicConstraints CA:TRUE.
+x509-parser = { version = "0.16", optional = true }
+
+# Loads the platform's trust store so the transparent forwarder can
+# verify upstream TLS certs the same way curl/browsers do.
+rustls-native-certs = { version = "0.8", optional = true }
+
+# `hostname::get()` populates the CA's CN with the host vault-proxy runs
+# on, so operators can tell which machine signed a given leaf.
+hostname = { version = "0.4", optional = true }
+
+# `time` is already pulled in transitively by chrono/rcgen; we declare it
+# directly because src/tls/ca.rs constructs `time::OffsetDateTime` values
+# for cert validity windows. Pinning to a major version we know works.
+time = "0.3"
+
+# `pem` is already pulled in transitively by rcgen; declared directly
+# because src/tls/ca.rs parses CA cert PEM into DER for fingerprinting.
+pem = "3"
 
 tokio-rustls = "0.26"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
@@ -198,7 +220,7 @@ engine = []
 #
 # Build: cargo build --release --features transparent
 # Docker: docker build --build-arg FEATURES=transparent -t vaultproxy:transparent .
-transparent = ["dep:lru"]
+transparent = ["dep:lru", "dep:x509-parser", "dep:rustls-native-certs", "dep:hostname"]
 
 # NOTE: There is intentionally no "minimal" feature flag to strip subsystems
 # (cloud sync, launcher, etc.) from Docker builds. Those subsystems are
