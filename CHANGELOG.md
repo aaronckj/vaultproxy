@@ -5,6 +5,92 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.1] — 2026-05-24
+
+### Added
+
+- **SIGHUP rebuild of transparent registry + placeholders** — `transparent_mode`
+  edits and `[[transparent_placeholder]]` blocks now take effect without restart.
+  The SIGHUP handler (already swaps `ServiceRegistry`) calls
+  `proxy::transparent::rebuild_from_state` after the underlying registry swap.
+  In-flight requests work from their captured snapshot; only new accepts see the
+  updated map.
+- `AppState.transparent_registry` + `transparent_placeholders` cells (cfg-gated)
+  expose the live handles to the SIGHUP rebuild path.
+
+## [1.2.0] — 2026-05-24
+
+### Changed (breaking)
+
+- **`default = ["transparent"]`** — the transparent HTTPS_PROXY listener is now
+  built into the default release. Operators who don't want it can opt out via
+  `--no-default-features` or a custom feature subset. Listener still binds
+  `127.0.0.1:3203` only by default and only when `--transparent-listen` is non-empty.
+
+### Added
+
+- **Real Vaultwarden decryption in `inject_host`** — credentials for transparent
+  host_inject (Bearer / Header / Basic / QueryParam) resolve via
+  `VaultManager::decrypt_password` and `decrypt_field`, mirroring the existing
+  `/proxy` `apply_auth_and_send` path. Production transparent mode is usable
+  end-to-end with a live vault.
+
+## [1.1.1] — 2026-05-24
+
+### Fixed
+
+- Reverted premature `default = ["transparent"]` from v1.2 attempt: shipping
+  default-on without real vault wiring would have made every transparent request
+  502 in production. Documented v1.2 prerequisite in Cargo.toml.
+
+## [1.1.0] — 2026-05-24
+
+### Added — transparent HTTPS_PROXY mode (`--features transparent`)
+
+- New listener on `127.0.0.1:3203` (default; configurable via `--transparent-listen`).
+- Auto-generated or BYO MITM CA at `$CONFIG_DIR/transparent-ca.{crt,key}` with
+  0600 enforcement, SHA-256 fingerprint banner on startup, regeneration via
+  file deletion.
+- Per-host signed leaf certs (ED25519, 30-day validity) cached in a 1024-entry
+  LRU. Upstream cert SANs mirrored into the leaf so pinning-based clients work.
+- Two MITM modes selectable per service via `services.toml`:
+  - `host_inject` — strip agent auth headers, inject vault credential per `auth`
+    pattern. Supports Bearer, Header, Basic, QueryParam. Session / UnifiDual
+    rejected at parse time.
+  - `placeholder` — scan request path/headers/body for literal `__vault.<name>__`
+    tokens and replace with the resolved vault value. Driven by new
+    `[[transparent_placeholder]]` services.toml block.
+- `--transparent-unregistered-policy={passthrough|allowlist}` — allowlist mode
+  rejects CONNECT to hosts not in `[[service]]` with 502 +
+  `transparent_error_code = "unregistered_host_blocked"`.
+- Audit-log entries with `trigger = "transparent"`, plus per-entry telemetry
+  (`transparent_mode`, `upstream_host`, `upstream_status`, `bytes_in`,
+  `bytes_out`, `duration_ms`).
+- E2E tests across reqwest, curl, Python urllib, Node tls.
+- Documentation: `docs/operator/TRANSPARENT.md`, `TRANSPARENT-CA.md`,
+  `TRANSPARENT-FLAGS.md`; `SECURITY.md` updated with CA threat model;
+  `services.example.toml` annotated.
+
+### CI
+
+- Cache populated via `Swatinem/rust-cache@v2` (cold-cache builds ~21min → ~5min).
+- Full feature matrix runs four extra clippy + test passes covering
+  `transparent`, `transparent,test-utils`, and the combined
+  `browser,engine,dashboard,transparent` permutation.
+
+## [1.0.6] — 2026-05-24
+
+### Fixed
+
+- `RotationHook::fire` retries `spawn` up to 5 times on ETXTBSY (kernel
+  exec-after-chmod race observed in CI under parallel test load). Other spawn
+  errors still fail fast.
+- Clippy backlog cleared across ~30 files: dead-code allowances for
+  feature-gated call sites, `&PathBuf` → `&Path`, `drop(<future>)` over
+  `let _ = <future>`, `is_empty()` companion for `len()`, mass `cargo fmt`.
+
+---
+
 ## [1.0.3] — iterations 124–126: UniFi session invalidation complete, multi-service invalidation, v1.0.3 release
 
 ### Bugs (iter-126)
