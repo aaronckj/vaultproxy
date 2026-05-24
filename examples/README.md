@@ -1,12 +1,17 @@
-# Smart MCP server examples
+# MCP server examples
 
-Three minimal "smart" MCP server implementations that call `POST /proxy` on vault-proxy instead of holding credentials themselves. Each exposes a single `ha_call_service` tool that flips a Home Assistant light on or off — illustrative, replace with your actual upstream calls.
+Four minimal MCP server implementations against vault-proxy. The
+first three are "smart" servers that call `POST /proxy` explicitly
+(Tier 1 — credential never enters the agent's address space). The
+fourth uses `HTTPS_PROXY` and the transparent listener (Tier 3 — zero
+credential code, agent unmodified).
 
-| Directory | Language | Runtime | MCP SDK |
+| Directory | Language | Tier | Notes |
 |---|---|---|---|
-| [`smart-mcp-server-ts/`](smart-mcp-server-ts/) | TypeScript | Node 20+ | `@modelcontextprotocol/sdk` |
-| [`smart-mcp-server-py/`](smart-mcp-server-py/) | Python | 3.10+ | `mcp` (official Python SDK) |
-| [`smart-mcp-server-rs/`](smart-mcp-server-rs/) | Rust | edition 2021 | `rmcp` (official Rust SDK) |
+| [`smart-mcp-server-ts/`](smart-mcp-server-ts/) | TypeScript | Native `/proxy` | Node 20+, `@modelcontextprotocol/sdk` |
+| [`smart-mcp-server-py/`](smart-mcp-server-py/) | Python | Native `/proxy` | 3.10+, `mcp` SDK |
+| [`smart-mcp-server-rs/`](smart-mcp-server-rs/) | Rust | Native `/proxy` | edition 2021, `rmcp` SDK |
+| [`smart-mcp-server-transparent/`](smart-mcp-server-transparent/) | Python | Transparent `HTTPS_PROXY` | Demonstrates v1.1+ transparent listener; zero auth code in the server |
 
 ## The pattern
 

@@ -121,15 +121,21 @@ impl AuditLog {
     }
 
     /// Log a new audit entry. Caps at MAX_ENTRIES and saves periodically.
+    /// Entries evicted from the front file (because the cap was hit) are
+    /// appended to a JSONL archive at `<path>.archive` so transparent or
+    /// high-frequency traffic does not lose audit history.
     pub fn log(&self, entry: AuditEntry) {
         // Single-lock critical section: push, cap, bump counter, decide on
         // save. Gather a snapshot of entries if a save is due so `save_impl`
         // can run without re-acquiring the lock.
+        let mut evicted: Vec<AuditEntry> = Vec::new();
         let snapshot: Option<Vec<AuditEntry>> = {
             let mut st = self.lock_state();
             st.entries.push_front(entry);
             while st.entries.len() > MAX_ENTRIES {
-                st.entries.pop_back();
+                if let Some(old) = st.entries.pop_back() {
+                    evicted.push(old);
+                }
             }
             st.write_count += 1;
             if st.write_count >= 10 {
@@ -140,8 +146,49 @@ impl AuditLog {
             }
         };
 
+        if !evicted.is_empty() {
+            self.append_to_archive(&evicted);
+        }
         if let Some(entries) = snapshot {
             self.save_impl(&entries);
+        }
+    }
+
+    /// Append evicted entries to a JSONL archive next to the main file.
+    /// One JSON object per line so appending is cheap and atomic at the
+    /// OS write boundary (typical entry < 4 KiB, well under PIPE_BUF).
+    /// Failures log a WARN — archive writes are best-effort and never
+    /// block the live append path.
+    fn append_to_archive(&self, evicted: &[AuditEntry]) {
+        use std::io::Write;
+        let archive_path = format!("{}.archive", self.path);
+        let mut f = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&archive_path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(
+                    path = %archive_path,
+                    error = %e,
+                    "audit archive open failed; evicted entries lost",
+                );
+                return;
+            }
+        };
+        for entry in evicted {
+            match serde_json::to_string(entry) {
+                Ok(line) => {
+                    if let Err(e) = writeln!(f, "{line}") {
+                        tracing::warn!(error = %e, "audit archive write failed");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "audit archive serialise failed");
+                }
+            }
         }
     }
 
@@ -355,5 +402,42 @@ mod tests {
         let result = json!(["a", "b", "c"]);
         let summary = AuditLog::summarize_result(&result);
         assert!(!summary.is_empty());
+    }
+
+    /// When MAX_ENTRIES is exceeded, evicted entries land in
+    /// `<path>.archive` as JSONL — one entry per line — so no audit
+    /// history is lost under high traffic.
+    #[test]
+    fn evicted_entries_appended_to_archive() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("audit.json");
+        let log = AuditLog::new(path.to_str().unwrap());
+        // Fill past the cap. MAX_ENTRIES = 1000; push 1003.
+        for i in 0..1003 {
+            log.log(AuditEntry {
+                timestamp: format!("ts-{i}"),
+                tool_name: format!("tool-{i}"),
+                args_summary: "args".into(),
+                result_summary: "ok".into(),
+                permission: "Log".into(),
+                trigger: "test".into(),
+                transparent_mode: None,
+                upstream_host: None,
+                upstream_status: None,
+                bytes_in: None,
+                bytes_out: None,
+                duration_ms: None,
+            });
+        }
+        let archive_path = format!("{}.archive", path.display());
+        let archive =
+            std::fs::read_to_string(&archive_path).expect("archive file should have been created");
+        let lines: Vec<&str> = archive.lines().collect();
+        // The 3 oldest (i=0, 1, 2) should be evicted in insertion-order.
+        assert_eq!(lines.len(), 3);
+        for (idx, line) in lines.iter().enumerate() {
+            let entry: AuditEntry = serde_json::from_str(line).unwrap();
+            assert_eq!(entry.tool_name, format!("tool-{idx}"));
+        }
     }
 }
