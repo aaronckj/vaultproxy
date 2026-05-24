@@ -1,8 +1,28 @@
-# Roadmap (v1.1+)
+# Roadmap
 
-vault-proxy v1.0.x ships the feature set described in the README. The items below are tracked for v1.1 and beyond. See [GAPS.md](../GAPS.md) for the full competitive landscape that motivated this list.
+## Shipped through v1.2.4
 
-## v1.1 candidates
+| ID | Item | Version |
+|---|---|---|
+| G1 | Transparent HTTPS_PROXY mode (host_inject + placeholder) | v1.1.0 |
+| G1.1 | Default-on (`default = ["transparent"]`) + real vault decryption in `inject_host` | v1.2.0 |
+| G2 partial | SO_PEERCRED Unix-socket listener scaffold | v1.2.5 |
+| G4 | Response prompt-injection sanitisation (opt-in via `VP_TRANSPARENT_SANITIZE_RESPONSES=1`) | v1.2.5 |
+| Wildcards | `*.host.com:port` patterns in `services.toml` for transparent_mode | v1.2.5 |
+| SIGHUP | Rebuild of transparent registry + placeholders without restart | v1.2.1 |
+| Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
+| Errors | Typed `TransparentErrorCode` envelope across all transparent error paths | v1.2.2 |
+
+## v1.3 candidates
+
+| ID | Item | Notes |
+|---|---|---|
+| G2 full | **mTLS listener** | Wire UDS dispatch through the existing MITM handler (current `uds_listener` scaffold accepts + rejects on uid mismatch but doesn't yet route to `mitm::run`). Add optional client-cert auth for the TCP listener so it can be safely exposed beyond loopback. |
+| G3 | **OAuth flows** | `auth = "oauth_client_credentials"` and `auth = "oauth_refresh"` patterns for upstream services that require OAuth. Significant scope: 1 week per flow + refresh handling + state storage. |
+| G4-default | **`sanitize_responses` default-on** | Currently env-flag-gated. Bake into a CLI flag and document the perf cost in `docs/operator/TRANSPARENT.md`. |
+| HTTP/2 | **HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1. Modern API clients increasingly default to h2 over ALPN. Significant: needs hyper-style h2 framing or rustls ALPN downgrade fallback. |
+
+## v1.1 candidates (deferred or superseded)
 
 | ID | Item | Notes |
 |---|---|---|

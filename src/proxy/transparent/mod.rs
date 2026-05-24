@@ -23,6 +23,7 @@ pub mod inject_placeholder;
 pub mod mitm;
 pub mod passthrough;
 pub mod registry;
+pub mod uds_listener;
 
 /// Spawn the transparent listener. Returns immediately; the listener task
 /// runs in the background until the runtime shuts down.

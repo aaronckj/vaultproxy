@@ -109,6 +109,20 @@ pub async fn run(
     // 5. Forward to upstream over real TLS.
     let bytes_out = injected.body.len() as u64;
     let response = forward_to_upstream(&target, injected).await?;
+    // Optional response sanitisation. Off by default; opt in with
+    // VP_TRANSPARENT_SANITIZE_RESPONSES=1 so operators can A/B test
+    // before flipping on a default. Production wiring of the flag
+    // through AppState lands in a follow-up; the env switch lets
+    // us ship the path now without an irreversible default change.
+    let response = if std::env::var("VP_TRANSPARENT_SANITIZE_RESPONSES")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        maybe_sanitize_response(response)
+    } else {
+        response
+    };
     let bytes_in = response.len() as u64;
     let upstream_status = parse_http_status(&response);
 
@@ -150,6 +164,88 @@ fn parse_http_status(buf: &[u8]) -> Option<u16> {
     let mut parts = s.split_whitespace();
     parts.next()?; // HTTP/1.1
     parts.next()?.parse().ok()
+}
+
+/// When `sanitize_responses` is on, run the upstream response body
+/// through `security::sanitize::sanitize_for_wire` (strips zero-width
+/// characters + dangerous markup tags). Skips non-textual content
+/// types and bodies the response can't separate into head/body
+/// (chunked / no terminator). Preserves the original byte ordering
+/// otherwise. Rebuilds Content-Length so downstream parsers don't
+/// see a stale value.
+pub(crate) fn maybe_sanitize_response(buf: Bytes) -> Bytes {
+    // Find end of headers.
+    let sep = match find_subseq(&buf, b"\r\n\r\n") {
+        Some(i) => i,
+        None => return buf, // can't safely split — pass through
+    };
+    let (head_bytes, rest) = buf.split_at(sep + 4);
+    let head = match std::str::from_utf8(head_bytes) {
+        Ok(s) => s,
+        Err(_) => return buf,
+    };
+    // Look at Content-Type to decide whether the body is textual.
+    let textual = head.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-type:") {
+            let v = v.trim();
+            v.starts_with("application/json")
+                || v.starts_with("text/")
+                || v.starts_with("application/x-www-form-urlencoded")
+        } else {
+            false
+        }
+    });
+    if !textual {
+        return buf;
+    }
+    // Refuse to touch chunked / streaming bodies — sanitising into
+    // them would corrupt the framing.
+    if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        return buf;
+    }
+    let body_str = match std::str::from_utf8(rest) {
+        Ok(s) => s,
+        Err(_) => return buf,
+    };
+    let cleaned = crate::security::sanitize::sanitize_for_wire(body_str);
+    if cleaned == body_str {
+        return buf;
+    }
+    // Rebuild head with Content-Length updated.
+    let new_len = cleaned.len();
+    let mut new_head = String::with_capacity(head.len());
+    for line in head.lines() {
+        if line.to_ascii_lowercase().starts_with("content-length:") {
+            new_head.push_str(&format!("Content-Length: {new_len}\r\n"));
+        } else {
+            new_head.push_str(line);
+            new_head.push_str("\r\n");
+        }
+    }
+    // `head.lines()` strips the trailing blank line — re-add CRLF.
+    let mut out = Vec::with_capacity(new_head.len() + new_len + 2);
+    out.extend_from_slice(new_head.as_bytes());
+    if !new_head.ends_with("\r\n\r\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(cleaned.as_bytes());
+    Bytes::from(out)
+}
+
+fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    for i in 0..=hay.len() - needle.len() {
+        if &hay[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+    }
+    None
 }
 
 fn build_acceptor(leaf: &LeafCert) -> Result<TlsAcceptor> {
