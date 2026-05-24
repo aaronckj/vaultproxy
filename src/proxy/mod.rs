@@ -271,6 +271,26 @@ pub struct AppState {
     /// SMB setup configuration. Empty `helper_path` disables the SMB mount
     /// endpoints (501). See `vault/smb.rs` and the `--smb-*` CLI flags.
     pub smb: SmbConfig,
+
+    /// Transparent-mode registry snapshot. Populated after the
+    /// transparent listener is spawned (which happens after AppState
+    /// is wrapped in Arc, so the field has to be mutable through
+    /// `&Arc<AppState>`). `None` when the transparent listener is
+    /// disabled (TRANSPARENT_LISTEN=""); `Some` after spawn.
+    /// SIGHUP rebuilds the inner cell in place.
+    #[cfg(feature = "transparent")]
+    pub transparent_registry: Arc<
+        tokio::sync::RwLock<Option<crate::proxy::transparent::registry::TransparentRegistryCell>>,
+    >,
+
+    /// Mirror of `transparent_registry` for placeholders.
+    #[cfg(feature = "transparent")]
+    #[allow(clippy::type_complexity)]
+    pub transparent_placeholders: Arc<
+        tokio::sync::RwLock<
+            Option<Arc<tokio::sync::RwLock<Vec<crate::proxy::registry::TransparentPlaceholder>>>>,
+        >,
+    >,
 }
 
 /// Configuration for the SMB mount helper. Populated from CLI flags
@@ -1489,6 +1509,10 @@ impl AppState {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: SmbConfig::default(),
+            #[cfg(feature = "transparent")]
+            transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "transparent")]
+            transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 }
@@ -1740,6 +1764,10 @@ mod integration_tests {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: SmbConfig::default(),
+            #[cfg(feature = "transparent")]
+            transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "transparent")]
+            transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 

@@ -53,23 +53,32 @@ pub async fn spawn_listener_with_ca(
     addr: SocketAddr,
     state: Arc<AppState>,
     ca: Arc<crate::tls::ca::TransparentCa>,
-) -> Result<()> {
+) -> Result<ListenerHandles> {
     spawn_listener_with_policy(addr, state, ca, UnregisteredPolicy::Passthrough).await
 }
+
+/// Bundle returned by `spawn_listener_with_policy` so main.rs can
+/// stash the live cells on AppState for the SIGHUP rebuild handler.
+pub type ListenerHandles = (
+    registry::TransparentRegistryCell,
+    Arc<tokio::sync::RwLock<Vec<crate::proxy::registry::TransparentPlaceholder>>>,
+);
 
 pub async fn spawn_listener_with_policy(
     addr: SocketAddr,
     state: Arc<AppState>,
     ca: Arc<crate::tls::ca::TransparentCa>,
     unregistered_policy: UnregisteredPolicy,
-) -> Result<()> {
+) -> Result<ListenerHandles> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("transparent listener failed to bind {addr}: {e}"))?;
     let cert_factory = Arc::new(cert_factory::CertFactory::new(ca, 1024));
 
-    // Build initial registry snapshot. SIGHUP reload (Phase 6) updates
-    // this cell in place.
+    // Build initial registry snapshot. SIGHUP rebuild (rebuild_from_state)
+    // updates these cells in place, so AppState.transparent_registry +
+    // AppState.transparent_placeholders need to point at THESE cells —
+    // not fresh copies.
     let (snapshot, placeholder_vec) = {
         let reg = state.registry.read().await;
         (
@@ -79,7 +88,11 @@ pub async fn spawn_listener_with_policy(
     };
     let tr_registry: registry::TransparentRegistryCell =
         Arc::new(tokio::sync::RwLock::new(snapshot));
-    let placeholders = Arc::new(placeholder_vec);
+    let placeholders: Arc<
+        tokio::sync::RwLock<Vec<crate::proxy::registry::TransparentPlaceholder>>,
+    > = Arc::new(tokio::sync::RwLock::new(placeholder_vec));
+    let tr_registry_handle = tr_registry.clone();
+    let placeholders_handle = placeholders.clone();
 
     info!(
         addr = %addr,
@@ -93,11 +106,17 @@ pub async fn spawn_listener_with_policy(
                     let state = state.clone();
                     let cf = cert_factory.clone();
                     let tr = tr_registry.clone();
-                    let ph = placeholders.clone();
+                    let ph_cell = placeholders.clone();
                     let policy = unregistered_policy;
                     tokio::spawn(async move {
+                        // Snapshot the placeholder Vec under a short read
+                        // lock so SIGHUP rebuilds can swap the list while
+                        // in-flight requests work from their captured
+                        // snapshot.
+                        let ph_snapshot = Arc::new(ph_cell.read().await.clone());
                         if let Err(e) =
-                            handle_connection(stream, peer, state, cf, tr, ph, policy).await
+                            handle_connection(stream, peer, state, cf, tr, ph_snapshot, policy)
+                                .await
                         {
                             warn!(
                                 peer = %peer,
@@ -114,7 +133,7 @@ pub async fn spawn_listener_with_policy(
         }
     });
 
-    Ok(())
+    Ok((tr_registry_handle, placeholders_handle))
 }
 
 /// Phase-1 entry point (CA-less). Kept until callers migrate to
@@ -128,7 +147,29 @@ pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()
     let ca = Arc::new(crate::tls::ca::TransparentCa::generate(
         "test-spawn-listener",
     )?);
-    spawn_listener_with_ca(addr, state, ca).await
+    spawn_listener_with_ca(addr, state, ca).await?;
+    Ok(())
+}
+
+/// SIGHUP rebuild entry point. Rebuilds the TransparentRegistry from
+/// the AppState's current `state.registry` snapshot and refreshes the
+/// placeholder list in place. Existing in-flight requests work from
+/// their captured snapshot — only new accepts see the swap.
+pub async fn rebuild_from_state(state: &AppState) -> Result<()> {
+    let registry_cell = state.transparent_registry.read().await.clone();
+    let placeholders_cell = state.transparent_placeholders.read().await.clone();
+    let (registry_cell, placeholders_cell) = match (registry_cell, placeholders_cell) {
+        (Some(r), Some(p)) => (r, p),
+        _ => return Ok(()), // listener never spawned; nothing to rebuild
+    };
+    let reg = state.registry.read().await;
+    let new_snapshot = registry::TransparentRegistry::build(&reg)?;
+    let new_placeholders = reg.transparent_placeholders().to_vec();
+    drop(reg);
+    *registry_cell.write().await = new_snapshot;
+    *placeholders_cell.write().await = new_placeholders;
+    tracing::info!("SIGHUP: transparent registry + placeholders rebuilt");
+    Ok(())
 }
 
 async fn handle_connection(

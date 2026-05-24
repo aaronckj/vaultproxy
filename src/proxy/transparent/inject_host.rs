@@ -121,7 +121,6 @@ fn resolve_password(vault: &VaultManager, folder: &str, item: &str) -> Result<St
     Ok(s)
 }
 
-
 fn strip_forbidden_headers(headers: &mut Vec<(String, String)>) {
     headers.retain(|(k, _)| !FORBIDDEN_HEADERS.iter().any(|f| k.eq_ignore_ascii_case(f)));
 }

@@ -56,5 +56,9 @@ pub async fn stub_app_state() -> AppState {
         reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
         audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
         smb: SmbConfig::default(),
+        #[cfg(feature = "transparent")]
+        transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+        #[cfg(feature = "transparent")]
+        transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
     }
 }

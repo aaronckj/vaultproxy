@@ -1830,6 +1830,8 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         },
+        transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+        transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
     });
 
     // Spawn the transparent HTTPS_PROXY listener (Phase 1: passthrough only).
@@ -1878,8 +1880,11 @@ async fn start_server(
         // reserved for future use right now.
         let _ = crate::proxy::registry::TransparentMode::parse(&args.transparent_default_mode)
             .map_err(|e| anyhow::anyhow!("--transparent-default-mode: {e}"))?;
-        crate::proxy::transparent::spawn_listener_with_policy(addr, state.clone(), ca, policy)
-            .await?;
+        let (tr_cell, ph_cell) =
+            crate::proxy::transparent::spawn_listener_with_policy(addr, state.clone(), ca, policy)
+                .await?;
+        *state.transparent_registry.write().await = Some(tr_cell);
+        *state.transparent_placeholders.write().await = Some(ph_cell);
     }
 
     // Build router with rate limiting on sensitive endpoints.
@@ -2606,6 +2611,21 @@ async fn start_server(
                     // re-resolves the folder (handles services.toml edits alongside
                     // a vault_folder rename).
                     *sighup_state.cached_folder_id.write().await = None;
+
+                    // Rebuild the transparent-mode registry + placeholder
+                    // list so transparent_mode / [[transparent_placeholder]]
+                    // changes take effect without restart. No-op when the
+                    // transparent listener is disabled.
+                    #[cfg(feature = "transparent")]
+                    if let Err(e) =
+                        crate::proxy::transparent::rebuild_from_state(&sighup_state).await
+                    {
+                        tracing::warn!(
+                            "SIGHUP: transparent registry rebuild failed: {} \
+                             — old transparent registry remains active",
+                            e
+                        );
+                    }
 
                     tracing::info!(
                         "SIGHUP: reload complete — {} service(s) now registered (was {})",
@@ -4025,6 +4045,8 @@ mod browser_rotate_guard_tests {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: crate::proxy::SmbConfig::default(),
+            transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
@@ -4168,6 +4190,8 @@ mod browser_status_tests {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: crate::proxy::SmbConfig::default(),
+            transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
