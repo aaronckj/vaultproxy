@@ -17,6 +17,49 @@ use std::path::Path;
 struct ServicesFile {
     #[serde(default)]
     service: Vec<ServiceConfig>,
+    #[serde(default)]
+    transparent_placeholder: Vec<TransparentPlaceholderConfig>,
+}
+
+#[derive(serde::Deserialize)]
+struct TransparentPlaceholderConfig {
+    token: String,
+    vault_item: String,
+    #[serde(default = "default_password_field")]
+    field: String,
+}
+
+fn default_password_field() -> String {
+    "password".into()
+}
+
+fn validate_placeholder_token(t: &str) -> anyhow::Result<()> {
+    if !t.starts_with("__vault.") || !t.ends_with("__") {
+        anyhow::bail!("token must match __vault.<name>__");
+    }
+    let inner = &t["__vault.".len()..t.len() - 2];
+    if inner.is_empty() {
+        anyhow::bail!("token name is empty");
+    }
+    if !inner
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        anyhow::bail!("token name must match [A-Za-z0-9_-]+");
+    }
+    Ok(())
+}
+
+/// Resolved placeholder. The token is a literal string like
+/// `__vault.github_pat__` that will be string-replaced in agent
+/// request bodies / headers with `(vault_item, field)`-resolved
+/// value. Lives on the `ServiceRegistry`; rebuilt on SIGHUP.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct TransparentPlaceholder {
+    pub token: String,
+    pub vault_item: String,
+    pub field: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -355,6 +398,10 @@ impl ServiceEntry {
 /// before the swap continue to completion unaffected.
 pub struct ServiceRegistry {
     entries: HashMap<String, ServiceEntry>,
+    /// Transparent-mode placeholder map. Empty when the
+    /// `transparent` feature is off or when services.toml has no
+    /// `[[transparent_placeholder]]` blocks.
+    transparent_placeholders: Vec<TransparentPlaceholder>,
 }
 
 impl ServiceRegistry {
@@ -362,7 +409,26 @@ impl ServiceRegistry {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            transparent_placeholders: Vec::new(),
         }
+    }
+
+    /// Read-only access to the parsed `[[transparent_placeholder]]`
+    /// list. Used by the transparent listener's MITM dispatch when
+    /// a service is in `transparent_mode = "placeholder"`.
+    #[allow(dead_code)]
+    pub fn transparent_placeholders(&self) -> &[TransparentPlaceholder] {
+        &self.transparent_placeholders
+    }
+
+    /// Test-only setter for the placeholder list. Production code
+    /// populates this via `from_toml_file`; integration tests that
+    /// bypass TOML (because of the SSRF guard on loopback base_url)
+    /// need a direct way to seed.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub fn set_transparent_placeholders(&mut self, list: Vec<TransparentPlaceholder>) {
+        self.transparent_placeholders = list;
     }
 
     /// Register a service entry.
@@ -911,6 +977,26 @@ impl ServiceRegistry {
                 return registry;
             }
         };
+
+        // Parse + validate placeholders. Rejected entries are dropped
+        // with an error log (matches the per-service reject pattern).
+        for p in parsed.transparent_placeholder {
+            if let Err(e) = validate_placeholder_token(&p.token) {
+                tracing::error!(
+                    "transparent_placeholder token '{}' invalid: {} — skipping",
+                    p.token,
+                    e
+                );
+                continue;
+            }
+            registry
+                .transparent_placeholders
+                .push(TransparentPlaceholder {
+                    token: p.token,
+                    vault_item: p.vault_item,
+                    field: p.field,
+                });
+        }
 
         for mut svc in parsed.service {
             // Issue (iter-14): Trim leading/trailing whitespace from the service

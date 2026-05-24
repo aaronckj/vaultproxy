@@ -18,6 +18,7 @@ pub mod cert_factory;
 pub mod connect;
 pub mod init;
 pub mod inject_host;
+pub mod inject_placeholder;
 pub mod mitm;
 pub mod passthrough;
 pub mod registry;
@@ -39,12 +40,16 @@ pub async fn spawn_listener_with_ca(
 
     // Build initial registry snapshot. SIGHUP reload (Phase 6) updates
     // this cell in place.
-    let snapshot = {
+    let (snapshot, placeholder_vec) = {
         let reg = state.registry.read().await;
-        registry::TransparentRegistry::build(&reg)?
+        (
+            registry::TransparentRegistry::build(&reg)?,
+            reg.transparent_placeholders().to_vec(),
+        )
     };
     let tr_registry: registry::TransparentRegistryCell =
         Arc::new(tokio::sync::RwLock::new(snapshot));
+    let placeholders = Arc::new(placeholder_vec);
 
     info!(
         addr = %addr,
@@ -58,8 +63,9 @@ pub async fn spawn_listener_with_ca(
                     let state = state.clone();
                     let cf = cert_factory.clone();
                     let tr = tr_registry.clone();
+                    let ph = placeholders.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer, state, cf, tr).await {
+                        if let Err(e) = handle_connection(stream, peer, state, cf, tr, ph).await {
                             warn!(
                                 peer = %peer,
                                 error = %e,
@@ -98,6 +104,7 @@ async fn handle_connection(
     state: Arc<AppState>,
     cert_factory: Arc<cert_factory::CertFactory>,
     tr_registry: registry::TransparentRegistryCell,
+    placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
 ) -> Result<()> {
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,
@@ -114,8 +121,16 @@ async fn handle_connection(
             let service = svc.unwrap();
             let vault = state.vault.clone();
             let folder = state.vault_folder.clone();
-            if let Err(e) =
-                mitm::run(stream, target.clone(), service, cert_factory, vault, folder).await
+            if let Err(e) = mitm::run(
+                stream,
+                target.clone(),
+                service,
+                cert_factory,
+                vault,
+                folder,
+                placeholders,
+            )
+            .await
             {
                 warn!(target = %target, error = %e, "MITM error");
             }

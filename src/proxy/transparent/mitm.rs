@@ -19,6 +19,7 @@ use crate::proxy::transparent::cert_factory::{CertFactory, LeafCert};
 use crate::proxy::transparent::connect::ConnectTarget;
 
 /// Minimal HTTP/1.1 request: method, path, headers, optional body.
+#[derive(Debug)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
@@ -34,6 +35,7 @@ pub async fn run(
     cert_factory: Arc<CertFactory>,
     vault: Arc<crate::vault::VaultManager>,
     vault_folder: String,
+    placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -67,8 +69,32 @@ pub async fn run(
             .await?
         }
         crate::proxy::registry::TransparentMode::Placeholder => {
-            // Phase 5.
-            bail!("placeholder mode not yet implemented (Phase 5)");
+            match crate::proxy::transparent::inject_placeholder::substitute(
+                req,
+                &placeholders,
+                vault.clone(),
+                &vault_folder,
+                32 * 1024 * 1024,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let (code, status) = if e
+                        .downcast_ref::<crate::proxy::transparent::inject_placeholder::PlaceholderUnresolved>()
+                        .is_some()
+                    {
+                        ("placeholder_unresolved", 502)
+                    } else if e.to_string().contains("resolve placeholder") {
+                        ("vault_resolution_failed", 502)
+                    } else {
+                        ("unexpected", 502)
+                    };
+                    write_error_over_tls(&mut agent_tls, status, code, &e.to_string()).await?;
+                    agent_tls.shutdown().await.ok();
+                    return Ok(());
+                }
+            }
         }
         _ => unreachable!("mitm::run only called for HostInject / Placeholder"),
     };
@@ -199,6 +225,32 @@ async fn forward_plaintext(target: &ConnectTarget, req: HttpRequest) -> Result<B
     let mut response = Vec::new();
     tcp.read_to_end(&mut response).await?;
     Ok(Bytes::from(response))
+}
+
+async fn write_error_over_tls<S: tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+    status: u16,
+    code: &str,
+    message: &str,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "ok": false,
+        "error": message,
+        "transparent_error_code": code,
+    });
+    let body_bytes = serde_json::to_vec(&body)?;
+    let reason = match status {
+        502 => "Bad Gateway",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_bytes.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(&body_bytes).await?;
+    Ok(())
 }
 
 fn serialize_request(req: &HttpRequest, target_host: &str) -> Vec<u8> {
