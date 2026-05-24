@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 # MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
 # this crate's own syntax.  `let-chains` usage requires 1.87, but three
@@ -160,6 +160,11 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "s
 # deployments — it includes all proxy, vault, launcher, and audit functionality
 # but omits the web dashboard, TPM hardware binding, browser rotation, and the
 # credential-audit engine sidecar path.
+#
+# NOTE: transparent HTTPS_PROXY remains opt-in via `--features transparent`.
+# Flipping default = ["transparent"] requires wiring inject_host's credential
+# lookup to the real Vaultwarden decrypt path (currently uses test stub).
+# Tracked as a v1.2 deliverable; do not flip until that wiring lands.
 default = []
 
 # Expose VaultManager::new_stub() and new_stub_with_keys() outside of #[cfg(test)].
