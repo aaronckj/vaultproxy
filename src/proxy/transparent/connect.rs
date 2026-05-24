@@ -7,7 +7,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::timeout;
 
 /// Resolved target of a CONNECT request: `host:port` after validation.
@@ -33,48 +33,39 @@ impl std::fmt::Display for ConnectTarget {
 /// blank line. Headers are read but ignored. Times out after 5 seconds
 /// (slowloris guard).
 ///
-/// Returns the parsed target. Errors describe what was malformed so the
-/// caller can surface them in the 400 response body.
+/// **Reads byte-by-byte, never buffering past CRLFCRLF.** This is
+/// critical: HTTPS_PROXY clients send the next protocol payload (TLS
+/// ClientHello bytes) immediately after the CONNECT headers, and any
+/// over-read would consume those bytes and leave the agent's
+/// subsequent TLS handshake reading nothing. A BufReader-based
+/// implementation that pulls 8 KiB chunks would silently swallow the
+/// first 8 KiB of ClientHello.
 pub async fn read_connect_line<S: AsyncRead + Unpin>(stream: &mut S) -> Result<ConnectTarget> {
     let read = async {
-        let mut reader = BufReader::new(stream);
-        let mut request_line = String::new();
-        let n = reader
-            .read_line(&mut request_line)
-            .await
-            .context("read CONNECT request line")?;
-        if n == 0 {
-            bail!("client closed before sending request line");
-        }
-        if !request_line.ends_with("\r\n") {
-            bail!("request line did not terminate with CRLF");
-        }
-        if request_line.len() > 8192 {
-            bail!("request line exceeds 8192 bytes");
-        }
-
-        // Drain header block (up to blank line). Cap total to prevent
-        // memory exhaustion via giant header sets.
-        let mut header_bytes = 0usize;
+        let mut buf: Vec<u8> = Vec::with_capacity(512);
+        let mut byte = [0u8; 1];
         loop {
-            let mut hdr = String::new();
-            let n = reader
-                .read_line(&mut hdr)
-                .await
-                .context("read header line")?;
+            let n = stream.read(&mut byte).await.context("read CONNECT byte")?;
             if n == 0 {
-                bail!("client closed mid-headers");
+                bail!("client closed before request was complete");
             }
-            header_bytes += n;
-            if header_bytes > 32 * 1024 {
-                bail!("CONNECT headers exceed 32 KiB");
+            buf.push(byte[0]);
+            if buf.len() > 40 * 1024 {
+                bail!("CONNECT request exceeds 40 KiB");
             }
-            if hdr == "\r\n" {
+            if buf.ends_with(b"\r\n\r\n") {
                 break;
             }
         }
-
-        parse_request_line(request_line.trim_end_matches("\r\n"))
+        let head = std::str::from_utf8(&buf).context("CONNECT block not UTF-8")?;
+        let mut lines = head.split("\r\n");
+        let request_line = lines
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("empty request"))?;
+        if request_line.len() > 8192 {
+            bail!("request line exceeds 8192 bytes");
+        }
+        parse_request_line(request_line)
     };
 
     timeout(Duration::from_secs(5), read)
@@ -104,7 +95,6 @@ fn parse_request_line(line: &str) -> Result<ConnectTarget> {
 }
 
 fn parse_host_port(s: &str) -> Result<ConnectTarget> {
-    // IPv6: [::1]:443
     if let Some(rest) = s.strip_prefix('[') {
         let (ip, port_part) = rest
             .rsplit_once("]:")
@@ -120,7 +110,6 @@ fn parse_host_port(s: &str) -> Result<ConnectTarget> {
             port,
         });
     }
-    // Hostname or IPv4: example.com:443
     let (host, port_part) = s
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("CONNECT target missing port: {}", s))?;
@@ -145,11 +134,9 @@ mod tests {
     use tokio::io::AsyncWriteExt;
 
     async fn feed(input: &[u8]) -> Result<ConnectTarget> {
-        // Use a 64 KiB buffer (larger than any test input) and spawn the
-        // write so writer+reader can interleave. Required because the
-        // `rejects_oversize_request_line` case sends ~9 KiB without any
-        // newlines — a synchronous write_all would deadlock against the
-        // not-yet-running reader otherwise.
+        // 64 KiB buffer + spawn the writer so reader+writer interleave;
+        // some test inputs exceed the default duplex capacity (the
+        // oversized-line case sends ~9 KiB without any CRLF).
         let (mut client, mut server) = tokio::io::duplex(64 * 1024);
         let payload = input.to_vec();
         tokio::spawn(async move {
@@ -208,12 +195,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_oversize_request_line() {
-        let mut buf = vec![b'A'; 9000];
-        buf.extend_from_slice(b" HTTP/1.1\r\n\r\n");
-        let mut prefixed = b"CONNECT ".to_vec();
-        prefixed.extend_from_slice(&buf);
-        let r = feed(&prefixed).await;
+    async fn rejects_oversize_request() {
+        // 40 KiB+ of junk with no CRLFCRLF.
+        let buf = vec![b'A'; 50 * 1024];
+        let r = feed(&buf).await;
         assert!(r.unwrap_err().to_string().contains("exceeds"));
     }
 

@@ -9,6 +9,7 @@ pub mod types;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::secure::SecureBuffer;
@@ -129,6 +130,12 @@ pub struct VaultManager {
     reauth_mutex: Mutex<()>,
     enc_key: SecureBuffer,
     mac_key: SecureBuffer,
+    /// Test-only password overrides keyed by (folder, item_name).
+    /// Populated by `seed_test_password`; read by `test_item_password`.
+    /// In production this map stays empty — production credentials go
+    /// through the real Vaultwarden + decrypt path.
+    #[allow(dead_code)]
+    test_passwords: Arc<tokio::sync::RwLock<HashMap<(String, String), String>>>,
     /// Items keyed by cipher id. Value holds `(decrypted_name, cipher)` so
     /// callers don't have to redecrypt the name on every read, and so that
     /// two ciphers with the same decrypted name can coexist — which is the
@@ -290,6 +297,7 @@ impl VaultManager {
             reauth_mutex: Mutex::new(()),
             enc_key,
             mac_key,
+            test_passwords: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             items: RwLock::new(HashMap::new()),
             folders: RwLock::new(FolderIndex::default()),
             all_folders: RwLock::new(Vec::new()),
@@ -2089,6 +2097,7 @@ impl VaultManager {
             // Dummy keys — dec/enc operations will fail gracefully (no panic).
             enc_key: crate::secure::SecureBuffer::new(vec![0u8; 32]),
             mac_key: crate::secure::SecureBuffer::new(vec![0u8; 32]),
+            test_passwords: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             items: RwLock::new(std::collections::HashMap::new()),
             folders: RwLock::new(FolderIndex::default()),
             all_folders: RwLock::new(Vec::new()),
@@ -2112,11 +2121,46 @@ impl VaultManager {
             reauth_mutex: Mutex::new(()),
             enc_key: crate::secure::SecureBuffer::new(enc_key),
             mac_key: crate::secure::SecureBuffer::new(mac_key),
+            test_passwords: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             items: RwLock::new(std::collections::HashMap::new()),
             folders: RwLock::new(FolderIndex::default()),
             all_folders: RwLock::new(Vec::new()),
             http: Client::new(),
         }
+    }
+
+    /// Test-only: seed a plaintext password for `(folder, item)`.
+    /// `test_item_password` will return this without touching any
+    /// real Vaultwarden / decrypt path.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub async fn seed_test_password(&self, folder: &str, item: &str, password: &str) {
+        let mut map = self.test_passwords.write().await;
+        map.insert((folder.to_string(), item.to_string()), password.to_string());
+    }
+
+    /// Look up a test password by (folder, item). Falls back to an
+    /// error if not seeded — production callers should NOT use this
+    /// path; it is intended only for `inject_host` E2E tests that
+    /// pre-seed the vault.
+    ///
+    /// The signature is synchronous-by-design — the underlying map is
+    /// in-memory + only ever written from tests, so blocking briefly
+    /// on `try_read` is acceptable.
+    #[allow(dead_code)]
+    pub fn test_item_password(&self, folder: &str, item: &str) -> anyhow::Result<String> {
+        let map = self
+            .test_passwords
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("test_passwords map busy"))?;
+        map.get(&(folder.to_string(), item.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no test password seeded for folder='{folder}' item='{item}' — \
+                     production credential lookup not implemented in this code path"
+                )
+            })
     }
 
     /// Seed the stub vault with a cipher and a named folder.

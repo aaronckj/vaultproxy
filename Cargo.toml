@@ -98,6 +98,11 @@ time = "0.3"
 # because src/tls/ca.rs parses CA cert PEM into DER for fingerprinting.
 pem = "3"
 
+# `bytes::Bytes` is used by src/proxy/transparent/mitm.rs to hold
+# request bodies between the agent-side read and the upstream-side
+# forward. Already in tree via reqwest/hyper.
+bytes = "1"
+
 tokio-rustls = "0.26"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tss-esapi = { version = "7", features = ["generate-bindings"], optional = true }

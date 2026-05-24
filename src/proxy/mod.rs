@@ -2098,6 +2098,7 @@ mod integration_tests {
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
 
         let state = make_state(registry);
@@ -2279,6 +2280,7 @@ mod integration_tests {
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
 
         let state = make_state(initial_registry);
@@ -2322,6 +2324,7 @@ mod integration_tests {
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
         new_registry.register(ServiceEntry {
             name: "service-beta".to_string(),
@@ -2333,6 +2336,7 @@ mod integration_tests {
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
 
         // Perform the three-lock swap (same order as SIGHUP handler).
@@ -2381,6 +2385,7 @@ mod integration_tests {
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
 
         let state = make_state(initial_registry);
@@ -2695,6 +2700,7 @@ vault_item  = "vault-proxy - Beta"
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         });
 
         let mut state = (*make_state(initial_registry)).clone();

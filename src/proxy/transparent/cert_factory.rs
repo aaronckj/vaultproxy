@@ -40,21 +40,30 @@ impl CertFactory {
     /// Look up or generate a leaf for the given `host:port`. On first
     /// miss, attempts to mirror upstream SANs; falls back to host-only
     /// SAN on upstream unreachable.
-    #[allow(dead_code)]
     pub async fn leaf_for(&self, host: &str, port: u16) -> Result<LeafCert> {
         let key = format!("{host}:{port}");
         if let Some(hit) = self.cache.lock().await.get(&key).cloned() {
             return Ok(hit);
         }
-        let sans = fetch_upstream_sans(host, port).await.unwrap_or_else(|e| {
-            tracing::warn!(
-                host,
-                port,
-                error = %e,
-                "upstream SAN fetch failed; falling back to host-only SAN",
-            );
+        // Skip the upstream SAN mirror when the integration-test
+        // affordance is on (the upstream speaks HTTP, not TLS — a TLS
+        // handshake would wait ~5s and time out, blocking the agent's
+        // own handshake against us).
+        let skip_upstream_fetch =
+            std::env::var("VP_TRANSPARENT_TEST_HTTP").ok().as_deref() == Some("1");
+        let sans = if skip_upstream_fetch {
             Vec::new()
-        });
+        } else {
+            fetch_upstream_sans(host, port).await.unwrap_or_else(|e| {
+                tracing::warn!(
+                    host,
+                    port,
+                    error = %e,
+                    "upstream SAN fetch failed; falling back to host-only SAN",
+                );
+                Vec::new()
+            })
+        };
         let leaf = self.sign_leaf(host, sans)?;
         self.cache.lock().await.put(key, leaf.clone());
         Ok(leaf)

@@ -17,7 +17,10 @@ use crate::proxy::AppState;
 pub mod cert_factory;
 pub mod connect;
 pub mod init;
+pub mod inject_host;
+pub mod mitm;
 pub mod passthrough;
+pub mod registry;
 
 /// Spawn the transparent listener. Returns immediately; the listener task
 /// runs in the background until the runtime shuts down.
@@ -32,7 +35,16 @@ pub async fn spawn_listener_with_ca(
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| anyhow::anyhow!("transparent listener failed to bind {addr}: {e}"))?;
-    let _cert_factory = Arc::new(cert_factory::CertFactory::new(ca, 1024));
+    let cert_factory = Arc::new(cert_factory::CertFactory::new(ca, 1024));
+
+    // Build initial registry snapshot. SIGHUP reload (Phase 6) updates
+    // this cell in place.
+    let snapshot = {
+        let reg = state.registry.read().await;
+        registry::TransparentRegistry::build(&reg)?
+    };
+    let tr_registry: registry::TransparentRegistryCell =
+        Arc::new(tokio::sync::RwLock::new(snapshot));
 
     info!(
         addr = %addr,
@@ -44,8 +56,10 @@ pub async fn spawn_listener_with_ca(
             match listener.accept().await {
                 Ok((stream, peer)) => {
                     let state = state.clone();
+                    let cf = cert_factory.clone();
+                    let tr = tr_registry.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer, state).await {
+                        if let Err(e) = handle_connection(stream, peer, state, cf, tr).await {
                             warn!(
                                 peer = %peer,
                                 error = %e,
@@ -81,7 +95,9 @@ pub async fn spawn_listener(addr: SocketAddr, state: Arc<AppState>) -> Result<()
 async fn handle_connection(
     mut stream: tokio::net::TcpStream,
     peer: std::net::SocketAddr,
-    _state: Arc<AppState>,
+    state: Arc<AppState>,
+    cert_factory: Arc<cert_factory::CertFactory>,
+    tr_registry: registry::TransparentRegistryCell,
 ) -> Result<()> {
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,
@@ -91,10 +107,25 @@ async fn handle_connection(
     };
     info!(peer = %peer, target = %target, "transparent CONNECT received");
 
-    // Phase 1: every CONNECT goes to passthrough. Registry-driven
-    // dispatch lands in Phase 3 (host_inject) and Phase 5 (placeholder).
-    if let Err(e) = passthrough::tunnel(stream, target.clone()).await {
-        warn!(target = %target, error = %e, "passthrough tunnel error");
+    let svc = tr_registry.read().await.lookup(&target.host, target.port);
+    use crate::proxy::registry::TransparentMode;
+    match svc.as_ref().map(|s| s.transparent_mode) {
+        Some(TransparentMode::HostInject) | Some(TransparentMode::Placeholder) => {
+            let service = svc.unwrap();
+            let vault = state.vault.clone();
+            let folder = state.vault_folder.clone();
+            if let Err(e) =
+                mitm::run(stream, target.clone(), service, cert_factory, vault, folder).await
+            {
+                warn!(target = %target, error = %e, "MITM error");
+            }
+        }
+        _ => {
+            // Off / Passthrough / unregistered: tunnel through.
+            if let Err(e) = passthrough::tunnel(stream, target.clone()).await {
+                warn!(target = %target, error = %e, "passthrough tunnel error");
+            }
+        }
     }
     Ok(())
 }

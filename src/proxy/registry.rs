@@ -36,6 +36,12 @@ struct ServiceConfig {
     login_include_username: bool,
     #[serde(default)]
     insecure_tls: bool,
+    /// Transparent HTTPS_PROXY mode for this service. Default = "off"
+    /// (preserves pre-v1.1 behaviour). Only honoured when built with
+    /// `--features transparent`. Valid values: off | host_inject |
+    /// placeholder | passthrough. Unknown values are rejected at load.
+    #[serde(default)]
+    transparent_mode: Option<String>,
     /// Optional path to a PEM-encoded CA certificate bundle to use when
     /// connecting to this service. Intended for services signed by a private
     /// / internal CA where `insecure_tls = true` is too broad. If both
@@ -263,6 +269,55 @@ pub struct ServiceEntry {
     /// Set this in `services.toml` as `timeout_secs = 30` on a `[[service]]`
     /// block. The value must be > 0; zero is rejected at load time.
     pub timeout_secs: Option<u64>,
+
+    /// Transparent HTTPS_PROXY mode for this service. Default = Off
+    /// (preserves pre-v1.1 behaviour). Only meaningful when built with
+    /// `--features transparent`; otherwise the field is present but
+    /// inert.
+    #[allow(dead_code)]
+    pub transparent_mode: TransparentMode,
+}
+
+/// Per-service transparent-mode setting. Mapped from the
+/// `transparent_mode` TOML field. Always defined so non-transparent
+/// builds can still construct `ServiceEntry` literally; the enum is
+/// only consumed by the `transparent` feature path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransparentMode {
+    /// Default — service participates in transparent listener as a
+    /// no-op (passthrough fall-through). No MITM. Equivalent to not
+    /// being registered for transparent purposes.
+    #[default]
+    Off,
+    /// MITM + replace auth header with the credential resolved per
+    /// `auth` pattern.
+    HostInject,
+    /// MITM + scan body/headers for `__vault.<name>__` placeholder
+    /// tokens and swap each for the corresponding vault item value.
+    Placeholder,
+    /// Explicit passthrough. Same as Off but signals intentional
+    /// registration (useful in allowlist-policy mode).
+    Passthrough,
+}
+
+impl TransparentMode {
+    /// Parse the TOML string into the enum. Not a `FromStr` impl —
+    /// returns `anyhow::Result` so the parse-error message can be
+    /// surfaced directly in the operator's startup log.
+    #[allow(clippy::should_implement_trait)]
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        Ok(match s {
+            "off" => Self::Off,
+            "host_inject" => Self::HostInject,
+            "placeholder" => Self::Placeholder,
+            "passthrough" => Self::Passthrough,
+            other => {
+                anyhow::bail!(
+                    "unknown transparent_mode '{other}' — valid values: off | host_inject | placeholder | passthrough"
+                );
+            }
+        })
+    }
 }
 
 impl ServiceEntry {
@@ -339,6 +394,27 @@ impl ServiceRegistry {
         let mut names: Vec<&str> = self.entries.keys().map(String::as_str).collect();
         names.sort_unstable();
         names
+    }
+
+    /// Iterate over all ServiceEntry values. Used by the transparent
+    /// listener's registry-build step (host:port lookup index) and by
+    /// any future code that needs to walk the full registry.
+    #[allow(dead_code)]
+    pub fn iter(&self) -> impl Iterator<Item = &ServiceEntry> {
+        self.entries.values()
+    }
+
+    /// Test-only convenience: build a registry from an inline TOML
+    /// string. Uses a tempfile + `from_toml_file` so error handling,
+    /// validation, and feature-gated parsing all run identically to
+    /// production. Returns the registry; per-entry errors are logged
+    /// via tracing (same as production), not returned.
+    #[cfg(any(test, feature = "test-utils"))]
+    #[allow(dead_code)]
+    pub fn from_toml_str(content: &str) -> Self {
+        let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+        std::fs::write(tmp.path(), content).expect("write tempfile");
+        Self::from_toml_file(tmp.path())
     }
 
     // ---------------------------------------------------------------------- //
@@ -418,6 +494,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -446,6 +523,7 @@ impl ServiceRegistry {
                     insecure_tls: true,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -475,6 +553,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -503,6 +582,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -532,6 +612,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -591,6 +672,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -613,6 +695,7 @@ impl ServiceRegistry {
                     insecure_tls: true,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -636,6 +719,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -657,6 +741,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -680,6 +765,7 @@ impl ServiceRegistry {
                     insecure_tls: false,
                     ca_cert_path: None,
                     timeout_secs: None,
+                    transparent_mode: crate::proxy::registry::TransparentMode::Off,
                 });
             }
         }
@@ -1315,6 +1401,33 @@ impl ServiceRegistry {
                 other => other,
             };
 
+            let transparent_mode = match svc.transparent_mode.as_deref() {
+                None | Some("") => TransparentMode::Off,
+                Some(s) => match TransparentMode::parse(s) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::error!("service '{}': {} — skipping.", svc.name, e);
+                        continue;
+                    }
+                },
+            };
+            if matches!(transparent_mode, TransparentMode::HostInject)
+                && matches!(
+                    &auth,
+                    AuthPattern::Session { .. } | AuthPattern::UnifiDual { .. }
+                )
+            {
+                tracing::error!(
+                    "service '{}': transparent_mode = 'host_inject' only supports \
+                     stateless auth (bearer | header | basic | query_param). \
+                     For session-based or UniFi-dual services, use \
+                     transparent_mode = 'passthrough' or 'placeholder' instead. \
+                     Skipping.",
+                    svc.name
+                );
+                continue;
+            }
+
             registry.register(ServiceEntry {
                 name: svc.name,
                 base_url,
@@ -1322,6 +1435,7 @@ impl ServiceRegistry {
                 insecure_tls: svc.insecure_tls,
                 ca_cert_path,
                 timeout_secs,
+                transparent_mode,
             });
         }
 
@@ -1451,6 +1565,7 @@ fn build_media_entry(
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         }),
         "sonarr" => Some(ServiceEntry {
             name,
@@ -1462,6 +1577,7 @@ fn build_media_entry(
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         }),
         "radarr" => Some(ServiceEntry {
             name,
@@ -1473,6 +1589,7 @@ fn build_media_entry(
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         }),
         "overseerr" => Some(ServiceEntry {
             name,
@@ -1484,6 +1601,7 @@ fn build_media_entry(
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         }),
         "tautulli" => Some(ServiceEntry {
             name,
@@ -1495,6 +1613,7 @@ fn build_media_entry(
             insecure_tls: false,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         }),
         _ => {
             tracing::warn!(svc_type, "unknown media service type — skipping");
@@ -2707,6 +2826,7 @@ mod vault_item_accessor_tests {
             insecure_tls: true,
             ca_cert_path: None,
             timeout_secs: None,
+            transparent_mode: crate::proxy::registry::TransparentMode::Off,
         };
         assert_eq!(entry.vault_item(), "Connecterr - UniFi");
     }
