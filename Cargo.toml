@@ -103,6 +103,10 @@ pem = "3"
 # forward. Already in tree via reqwest/hyper.
 bytes = "1"
 
+# Used by src/proxy/transparent/inject_host.rs for query_param auth
+# URL-encoding. Tiny crate (~3 KB).
+urlencoding = "2"
+
 tokio-rustls = "0.26"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 tss-esapi = { version = "7", features = ["generate-bindings"], optional = true }

@@ -3767,6 +3767,7 @@ dependencies = [
  "tracing-subscriber",
  "tss-esapi",
  "url",
+ "urlencoding",
  "uuid",
  "wiremock",
  "x509-parser",
