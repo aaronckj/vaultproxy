@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.5] — 2026-05-24
+
+### Added
+
+- **Wildcard host patterns** — `base_url = "https://*.github.com"` with
+  `transparent_mode = "host_inject"` now matches any subdomain. Exact entries
+  always win; wildcards fire only on exact miss. Leading `*.` only (embedded
+  or trailing stars rejected at build).
+- **Response prompt-injection sanitisation** — opt-in via
+  `VP_TRANSPARENT_SANITIZE_RESPONSES=1`. Splits upstream HTTP response at
+  `\r\n\r\n`, runs textual bodies through `security::sanitize::sanitize_for_wire`,
+  rebuilds Content-Length. Skips chunked / non-textual / non-parseable
+  responses defensively.
+- **SO_PEERCRED Unix-domain-socket listener scaffold** — binds
+  `$XDG_RUNTIME_DIR/vaultproxy-transparent.sock` (mode 0600), authenticates via
+  SO_PEERCRED (uid match), rejects mismatched callers. Per-accept dispatch
+  through `mitm::run` is a v1.3 follow-up (needs `handle_connection`
+  `pub(super)`).
+
+### Docs
+
+- `docs/ROADMAP.md` rewritten to enumerate what's shipped through v1.2 and
+  what remains for v1.3 (full mTLS, OAuth, HTTP/2, sanitise default-on).
+
+## [1.2.4] — 2026-05-24
+
+### Fixed (CI)
+
+- `--test-threads=1` on the `Run integration tests` CI step so the transparent
+  smoke clients (curl / python / node) don't race on the process-global
+  `VP_TRANSPARENT_TEST_HTTP` env var.
+
 ## [1.2.3] — 2026-05-24
 
 ### Added
