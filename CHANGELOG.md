@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.5.1] — 2026-05-25
+
+### Docs
+
+- **SECURITY.md sweep.** The transparent-mode section was last touched
+  at v1.2.5 and still claimed "no listener-side authentication" — out
+  of date since v1.3.1 (UDS + SO_PEERCRED) and v1.4.0 (mTLS-fronted
+  listener). Rewritten:
+  - The Transparent HTTPS_PROXY section now covers all three listener
+    variants (TCP, UDS, mTLS), v1.4.1 ALPN downgrade behaviour, and
+    the Tier-1 status of the mTLS server cert + key.
+  - New "OAuth tokens" sub-section covers the in-memory token cache,
+    refresh-token vault writeback (`oauth_writeback = true`), and the
+    custom-field limitation.
+  - New "Audit log + SIEM sinks" sub-section covers v1.4.2 sync sinks
+    and v1.4.4 network sinks, including the Tier-2 sensitivity of the
+    SIEM-side API key / HEC token and the rationale for sourcing them
+    from env vars rather than argv.
+
+No code changes — version bumped to v1.5.1 so the docs ship via the
+standard publish flow.
+
 ## [1.5.0] — 2026-05-25
 
 ### Added

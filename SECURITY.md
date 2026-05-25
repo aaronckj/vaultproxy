@@ -112,19 +112,99 @@ vault-proxy resolves credentials from Vaultwarden and spawns the server via fork
 
 For maximum security on sensitive services, prefer Tier 1 (native integration or a fork that adds vault-proxy support).
 
-## Transparent HTTPS_PROXY (`--features transparent`, `127.0.0.1:3203`)
+## Transparent HTTPS_PROXY (default-on since v1.2.0)
 
-When built with `--features transparent`, vault-proxy runs a second listener that accepts HTTPS_PROXY-style CONNECT requests. For services that opt in (`transparent_mode = "host_inject" | "placeholder"`), the listener performs a TLS MITM, decrypts the agent's HTTP/1.1 request, injects vault credentials, and forwards over a fresh TLS connection to the upstream.
+vault-proxy runs an additional listener (default `127.0.0.1:3203`) that
+accepts HTTPS_PROXY-style CONNECT requests. For services that opt in
+(`transparent_mode = "host_inject" | "placeholder"`), the listener
+performs a TLS MITM, decrypts the agent's HTTP/1.1 request, injects
+vault credentials, and forwards over a fresh TLS connection to the
+upstream.
 
-The MITM is enabled by a self-signed CA that vault-proxy auto-generates on first start at `$CONFIG_DIR/transparent-ca.{crt,key}` (or operator-provided via `--transparent-ca-cert` / `--transparent-ca-key`).
+The MITM is enabled by a self-signed CA that vault-proxy auto-generates
+on first start at `$CONFIG_DIR/transparent-ca.{crt,key}` (or operator-
+provided via `--transparent-ca-cert` / `--transparent-ca-key`).
 
-**The transparent CA private key is a Tier-1 secret.** If it leaks, an attacker who can position themselves between an agent and any upstream the agent talks to can MITM every TLS connection from a host that trusted the CA. The key is stored 0600. vault-proxy refuses to start if the key file is not mode 0600 (no `--allow-insecure-ca` escape flag). The startup banner prints the SHA-256 fingerprint so operators can verify it on every restart.
+**The transparent CA private key is a Tier-1 secret.** If it leaks, an
+attacker who can position themselves between an agent and any upstream
+the agent talks to can MITM every TLS connection from a host that
+trusted the CA. The key is stored 0600. vault-proxy refuses to start
+if the key file is not mode 0600 (no `--allow-insecure-ca` escape
+flag). The startup banner prints the SHA-256 fingerprint so operators
+can verify it on every restart.
 
 - Default loopback bind. Non-loopback `--transparent-listen` produces a `SECURITY:` startup warning.
-- The transparent port has no listener-side authentication in v1.1. Trust model = OS-level process isolation on `127.0.0.1`.
 - Pre-existing agent auth headers (`Authorization`, `X-Api-Key`, `X-Plex-Token`, `Cookie`, `Proxy-Authorization`) are stripped before vault credential injection — agents cannot smuggle in conflicting credentials.
 - Upstream cert SANs are mirrored into the locally-signed leaf so MITM is transparent to agents that pin SAN values.
+- MITM leaf certs advertise only `http/1.1` on ALPN (v1.4.1+). h2-capable clients downgrade; h2-only clients fail with an explicit ALPN-mismatch error rather than silently corrupting the stream.
 - Operator runbook: [`docs/operator/TRANSPARENT-CA.md`](docs/operator/TRANSPARENT-CA.md).
+
+### Listener-side authentication (v1.3.1 UDS, v1.4.0 mTLS)
+
+The plain TCP listener trusts loopback callers only. Two additional
+listener variants exist for environments where same-host OS isolation
+is not the whole answer:
+
+- **UDS listener** (`--transparent-uds <path>`): binds a Unix-domain
+  socket (default suggestion: `$XDG_RUNTIME_DIR/vaultproxy-transparent.sock`
+  mode 0600) and authenticates each accept via `SO_PEERCRED` uid match.
+  Mismatched uid is rejected before any application bytes are read.
+- **mTLS-fronted TCP listener** (`--transparent-mtls-listen <addr>`):
+  binds a TLS-wrapped TCP socket. Agents present a client cert signed
+  by `--transparent-mtls-client-ca` and trust the server cert at
+  `--transparent-mtls-server-cert` / `--transparent-mtls-server-key`.
+  Inside the outer TLS jacket, the same plaintext CONNECT + per-host
+  MITM flow runs. Intended for off-loopback exposure (e.g. over
+  Tailscale).
+
+**The mTLS server-cert + server-key files are Tier-1 secrets** —
+equivalent in sensitivity to the MITM CA key. Compromise of either
+lets an attacker impersonate the proxy for any agent that trusts the
+server cert + can reach the listener. Store both 0600 on the proxy
+host; never copy them off the host. The CA that signs client certs
+need not live on the proxy host once client certs have been issued —
+operators should generate it on an isolated host and only place the
+public cert (no key) at `--transparent-mtls-client-ca` on the proxy.
+
+### OAuth tokens (v1.3.0 client_credentials, v1.3.2 refresh, v1.5.0 writeback)
+
+OAuth access tokens are cached per-`vault_item` in
+`AppState.oauth_tokens` (in-memory, not persisted). The cache is
+shared between the `/proxy/{service}` path and the transparent
+listener. Tokens expire on the IdP's `expires_in − 60 s` budget;
+a `401` from the upstream forces re-acquisition.
+
+The OAuth refresh-token grant (`auth = "oauth_refresh"`) reads the
+long-lived refresh token from the vault item on each refresh. When
+`oauth_writeback = true` (v1.5.0+, default off), an IdP-rotated
+refresh token is written back to the vault via
+`update_password_for_item`. Per-`vault_item` `Mutex` serialisation
+prevents two concurrent refreshes from racing on a rotating IdP.
+
+Writeback currently only supports `refresh_token_field = "password"`
+(the default). Custom-field writeback is tracked as a v1.6
+follow-up.
+
+### Audit log + SIEM sinks (v1.4.2 sync, v1.4.4 network)
+
+Audit entries are written to `$CONFIG_DIR/audit-log.json` (capped at
+1000 entries; older entries flush to `<path>.archive` as JSONL).
+The on-disk file MAY contain summarised tool arguments and results,
+which can be sensitive — secure the file at OS level.
+
+Optional SIEM-friendly fan-out via `--audit-sink=<spec>`:
+- Sync sinks (`stdout`, `stderr`, `syslog`) write the same JSON shape
+  the on-disk file uses. The on-disk file's sensitivity comments
+  apply.
+- Network sinks (`otlp`, `datadog`, `splunk`) batch entries (max 50
+  entries or 5 s) and POST over HTTP. **The endpoint's auth token /
+  API key is a Tier-2 secret**: a stolen token grants write-only
+  access to the SIEM until rotated, but does not expose vault
+  contents directly. Tokens are read from env vars (`OTLP_AUDIT_HEADERS`,
+  `DATADOG_AUDIT_API_KEY`, `SPLUNK_AUDIT_TOKEN`) rather than argv so
+  they don't leak via `/proc/<pid>/cmdline`. Network sinks are
+  best-effort and drop on send failure — a downed SIEM does not stall
+  the audit pipeline.
 
 ## Reporting vulnerabilities
 
