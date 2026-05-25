@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.5.0
+## Shipped through v1.6.0
 
 | ID | Item | Version |
 |---|---|---|
@@ -17,16 +17,16 @@
 | SIEM stdout/syslog | `--audit-sink=<stdout\|stderr\|syslog>` fans out the audit log to SIEM-friendly sinks | v1.4.2 |
 | SIEM network | `--audit-sink=<otlp\|datadog\|splunk>` HTTP-based forwarders (batched, env-configured) | v1.4.4 |
 | G3 RT-writeback | OAuth refresh-token vault writeback via `oauth_writeback = true` on `oauth_refresh` services. Per-`vault_item` mutex serialises rotations. | v1.5.0 |
+| G3 RT-writeback custom-field | RT writeback now supports custom `refresh_token_field` (not only the default `"password"`). | v1.6.0 |
 | Wildcards | `*.host.com:port` patterns in `services.toml` for transparent_mode | v1.2.5 |
 | SIGHUP | Rebuild of transparent registry + placeholders without restart | v1.2.1 |
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
 | Errors | Typed `TransparentErrorCode` envelope across all transparent error paths | v1.2.2 |
 
-## v1.6 candidates
+## v1.7 candidates
 
 | ID | Item | Notes |
 |---|---|---|
-| G3 RT-writeback custom-field | **Custom-field RT writeback** | v1.5.0 writeback only supports `refresh_token_field = "password"` (the default). Add a `VaultManager::update_field_by_item_name` helper so non-default fields are writable too. |
 | HTTP/2 native | **Native HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1; v1.4.1 forces clients to downgrade via ALPN. Operators that need native h2 to upstreams will need hyper-style h2 framing (multi-day work). |
 
 ## v1.1 candidates (deferred or superseded)

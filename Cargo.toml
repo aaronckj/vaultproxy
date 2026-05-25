@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "1.5.1"
+version = "1.6.0"
 edition = "2021"
 # MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
 # this crate's own syntax.  `let-chains` usage requires 1.87, but three

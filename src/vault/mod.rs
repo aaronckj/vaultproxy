@@ -1013,6 +1013,40 @@ impl VaultManager {
     /// Errors on: item not found, encryption failure, update API failure.
     // iter-81: used by browser/workflow.rs (feature = "browser"). Dead in default builds.
     #[allow(dead_code)]
+    /// Update a single named custom field on a vault item by name, leaving
+    /// every other field byte-for-byte unchanged. Re-encrypts only the value
+    /// of the matching field; if no field with `field_name` exists, appends
+    /// a new hidden field. The encrypted field NAME stays in place on
+    /// existing fields so the cipher's diff is minimal.
+    ///
+    /// Used by the OAuth refresh-token writeback path for services that
+    /// hold the RT in a custom field (i.e. `refresh_token_field != "password"`).
+    pub async fn update_field_for_item(
+        &self,
+        item_name: &str,
+        field_name: &str,
+        new_value: &str,
+    ) -> Result<()> {
+        let cipher = {
+            let items = self.items.read().await;
+            items
+                .values()
+                .find(|(n, _)| n == item_name)
+                .map(|(_, c)| c.clone())
+                .ok_or_else(|| anyhow!("vault item '{}' not found", item_name))?
+        };
+
+        let updated = merge_field_into_cipher(
+            &cipher,
+            field_name,
+            new_value,
+            self.enc_key.as_bytes(),
+            self.mac_key.as_bytes(),
+        )?;
+
+        self.update_cipher(&cipher.id, &updated).await
+    }
+
     pub async fn update_password_for_item(
         &self,
         item_name: &str,
@@ -2187,6 +2221,55 @@ impl VaultManager {
     }
 }
 
+/// Pure-function helper: merge `new_value` into `cipher`'s custom-field
+/// named `field_name`, re-encrypting only the matched value. If no field
+/// with that name exists, append a new hidden field. Encrypted field
+/// NAMES on existing fields stay byte-for-byte unchanged so the cipher
+/// PUT diff is minimal.
+///
+/// Extracted from `update_field_for_item` so the merge logic is unit-
+/// testable without driving Vaultwarden's HTTP API.
+pub fn merge_field_into_cipher(
+    cipher: &crate::vault::types::EncryptedCipher,
+    field_name: &str,
+    new_value: &str,
+    enc_key: &[u8],
+    mac_key: &[u8],
+) -> Result<crate::vault::types::EncryptedCipher> {
+    use crate::vault::crypto::{decrypt_to_string, encrypt_to_cipher_string};
+    use crate::vault::types::EncryptedField;
+
+    let enc_value = encrypt_to_cipher_string(new_value, enc_key, mac_key)
+        .with_context(|| format!("encrypt value for field '{}'", field_name))?;
+
+    let mut updated = cipher.clone();
+    let mut matched = false;
+    if let Some(ref mut fields) = updated.fields {
+        for f in fields.iter_mut() {
+            if let Some(dn) = decrypt_to_string(f.name.as_deref(), enc_key, mac_key) {
+                if dn == field_name {
+                    f.value = Some(enc_value.clone());
+                    matched = true;
+                    break;
+                }
+            }
+        }
+    }
+    if !matched {
+        let enc_name = encrypt_to_cipher_string(field_name, enc_key, mac_key)
+            .with_context(|| format!("encrypt new field name '{}'", field_name))?;
+        updated
+            .fields
+            .get_or_insert_with(Vec::new)
+            .push(EncryptedField {
+                name: Some(enc_name),
+                value: Some(enc_value),
+                field_type: 1, // hidden
+            });
+    }
+    Ok(updated)
+}
+
 // Production-visible helper. Always present (not cfg-gated) so the
 // OAuth refresh-token writeback path can mirror an IdP-rotated RT
 // into the stub map under integration tests. In production the only
@@ -2494,6 +2577,130 @@ mod tests {
         assert_eq!(
             std::str::from_utf8(value_buf.as_bytes()).unwrap(),
             "super-secret-123"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_field_into_cipher_updates_existing_field_only() {
+        use crate::vault::crypto::{decrypt_to_string, encrypt_to_cipher_string};
+        use crate::vault::types::{EncryptedCipher, EncryptedField};
+
+        let enc_key: Vec<u8> = (1u8..=32).collect();
+        let mac_key: Vec<u8> = (33u8..=64).collect();
+
+        // Two fields: refresh_token (target) and api_key (must stay
+        // byte-identical so we can prove the unrelated field is untouched).
+        let target_name_enc =
+            encrypt_to_cipher_string("refresh_token", &enc_key, &mac_key).unwrap();
+        let target_value_enc = encrypt_to_cipher_string("old-rt", &enc_key, &mac_key).unwrap();
+        let other_name_enc = encrypt_to_cipher_string("api_key", &enc_key, &mac_key).unwrap();
+        let other_value_enc =
+            encrypt_to_cipher_string("dont-touch-me", &enc_key, &mac_key).unwrap();
+        let other_value_enc_clone = other_value_enc.clone();
+
+        let cipher = EncryptedCipher {
+            id: "id1".into(),
+            name: "item".into(),
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: Some(vec![
+                EncryptedField {
+                    name: Some(target_name_enc),
+                    value: Some(target_value_enc),
+                    field_type: 1,
+                },
+                EncryptedField {
+                    name: Some(other_name_enc),
+                    value: Some(other_value_enc),
+                    field_type: 1,
+                },
+            ]),
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+
+        let updated =
+            super::merge_field_into_cipher(&cipher, "refresh_token", "new-rt", &enc_key, &mac_key)
+                .unwrap();
+        let fields = updated.fields.as_ref().unwrap();
+        assert_eq!(fields.len(), 2, "merge must not change field count");
+
+        let target = fields.iter().find(|f| {
+            decrypt_to_string(f.name.as_deref(), &enc_key, &mac_key).as_deref()
+                == Some("refresh_token")
+        });
+        let target = target.expect("refresh_token field present");
+        let decrypted = decrypt_to_string(target.value.as_deref(), &enc_key, &mac_key).unwrap();
+        assert_eq!(decrypted, "new-rt");
+
+        // The OTHER field's encrypted value must be byte-for-byte unchanged
+        // (encrypt_to_cipher_string is deterministic on iv? Actually no — IV
+        // randomises ciphertext. So compare via decrypted plaintext.).
+        let other = fields.iter().find(|f| {
+            decrypt_to_string(f.name.as_deref(), &enc_key, &mac_key).as_deref() == Some("api_key")
+        });
+        let other = other.expect("api_key field present");
+        assert_eq!(
+            other.value.as_ref().unwrap(),
+            &other_value_enc_clone,
+            "untouched field must retain its original ciphertext byte-for-byte",
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_field_into_cipher_appends_when_field_absent() {
+        use crate::vault::crypto::{decrypt_to_string, encrypt_to_cipher_string};
+        use crate::vault::types::{EncryptedCipher, EncryptedField};
+
+        let enc_key: Vec<u8> = (1u8..=32).collect();
+        let mac_key: Vec<u8> = (33u8..=64).collect();
+
+        let api_name_enc = encrypt_to_cipher_string("api_key", &enc_key, &mac_key).unwrap();
+        let api_value_enc = encrypt_to_cipher_string("ak", &enc_key, &mac_key).unwrap();
+        let cipher = EncryptedCipher {
+            id: "id2".into(),
+            name: "item".into(),
+            cipher_type: 1,
+            login: None,
+            card: None,
+            identity: None,
+            secure_note: None,
+            fields: Some(vec![EncryptedField {
+                name: Some(api_name_enc),
+                value: Some(api_value_enc),
+                field_type: 1,
+            }]),
+            notes: None,
+            organization_id: None,
+            collection_ids: None,
+            folder_id: None,
+            revision_date: None,
+            key: None,
+            extra: None,
+        };
+
+        let updated =
+            super::merge_field_into_cipher(&cipher, "brand_new", "v", &enc_key, &mac_key).unwrap();
+        let fields = updated.fields.as_ref().unwrap();
+        assert_eq!(fields.len(), 2);
+        let appended = fields
+            .iter()
+            .find(|f| {
+                decrypt_to_string(f.name.as_deref(), &enc_key, &mac_key).as_deref()
+                    == Some("brand_new")
+            })
+            .expect("appended field present");
+        assert_eq!(
+            appended.field_type, 1,
+            "appended field must be 'hidden' (type 1)"
         );
     }
 

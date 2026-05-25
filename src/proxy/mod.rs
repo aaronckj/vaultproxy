@@ -1221,50 +1221,52 @@ pub async fn get_or_refresh_oauth_refresh_token(
     if let Some(new_rt) = body.get("refresh_token").and_then(Value::as_str) {
         if new_rt != refresh_token {
             if writeback {
-                if refresh_token_field != "password" {
-                    tracing::warn!(
+                // Test-stub fast path: if the integration test seeded the RT
+                // via test_passwords, mirror the rotation there. Production
+                // routes by `refresh_token_field` below.
+                let stub_key = format!("{vault_item}:refresh_token");
+                if state
+                    .vault
+                    .test_item_password("vault-proxy", &stub_key)
+                    .is_ok()
+                {
+                    state
+                        .vault
+                        .seed_test_password("vault-proxy", &stub_key, new_rt)
+                        .await;
+                    tracing::info!(
                         vault_item,
-                        refresh_token_field,
-                        "OAuth refresh-token writeback only supports the default \
-                         refresh_token_field='password'; custom-field writeback is not yet \
-                         implemented. Discarding rotated RT — rotate the vault item out-of-band.",
+                        "OAuth refresh-token rotated; mirrored to test-stub",
                     );
                 } else {
-                    // Test-stub fast path: if the integration test seeded the RT
-                    // via test_passwords, mirror the rotation there. Production
-                    // calls update_password_for_item which round-trips
-                    // Vaultwarden's encrypt + PUT.
-                    let stub_key = format!("{vault_item}:refresh_token");
-                    if state
-                        .vault
-                        .test_item_password("vault-proxy", &stub_key)
-                        .is_ok()
-                    {
+                    // Production: route by which vault field holds the RT.
+                    // `refresh_token_field == "password"` uses the login-block
+                    // password updater; anything else goes through the generic
+                    // custom-field updater added in v1.6.0.
+                    let result = if refresh_token_field == "password" {
                         state
-                            .vault
-                            .seed_test_password("vault-proxy", &stub_key, new_rt)
-                            .await;
-                        tracing::info!(
-                            vault_item,
-                            "OAuth refresh-token rotated; mirrored to test-stub",
-                        );
-                    } else {
-                        match state
                             .vault
                             .update_password_for_item(vault_item, new_rt)
                             .await
-                        {
-                            Ok(()) => tracing::info!(
-                                vault_item,
-                                "OAuth refresh-token rotated and written back to vault",
-                            ),
-                            Err(e) => tracing::warn!(
-                                vault_item,
-                                error = %e,
-                                "OAuth refresh-token writeback to vault failed; new RT will be \
-                                 discarded after process exit. Rotate the vault item out-of-band.",
-                            ),
-                        }
+                    } else {
+                        state
+                            .vault
+                            .update_field_for_item(vault_item, refresh_token_field, new_rt)
+                            .await
+                    };
+                    match result {
+                        Ok(()) => tracing::info!(
+                            vault_item,
+                            refresh_token_field,
+                            "OAuth refresh-token rotated and written back to vault",
+                        ),
+                        Err(e) => tracing::warn!(
+                            vault_item,
+                            refresh_token_field,
+                            error = %e,
+                            "OAuth refresh-token writeback to vault failed; new RT will be \
+                             discarded after process exit. Rotate the vault item out-of-band.",
+                        ),
                     }
                 }
             } else {

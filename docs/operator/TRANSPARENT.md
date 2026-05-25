@@ -142,9 +142,10 @@ IdP-side refresh-token rotation: set `oauth_writeback = true` on an
 vault item. Concurrent refreshes are serialised via a per-`vault_item`
 mutex held from cache-check through writeback, so a rotating IdP
 doesn't deal two grants the second of which uses an already-invalidated
-RT. Writeback currently supports only `refresh_token_field = "password"`
-(the default); custom-field writeback is a v1.6 follow-up. Default
-remains `false` — operators must opt in.
+RT. Writeback works against any `refresh_token_field` (v1.6.0+);
+`"password"` uses the login-block updater, other fields use a generic
+custom-field merge that leaves every other encrypted field byte-for-byte
+unchanged. Default remains `false` — operators must opt in.
 
 ### Placeholder map
 

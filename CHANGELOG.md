@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.6.0] — 2026-05-25
+
+### Added
+
+- **Custom-field OAuth refresh-token writeback.** The v1.5.0 writeback
+  path was limited to `refresh_token_field = "password"`. v1.6.0 adds
+  `VaultManager::update_field_for_item` (and the pure
+  `merge_field_into_cipher` helper that powers it) so OAuth services
+  whose RT lives in a custom Vaultwarden field can now persist
+  rotated tokens too. The helper merges only the named field; every
+  other encrypted field (including the credential blobs) stays
+  byte-for-byte unchanged so the cipher PUT diff is minimal.
+- Routing: the OAuth writeback path now picks
+  `update_password_for_item` when `refresh_token_field == "password"`
+  and `update_field_for_item` otherwise. Behaviour for the default
+  case is identical to v1.5.0.
+
+### Tests
+
+- New unit tests cover the merge helper end-to-end (existing-field
+  update + untouched-field byte invariance, plus append-when-absent).
+
 ## [1.5.1] — 2026-05-25
 
 ### Docs
