@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::proxy::registry::{AuthPattern, ServiceEntry};
 use crate::proxy::transparent::mitm::HttpRequest;
+use crate::proxy::AppState;
 use crate::vault::VaultManager;
 
 const FORBIDDEN_HEADERS: &[&str] = &[
@@ -32,6 +33,7 @@ pub async fn inject(
     service: &Arc<ServiceEntry>,
     vault: Arc<VaultManager>,
     vault_folder: &str,
+    state: Arc<AppState>,
 ) -> Result<HttpRequest> {
     strip_forbidden_headers(&mut req.headers);
 
@@ -93,6 +95,27 @@ pub async fn inject(
             req.path.push_str(param_name);
             req.path.push('=');
             req.path.push_str(&urlencoding::encode(&value));
+        }
+        AuthPattern::OAuthClientCredentials {
+            vault_item,
+            token_url,
+            client_id_field,
+            client_secret_field,
+            scope,
+        } => {
+            let token = crate::proxy::get_or_refresh_oauth_token(
+                &state,
+                vault_item,
+                token_url,
+                client_id_field,
+                client_secret_field,
+                scope,
+                false,
+            )
+            .await
+            .with_context(|| format!("oauth token for vault item '{vault_item}'"))?;
+            req.headers
+                .push(("Authorization".into(), format!("Bearer {token}")));
         }
         other => {
             bail!(

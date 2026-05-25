@@ -635,6 +635,7 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
                     AuthPattern::Basic { .. } => "basic",
                     AuthPattern::Session { .. } => "session",
                     AuthPattern::UnifiDual { .. } => "unifi_dual",
+                    AuthPattern::OAuthClientCredentials { .. } => "oauth_client_credentials",
                 };
                 // Include header_name / param_name — needed to understand auth wiring.
                 // Do NOT include vault_item — exposes credential naming conventions.
@@ -666,6 +667,18 @@ pub async fn list_services(State(state): State<Arc<AppState>>) -> Json<Value> {
                     }),
                     AuthPattern::UnifiDual { .. } => json!({}),
                     AuthPattern::Bearer { .. } => json!({}),
+                    AuthPattern::OAuthClientCredentials {
+                        token_url,
+                        client_id_field,
+                        client_secret_field,
+                        scope,
+                        ..
+                    } => json!({
+                        "token_url": token_url,
+                        "client_id_field": client_id_field,
+                        "client_secret_field": client_secret_field,
+                        "scope": scope,
+                    }),
                 };
                 json!({
                     "name": entry.name,

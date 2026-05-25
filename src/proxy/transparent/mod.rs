@@ -213,6 +213,7 @@ async fn handle_connection(
                 folder,
                 placeholders,
                 audit,
+                state.clone(),
             )
             .await
             {

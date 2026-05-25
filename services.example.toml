@@ -147,6 +147,25 @@ login_path = "/auth/login"
 token_field = "AccessToken"
 login_include_username = false   # Duplicati's login API accepts only a password, no username field
 
+# ── OAuth 2.0 client-credentials (v1.3+) ─────────────────────────────────────
+# vault-proxy mints an access token by POSTing `grant_type=client_credentials`
+# to `token_url` with the vault item's username/password as client_id /
+# client_secret. The token is cached per vault_item until `expires_in - 60s`
+# and re-acquired automatically on a 401. Optional `key_field` / `secret_field`
+# point at custom Vaultwarden field names (defaults: "username" / "password").
+# Optional `scope` is forwarded verbatim in the token request.
+#
+# [[service]]
+# name = "github_app"
+# base_url = "https://api.github.com"
+# auth = "oauth_client_credentials"
+# vault_item = "vault-proxy - GitHub App"
+# token_url = "https://github.com/login/oauth/access_token"
+# # key_field = "client_id"        # if not "username"
+# # secret_field = "client_secret" # if not "password"
+# # scope = "repo read:org"
+# # transparent_mode = "host_inject"
+
 # ── UniFi dual auth (API key first, session fallback) ───────────────────────
 [[service]]
 name = "unifi_home"

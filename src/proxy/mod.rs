@@ -103,6 +103,11 @@ pub struct AppState {
     /// Keyed by vault_item; token + acquisition instant. Avoids a full login
     /// round-trip on every proxy call.
     pub session_tokens: Arc<tokio::sync::RwLock<HashMap<String, (String, Instant)>>>,
+    /// Cached OAuth client-credentials tokens. Keyed by vault_item; holds
+    /// (access_token, hard_expiry_instant). Tokens are refreshed when the
+    /// cached entry has crossed `hard_expiry - REFRESH_MARGIN` or when the
+    /// upstream rejects the call with 401.
+    pub oauth_tokens: Arc<tokio::sync::RwLock<HashMap<String, (String, Instant)>>>,
     /// mTLS certificate material generated at startup.
     pub client_certs: Option<crate::tpm::CertMaterial>,
     /// Optional cloud sync manager (enabled when CLOUD_EMAIL is set).
@@ -843,7 +848,171 @@ async fn apply_auth_and_send(
                 body: resp.body,
             })
         }
+
+        // ------------------------------------------------------------------ //
+        // OAuth client-credentials                                            //
+        // ------------------------------------------------------------------ //
+        //
+        // Fetch (or reuse) an access token via the OAuth 2.0 `client_credentials`
+        // grant against `token_url`. The vault item supplies client_id (mapped
+        // to `key_field`, default "username") and client_secret (mapped to
+        // `secret_field`, default "password"). Token cached until `expires_in`
+        // minus a 60s safety margin. A 401 from the upstream forces one
+        // re-acquisition before returning the error to the caller.
+        AuthPattern::OAuthClientCredentials {
+            vault_item,
+            token_url,
+            client_id_field,
+            client_secret_field,
+            scope,
+        } => {
+            let token = get_or_refresh_oauth_token(
+                state,
+                &vault_item,
+                &token_url,
+                &client_id_field,
+                &client_secret_field,
+                &scope,
+                false,
+            )
+            .await?;
+            let request =
+                build_request(state, service, ca_client.clone(), method.clone(), url, req)?
+                    .bearer_auth(&token);
+            let resp = send_request(request).await?;
+            if resp.status != 401 {
+                return Ok(resp);
+            }
+            // Cached token rejected — force refresh and retry once.
+            let token = get_or_refresh_oauth_token(
+                state,
+                &vault_item,
+                &token_url,
+                &client_id_field,
+                &client_secret_field,
+                &scope,
+                true,
+            )
+            .await?;
+            let request =
+                build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token);
+            send_request(request).await
+        }
     }
+}
+
+// -------------------------------------------------------------------------- //
+// OAuth client-credentials token cache                                         //
+// -------------------------------------------------------------------------- //
+
+/// Margin between the upstream-declared expiry and the cache's hard expiry.
+/// Tokens are refreshed early so an in-flight request never lands with a
+/// just-expired bearer.
+const OAUTH_REFRESH_MARGIN: Duration = Duration::from_secs(60);
+
+/// Fallback TTL when the token endpoint omits `expires_in`. RFC 6749 § 5.1
+/// allows omission; we treat it as a short-lived token rather than caching
+/// indefinitely.
+const OAUTH_DEFAULT_TTL: Duration = Duration::from_secs(300);
+
+pub(crate) async fn get_or_refresh_oauth_token(
+    state: &AppState,
+    vault_item: &str,
+    token_url: &str,
+    client_id_field: &str,
+    client_secret_field: &str,
+    scope: &str,
+    force_refresh: bool,
+) -> anyhow::Result<String> {
+    if !force_refresh {
+        let cache = state.oauth_tokens.read().await;
+        if let Some((tok, expires_at)) = cache.get(vault_item) {
+            if Instant::now() < *expires_at {
+                return Ok(tok.clone());
+            }
+        }
+    }
+
+    // Decrypt client_id / client_secret from the vault item. Test stub
+    // short-circuit: integration tests seed `<vault_item>:client_id` and
+    // `<vault_item>:client_secret` into the test_passwords map so we don't
+    // need a live Vaultwarden + decryption setup. Production callers fall
+    // straight through (test map is empty).
+    let (client_id, client_secret) = if let (Ok(id), Ok(sec)) = (
+        state
+            .vault
+            .test_item_password("vault-proxy", &format!("{vault_item}:client_id")),
+        state
+            .vault
+            .test_item_password("vault-proxy", &format!("{vault_item}:client_secret")),
+    ) {
+        (id, sec)
+    } else {
+        let client_id_buf = if client_id_field == "username" {
+            state
+                .vault
+                .decrypt_username(vault_item)?
+                .ok_or_else(|| anyhow::anyhow!("vault item '{}' has no username", vault_item))?
+        } else {
+            state.vault.decrypt_field(vault_item, client_id_field)?
+        };
+        let client_secret_buf = if client_secret_field == "password" {
+            state.vault.decrypt_password(vault_item)?
+        } else {
+            state.vault.decrypt_field(vault_item, client_secret_field)?
+        };
+        let id = std::str::from_utf8(&client_id_buf)
+            .map_err(|e| anyhow::anyhow!("client_id not utf-8: {}", e))?
+            .to_string();
+        let sec = std::str::from_utf8(&client_secret_buf)
+            .map_err(|e| anyhow::anyhow!("client_secret not utf-8: {}", e))?
+            .to_string();
+        drop(client_id_buf);
+        drop(client_secret_buf);
+        (id, sec)
+    };
+
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "client_credentials"),
+        ("client_id", &client_id),
+        ("client_secret", &client_secret),
+    ];
+    if !scope.is_empty() {
+        form.push(("scope", scope));
+    }
+    let resp = state
+        .http
+        .post(token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("oauth token request failed: {}", e))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("oauth token response not json: {}", e))?;
+    if !status.is_success() {
+        anyhow::bail!("oauth token endpoint returned {}: {}", status, body);
+    }
+    let access_token = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("oauth response missing access_token: {}", body))?
+        .to_string();
+    let ttl = body
+        .get("expires_in")
+        .and_then(Value::as_u64)
+        .map(Duration::from_secs)
+        .unwrap_or(OAUTH_DEFAULT_TTL);
+    let hard_expiry = Instant::now() + ttl.saturating_sub(OAUTH_REFRESH_MARGIN);
+
+    state
+        .oauth_tokens
+        .write()
+        .await
+        .insert(vault_item.to_string(), (access_token.clone(), hard_expiry));
+    Ok(access_token)
 }
 
 // -------------------------------------------------------------------------- //
@@ -1483,6 +1652,7 @@ impl AppState {
             ca_cert_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             unifi_sessions: Arc::new(crate::proxy::unifi_session::UnifiSessionCache::new()),
             session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            oauth_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
@@ -1738,6 +1908,7 @@ mod integration_tests {
             ca_cert_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             unifi_sessions: Arc::new(UnifiSessionCache::new()),
             session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            oauth_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),

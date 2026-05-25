@@ -38,6 +38,7 @@ pub async fn run(
     vault_folder: String,
     placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
     audit_log: Arc<crate::security::audit_log::AuditLog>,
+    state: Arc<crate::proxy::AppState>,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -67,6 +68,7 @@ pub async fn run(
                 &service,
                 vault.clone(),
                 &vault_folder,
+                state.clone(),
             )
             .await?
         }

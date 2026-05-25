@@ -77,6 +77,11 @@ struct ServiceConfig {
     token_field: Option<String>,
     #[serde(default = "default_true")]
     login_include_username: bool,
+    /// OAuth client-credentials: full URL of the token endpoint.
+    token_url: Option<String>,
+    /// OAuth client-credentials: optional `scope` value sent in the
+    /// token request body. Empty / omitted = no scope.
+    scope: Option<String>,
     #[serde(default)]
     insecure_tls: bool,
     /// Transparent HTTPS_PROXY mode for this service. Default = "off"
@@ -220,9 +225,45 @@ pub enum AuthPattern {
         vault_item: String,
         login_path: String,
     },
+
+    /// OAuth 2.0 client-credentials flow. POST `token_url` with
+    /// `grant_type=client_credentials&client_id=…&client_secret=…&scope=…`,
+    /// parse `access_token` + `expires_in` from the JSON response, cache
+    /// for `expires_in - 60s`, attach as `Authorization: Bearer <token>`
+    /// on every request. Refresh on 401 from upstream.
+    ///
+    /// `vault_item`        — vault item containing the OAuth client creds.
+    /// `token_url`         — full URL of the token endpoint.
+    /// `client_id_field`   — custom field name for the client_id (default `"username"`).
+    /// `client_secret_field` — custom field name for the client_secret (default `"password"`).
+    /// `scope`             — optional `scope` parameter; empty = no scope sent.
+    ///
+    /// Use for: any OAuth-protected API (GitHub Apps, Auth0 M2M, etc.).
+    OAuthClientCredentials {
+        vault_item: String,
+        token_url: String,
+        client_id_field: String,
+        client_secret_field: String,
+        scope: String,
+    },
 }
 
 impl AuthPattern {
+    /// Whether this pattern is "stateless" for transparent host_inject
+    /// purposes (no per-request server round-trip beyond the upstream
+    /// itself). OAuthClientCredentials counts as stateful since it
+    /// requires a token-endpoint round-trip on cache-miss.
+    #[allow(dead_code)]
+    pub fn is_stateless_for_host_inject(&self) -> bool {
+        matches!(
+            self,
+            AuthPattern::Bearer { .. }
+                | AuthPattern::Header { .. }
+                | AuthPattern::Basic { .. }
+                | AuthPattern::QueryParam { .. }
+        )
+    }
+
     /// Return the vault item name referenced by this auth pattern.
     ///
     /// iter-125: Used by the dashboard `GET /api/items` handler to build a
@@ -240,6 +281,7 @@ impl AuthPattern {
             AuthPattern::Basic { vault_item, .. } => vault_item,
             AuthPattern::Session { vault_item, .. } => vault_item,
             AuthPattern::UnifiDual { vault_item, .. } => vault_item,
+            AuthPattern::OAuthClientCredentials { vault_item, .. } => vault_item,
         }
     }
 }
@@ -1304,6 +1346,31 @@ impl ServiceRegistry {
                     AuthPattern::UnifiDual {
                         vault_item: svc.vault_item,
                         login_path,
+                    }
+                }
+                "oauth_client_credentials" => {
+                    let token_url = match svc.token_url {
+                        Some(u) => u,
+                        None => {
+                            tracing::warn!(
+                                "service '{}': auth=oauth_client_credentials requires token_url — skipping",
+                                svc.name
+                            );
+                            continue;
+                        }
+                    };
+                    AuthPattern::OAuthClientCredentials {
+                        vault_item: svc.vault_item,
+                        token_url,
+                        client_id_field: svc
+                            .key_field
+                            .clone()
+                            .unwrap_or_else(|| "username".to_string()),
+                        client_secret_field: svc
+                            .secret_field
+                            .clone()
+                            .unwrap_or_else(|| "password".to_string()),
+                        scope: svc.scope.clone().unwrap_or_default(),
                     }
                 }
                 other => {
@@ -2915,5 +2982,99 @@ mod vault_item_accessor_tests {
             transparent_mode: crate::proxy::registry::TransparentMode::Off,
         };
         assert_eq!(entry.vault_item(), "Connecterr - UniFi");
+    }
+}
+
+#[cfg(test)]
+mod oauth_client_credentials_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_toml(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn test_oauth_client_credentials_round_trip() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "github_app"
+base_url = "https://api.github.com"
+auth = "oauth_client_credentials"
+vault_item = "vault-proxy - GitHub App"
+token_url = "https://github.com/login/oauth/access_token"
+key_field = "client_id"
+secret_field = "client_secret"
+scope = "repo read:org"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("github_app").unwrap();
+        match &svc.auth {
+            AuthPattern::OAuthClientCredentials {
+                vault_item,
+                token_url,
+                client_id_field,
+                client_secret_field,
+                scope,
+            } => {
+                assert_eq!(vault_item, "vault-proxy - GitHub App");
+                assert_eq!(token_url, "https://github.com/login/oauth/access_token");
+                assert_eq!(client_id_field, "client_id");
+                assert_eq!(client_secret_field, "client_secret");
+                assert_eq!(scope, "repo read:org");
+            }
+            other => panic!("expected OAuthClientCredentials, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_oauth_client_credentials_defaults() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "minimal"
+base_url = "https://api.example.com"
+auth = "oauth_client_credentials"
+vault_item = "vault-proxy - Minimal OAuth"
+token_url = "https://example.com/oauth/token"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("minimal").unwrap();
+        match &svc.auth {
+            AuthPattern::OAuthClientCredentials {
+                client_id_field,
+                client_secret_field,
+                scope,
+                ..
+            } => {
+                assert_eq!(client_id_field, "username");
+                assert_eq!(client_secret_field, "password");
+                assert!(scope.is_empty());
+            }
+            other => panic!("expected OAuthClientCredentials, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_oauth_client_credentials_missing_token_url_skipped() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "broken"
+base_url = "https://api.example.com"
+auth = "oauth_client_credentials"
+vault_item = "vault-proxy - Broken OAuth"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("broken").is_none(),
+            "service missing token_url must be skipped"
+        );
     }
 }

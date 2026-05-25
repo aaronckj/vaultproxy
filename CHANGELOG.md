@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.3.0] — 2026-05-25
+
+### Added
+
+- **OAuth 2.0 client-credentials auth pattern** — new
+  `auth = "oauth_client_credentials"` in `services.toml`. Fields:
+  `token_url` (required), optional `key_field` / `secret_field`
+  (default `username` / `password`) to nominate which vault fields hold
+  the client_id / client_secret, optional `scope`. Tokens are minted on
+  first use, cached per-`vault_item` until `expires_in − 60 s`, and
+  re-acquired automatically on a `401` from the upstream. Works for both
+  the `/proxy/{service}` path and the transparent HTTPS_PROXY listener
+  in `host_inject` mode — the token cache is shared
+  (`AppState.oauth_tokens`).
+- E2E coverage in `tests/transparent_host_inject_oauth.rs` against
+  wiremock-stubbed token + upstream endpoints.
+
+### Docs
+
+- `docs/ROADMAP.md` — strike OAuth client-credentials from v1.3 candidates.
+
 ## [1.2.5] — 2026-05-24
 
 ### Added
