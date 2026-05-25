@@ -1,6 +1,6 @@
 [package]
 name = "vaultproxy"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 # MSRV: 1.88 — the effective floor is set by transitive dependencies, not by
 # this crate's own syntax.  `let-chains` usage requires 1.87, but three
@@ -102,6 +102,13 @@ pem = "3"
 # request bodies between the agent-side read and the upstream-side
 # forward. Already in tree via reqwest/hyper.
 bytes = "1"
+
+# Native HTTP/2 framing for the transparent MITM listener (v1.7.0+).
+# Already in tree via reqwest/hyper; declared directly so
+# src/proxy/transparent/h2_mitm.rs can construct a `h2::server::Builder`
+# and an `http::Request<()>` from the agent's h2 stream.
+h2 = "0.4"
+http = "1"
 
 # Used by src/proxy/transparent/inject_host.rs for query_param auth
 # URL-encoding. Tiny crate (~3 KB).

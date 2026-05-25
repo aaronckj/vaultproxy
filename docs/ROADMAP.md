@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.6.0
+## Shipped through v1.7.0
 
 | ID | Item | Version |
 |---|---|---|
@@ -14,6 +14,7 @@
 | G4 | Response prompt-injection sanitisation (opt-in via `VP_TRANSPARENT_SANITIZE_RESPONSES=1`) | v1.2.5 |
 | G4 CLI | `--transparent-sanitize-responses` CLI flag (env shim removed) | v1.3.1 |
 | HTTP/2 ALPN | MITM leaf cert pins ALPN to `http/1.1` (h2-capable clients downgrade; h2-only clients fail with ALPN mismatch) | v1.4.1 |
+| HTTP/2 native | Native h2 MITM path via `h2_mitm::run_h2`. Agent-side native h2 framing; upstream-side still HTTP/1.1 (re-framed on the way back). ALPN advertises `["h2", "http/1.1"]`. | v1.7.0 |
 | SIEM stdout/syslog | `--audit-sink=<stdout\|stderr\|syslog>` fans out the audit log to SIEM-friendly sinks | v1.4.2 |
 | SIEM network | `--audit-sink=<otlp\|datadog\|splunk>` HTTP-based forwarders (batched, env-configured) | v1.4.4 |
 | G3 RT-writeback | OAuth refresh-token vault writeback via `oauth_writeback = true` on `oauth_refresh` services. Per-`vault_item` mutex serialises rotations. | v1.5.0 |
@@ -23,11 +24,12 @@
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
 | Errors | Typed `TransparentErrorCode` envelope across all transparent error paths | v1.2.2 |
 
-## v1.7 candidates
+## v1.8 candidates
 
 | ID | Item | Notes |
 |---|---|---|
-| HTTP/2 native | **Native HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1; v1.4.1 forces clients to downgrade via ALPN. Operators that need native h2 to upstreams will need hyper-style h2 framing (multi-day work). |
+| HTTP/2 upstream | **Native h2 to upstream too** | v1.7.0 speaks h2 to the agent but still HTTP/1.1 to the upstream. Add an h2 client pool keyed by upstream `host:port`; reuse `inject_host` + `inject_placeholder` injectors. |
+| HTTP/2 trailers / push | h2 trailers + server push on both sides. Rare; defer until a real workload asks. |
 
 ## v1.1 candidates (deferred or superseded)
 

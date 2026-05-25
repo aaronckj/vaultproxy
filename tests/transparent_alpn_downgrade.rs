@@ -1,10 +1,14 @@
-//! Verifies the transparent MITM cert announces ONLY `http/1.1` on ALPN.
+//! Verifies the transparent MITM cert's ALPN negotiation contract.
 //!
-//! An h2-capable client that ALPN-negotiates ["h2", "http/1.1"] must end
-//! up with "http/1.1" selected (downgrade); a client that asks for ONLY
-//! "h2" must fail the handshake (alpn mismatch). Both are safer than
-//! letting the agent + proxy end up speaking h2 while the proxy's HTTP/1.1
-//! parser silently corrupts the stream.
+//! v1.4.1 pinned ALPN to ["http/1.1"] so an h2-capable client forced
+//! into proxy traffic would downgrade (and an h2-only client would
+//! fail the handshake) rather than speaking h2 to an HTTP/1.1-only
+//! parser. v1.7.0 ships a native h2 MITM path (`h2_mitm::run_h2`)
+//! and now advertises BOTH ["h2", "http/1.1"] — clients pick h2
+//! when both are on offer.
+//!
+//! These tests document the v1.7.0 contract: a mixed-offer client
+//! ends up on h2; an http/1.1-only client still negotiates http/1.1.
 
 #![cfg(all(feature = "transparent", feature = "test-utils"))]
 
@@ -16,7 +20,7 @@ use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn alpn_downgrade_to_http1_succeeds() {
+async fn alpn_mixed_offer_picks_h2() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let server = MockServer::start().await;
@@ -113,15 +117,15 @@ async fn alpn_downgrade_to_http1_succeeds() {
     let selected = session.alpn_protocol();
     assert_eq!(
         selected,
-        Some(b"http/1.1" as &[u8]),
-        "expected ALPN downgrade to http/1.1, got {selected:?}"
+        Some(b"h2" as &[u8]),
+        "expected ALPN to pick h2 (server prefers h2 in v1.7.0+), got {selected:?}",
     );
 
     std::env::remove_var("VP_TRANSPARENT_TEST_HTTP");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn alpn_h2_only_rejected() {
+async fn alpn_http1_only_picks_http1() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let server = MockServer::start().await;
@@ -185,7 +189,7 @@ async fn alpn_h2_only_rejected() {
     let mut cfg = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
     let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
 
     let mut tcp = TcpStream::connect(bound_addr).await.unwrap();
@@ -206,10 +210,15 @@ async fn alpn_h2_only_rejected() {
     }
 
     let name = rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
-    let outcome = connector.connect(name, tcp).await;
-    assert!(
-        outcome.is_err(),
-        "expected ALPN mismatch error when client demands h2 only; got Ok",
+    let tls = connector
+        .connect(name, tcp)
+        .await
+        .expect("http/1.1-only client must still handshake");
+    let selected = tls.get_ref().1.alpn_protocol();
+    assert_eq!(
+        selected,
+        Some(b"http/1.1" as &[u8]),
+        "expected ALPN to settle on http/1.1, got {selected:?}",
     );
 
     std::env::remove_var("VP_TRANSPARENT_TEST_HTTP");

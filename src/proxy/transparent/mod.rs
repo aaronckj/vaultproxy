@@ -17,6 +17,7 @@ use crate::proxy::AppState;
 pub mod cert_factory;
 pub mod connect;
 pub mod errors;
+pub mod h2_mitm;
 pub mod init;
 pub mod inject_host;
 pub mod inject_placeholder;
@@ -193,7 +194,7 @@ pub(super) async fn handle_connection<S>(
     unregistered_policy: UnregisteredPolicy,
 ) -> Result<()>
 where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,

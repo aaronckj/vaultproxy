@@ -182,14 +182,21 @@ contain hostile prompts. Skips chunked / non-textual responses
 defensively. The v1.2.5 env shim `VP_TRANSPARENT_SANITIZE_RESPONSES`
 was removed in v1.3.1.
 
-## ALPN behaviour (v1.4.1+)
+## ALPN behaviour (v1.7.0+)
 
-The MITM leaf cert advertises only `http/1.1` on ALPN. h2-capable
-clients that also offer `http/1.1` downgrade cleanly; clients that
-demand `h2` only fail the outer TLS handshake with an ALPN-mismatch
-error. Both outcomes are safer than the pre-v1.4.1 behaviour where
-silent stream corruption was possible. Native HTTP/2 framing is
-tracked in `docs/ROADMAP.md`.
+The MITM leaf cert advertises both `h2` and `http/1.1` on ALPN.
+Post-handshake, the proxy inspects the negotiated protocol and
+dispatches to either the HTTP/1.1 MITM path (v1.1.0) or the native
+HTTP/2 MITM path (`h2_mitm::run_h2`, v1.7.0). h2-capable clients get
+native h2 framing; http/1.1-only clients keep their existing path;
+clients that demand `h2` only now succeed (v1.4.1–v1.6.x rejected
+them with an ALPN-mismatch).
+
+Upstream side is still HTTP/1.1 in v1.7.0: the proxy synthesises an
+HTTP/1.1 request from the h2 headers + body, runs the existing
+injectors, forwards via the shared HTTP/1.1 forwarder, and re-frames
+the upstream's HTTP/1.1 response back as h2 to the agent. Native h2
+to the upstream is tracked as v1.8 follow-up "HTTP/2 upstream".
 
 ## SIEM audit sinks (v1.4.2 sync, v1.4.4 network)
 

@@ -5,6 +5,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.7.0] — 2026-05-25
+
+### Added
+
+- **Native HTTP/2 transparent MITM.** The MITM leaf cert now
+  advertises both `h2` and `http/1.1` on ALPN (was http/1.1-only in
+  v1.4.1+). Post-handshake, `mitm::run` inspects the negotiated
+  protocol and dispatches to either the existing
+  `mitm::run_http1` (HTTP/1.1) or the new `h2_mitm::run_h2`
+  (HTTP/2) path. Agent-side framing is native h2 with per-stream
+  concurrency; upstream-side still speaks HTTP/1.1 via the shared
+  `forward_to_upstream_for_h2` helper (the proxy synthesises an
+  HTTP/1.1 request from the h2 headers + body, runs the existing
+  injectors, then re-frames the HTTP/1.1 response as h2 back to the
+  agent).
+- New `src/proxy/transparent/h2_mitm.rs` module. Direct `h2 = "0.4"`
+  and `http = "1"` deps (already in tree via reqwest/hyper).
+
+### Behaviour changes
+
+- **ALPN contract**: a client that offers `["h2", "http/1.1"]` now
+  ends up on h2 (was http/1.1 in v1.4.1+). A client that offers only
+  `["http/1.1"]` still negotiates http/1.1. A client that demands
+  only `["h2"]` now succeeds (was a clean ALPN-mismatch error in
+  v1.4.1+).
+- The `transparent_alpn_downgrade` test file was renamed in spirit:
+  the two tests now cover the v1.7.0 contract (mixed offer →
+  picks h2; http/1.1-only → picks http/1.1).
+
+### Tests
+
+- New `tests/transparent_h2_mitm.rs` drives a hand-rolled rustls +
+  `h2::client` end-to-end against the MITM listener: outer ALPN
+  negotiation lands on h2, h2 server framing reads the agent
+  request, vault-injected Bearer reaches the wiremock upstream, and
+  the upstream's HTTP/1.1 response is re-framed back as h2.
+
+### Limitations (will tighten in follow-up releases)
+
+- Upstream still HTTP/1.1; an h2-required upstream (rare in
+  practice — most accept HTTP/1.1) won't work via the h2 MITM yet.
+- Trailers + server push not supported.
+
 ## [1.6.0] — 2026-05-25
 
 ### Added

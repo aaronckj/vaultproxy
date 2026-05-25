@@ -26,7 +26,9 @@ pub struct HttpRequest {
     pub body: Bytes,
 }
 
-/// Run the MITM loop for one CONNECT request.
+/// Run the MITM loop for one CONNECT request. v1.7.0+ inspects ALPN
+/// after the TLS handshake and dispatches to either the HTTP/1.1 path
+/// (existing) or the HTTP/2 path (`h2_mitm::run_h2`).
 #[allow(clippy::too_many_arguments)]
 pub async fn run<A>(
     mut agent_plaintext: A,
@@ -40,10 +42,8 @@ pub async fn run<A>(
     state: Arc<crate::proxy::AppState>,
 ) -> Result<()>
 where
-    A: AsyncRead + AsyncWrite + Unpin,
+    A: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let start = Instant::now();
-
     // 1. Tell the agent the tunnel is open (BEFORE the leaf cert prep
     //    so the agent will begin TLS handshake without extra latency).
     agent_plaintext
@@ -54,10 +54,60 @@ where
     // 2. Build TlsAcceptor with the leaf for this host.
     let leaf = cert_factory.leaf_for(&target.host, target.port).await?;
     let acceptor = build_acceptor(&leaf)?;
-    let mut agent_tls = acceptor
+    let agent_tls = acceptor
         .accept(agent_plaintext)
         .await
         .context("TLS handshake with agent")?;
+
+    // 3. Check which protocol got negotiated via ALPN.
+    let alpn = agent_tls
+        .get_ref()
+        .1
+        .alpn_protocol()
+        .map(|b| b.to_vec())
+        .unwrap_or_default();
+    if alpn == b"h2" {
+        return crate::proxy::transparent::h2_mitm::run_h2(
+            agent_tls,
+            target,
+            service,
+            vault,
+            vault_folder,
+            placeholders,
+            audit_log,
+            state,
+        )
+        .await;
+    }
+    // ALPN was http/1.1 (or empty — old clients that don't speak ALPN).
+    run_http1(
+        agent_tls,
+        target,
+        service,
+        vault,
+        vault_folder,
+        placeholders,
+        audit_log,
+        state,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_http1<A>(
+    mut agent_tls: tokio_rustls::server::TlsStream<A>,
+    target: ConnectTarget,
+    service: Arc<ServiceEntry>,
+    vault: Arc<crate::vault::VaultManager>,
+    vault_folder: String,
+    placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
+    audit_log: Arc<crate::security::audit_log::AuditLog>,
+    state: Arc<crate::proxy::AppState>,
+) -> Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+{
+    let start = Instant::now();
 
     // 3. Read the agent's HTTP/1.1 request.
     let req = read_http_request(&mut agent_tls).await?;
@@ -263,12 +313,17 @@ fn build_acceptor(leaf: &LeafCert) -> Result<TlsAcceptor> {
         .with_no_client_auth()
         .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(key))
         .context("rustls ServerConfig")?;
-    // Advertise only HTTP/1.1 on the MITM leaf. The upstream forwarder
-    // and the wire-level parser only speak HTTP/1.1; if an h2-capable
-    // client negotiated h2 here we'd hand it raw bytes the parser
-    // can't read. Pinning ALPN to "http/1.1" forces the client to
-    // either downgrade or refuse — both safer than silent corruption.
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // Advertise BOTH h2 and http/1.1 on the MITM leaf (v1.7.0+). Clients
+    // that natively prefer h2 (modern reqwest, fetch in browsers) now
+    // get an h2-framed channel to the proxy; clients that only do
+    // http/1.1 keep their existing path. The MITM dispatcher inspects
+    // the negotiated protocol after the handshake and routes to either
+    // `mitm::run` (http/1.1) or `h2_mitm::run` (h2).
+    //
+    // Order matters: rustls picks the first overlap between server +
+    // client ALPN lists. Listing "h2" first means h2-capable clients
+    // get h2; http/1.1-only clients still negotiate http/1.1.
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(TlsAcceptor::from(Arc::new(cfg)))
 }
 
@@ -313,6 +368,17 @@ async fn read_http_request<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
         headers,
         body: Bytes::from(body),
     })
+}
+
+/// Public re-export under a distinct name so `h2_mitm` can reuse the
+/// existing upstream forwarder without exposing every helper in this
+/// module. Same semantics as the private `forward_to_upstream` used by
+/// `run_http1`.
+pub(crate) async fn forward_to_upstream_for_h2(
+    target: &ConnectTarget,
+    req: HttpRequest,
+) -> Result<Bytes> {
+    forward_to_upstream(target, req).await
 }
 
 async fn forward_to_upstream(target: &ConnectTarget, req: HttpRequest) -> Result<Bytes> {
