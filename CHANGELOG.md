@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.3] — 2026-05-25
+
+### Docs
+
+- **Operator docs catch up with v1.3/v1.4.** `docs/operator/TRANSPARENT.md`
+  now covers all four listener variants (TCP, UDS, mTLS), OAuth
+  client-credentials + refresh-token auth patterns, SIGHUP reload,
+  the `--transparent-sanitize-responses` CLI flag (env shim gone),
+  v1.4.1 ALPN downgrade behaviour, and v1.4.2 audit sinks.
+- `docs/operator/TRANSPARENT-FLAGS.md` rewritten into four sections
+  (Listeners, MITM CA, Per-service behaviour, Cross-cutting) so the
+  full flag surface is one table-scan instead of one flat list.
+
+No code changes.
+
 ## [1.4.2] — 2026-05-25
 
 ### Added
