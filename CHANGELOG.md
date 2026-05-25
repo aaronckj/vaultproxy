@@ -5,6 +5,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.8.0] — 2026-05-25
+
+### Added
+
+- **Native HTTP/2 to the upstream too.** The v1.7.0 h2 MITM spoke h2
+  to the agent and re-framed as HTTP/1.1 to the upstream. v1.8.0
+  adds `h2_upstream::try_h2` which the h2 MITM path calls first: it
+  opens a TLS connection to the upstream with ALPN
+  `["h2", "http/1.1"]` and, when the upstream picks h2, runs a
+  single h2 request and returns the parsed response shape
+  (status + headers + body) for direct re-framing back to the agent.
+  When the upstream picks http/1.1 — or `VP_TRANSPARENT_TEST_HTTP=1`
+  is set (test affordance) — the path falls back to the existing
+  http/1.1 forwarder + parse step. End-to-end native h2 now works
+  when both the agent and the upstream speak h2.
+- New `src/proxy/transparent/h2_upstream.rs` module.
+- `HttpRequest` is now `Clone` so the h2 MITM can hand the same
+  injected request to the h2-try then (on fallback) the http/1.1
+  forwarder.
+
+### Tests
+
+- `tests/transparent_h2_upstream.rs` spins up a hand-rolled h2c
+  upstream that records the headers it received, drives an h2 agent
+  through the proxy, and asserts (a) the upstream got the
+  vault-injected Bearer (not the agent's smuggled one) and (b) the
+  agent got the upstream's h2 response back over h2.
+- `VP_TRANSPARENT_TEST_FORCE_H2=1` is a new test-only env knob that
+  flips the upstream h2 client to plain TCP (h2c with prior
+  knowledge) so tests don't need a TLS dance against a stub cert.
+
+### Limitations
+
+- No upstream h2 connection pool yet. Every agent stream still
+  opens its own h2 connection to the upstream. A `DashMap<(host,
+  port), SendRequest<Bytes>>` is the natural v1.9 follow-up.
+- The http/1.1 MITM path (agent speaks HTTP/1.1) still always
+  forwards to the upstream over http/1.1. Mixing agent-http/1.1
+  with upstream-h2 needs a separate response-shape converter and
+  is not in scope for v1.8.0.
+
 ## [1.7.1] — 2026-05-25
 
 ### Fixed (CI)

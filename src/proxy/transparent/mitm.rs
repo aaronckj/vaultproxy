@@ -18,7 +18,7 @@ use crate::proxy::transparent::cert_factory::{CertFactory, LeafCert};
 use crate::proxy::transparent::connect::ConnectTarget;
 
 /// Minimal HTTP/1.1 request: method, path, headers, optional body.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HttpRequest {
     pub method: String,
     pub path: String,

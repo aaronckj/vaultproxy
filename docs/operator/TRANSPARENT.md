@@ -192,11 +192,17 @@ native h2 framing; http/1.1-only clients keep their existing path;
 clients that demand `h2` only now succeed (v1.4.1–v1.6.x rejected
 them with an ALPN-mismatch).
 
-Upstream side is still HTTP/1.1 in v1.7.0: the proxy synthesises an
-HTTP/1.1 request from the h2 headers + body, runs the existing
-injectors, forwards via the shared HTTP/1.1 forwarder, and re-frames
-the upstream's HTTP/1.1 response back as h2 to the agent. Native h2
-to the upstream is tracked as v1.8 follow-up "HTTP/2 upstream".
+Upstream-side h2 (v1.8.0+): the h2 MITM path now tries h2 against
+the upstream first (TLS + ALPN `["h2", "http/1.1"]`). When the
+upstream picks h2 the response stays on the h2 wire end-to-end —
+no http/1.1 re-frame. When the upstream picks http/1.1 the path
+falls back to the existing http/1.1 forwarder and re-frames as
+before. The http/1.1 MITM path (agent speaks HTTP/1.1) still always
+forwards to the upstream over http/1.1.
+
+Limitations: no upstream h2 connection pool yet — every agent stream
+opens its own h2 session to the upstream. A pool keyed by
+`(host, port)` is tracked as v1.9 follow-up "HTTP/2 upstream pool".
 
 ## SIEM audit sinks (v1.4.2 sync, v1.4.4 network)
 

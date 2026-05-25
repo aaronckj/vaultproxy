@@ -18,6 +18,7 @@ pub mod cert_factory;
 pub mod connect;
 pub mod errors;
 pub mod h2_mitm;
+pub mod h2_upstream;
 pub mod init;
 pub mod inject_host;
 pub mod inject_placeholder;
