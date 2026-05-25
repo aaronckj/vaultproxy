@@ -124,6 +124,7 @@ pub async fn inject(
             client_secret_field,
             refresh_token_field,
             scope,
+            writeback,
         } => {
             let token = crate::proxy::get_or_refresh_oauth_refresh_token(
                 &state,
@@ -133,6 +134,7 @@ pub async fn inject(
                 client_secret_field,
                 refresh_token_field,
                 scope,
+                *writeback,
                 false,
             )
             .await

@@ -60,6 +60,7 @@ async fn host_inject_oauth_refresh_exchanges_and_caches() {
                 client_secret_field: String::new(),
                 refresh_token_field: "password".into(),
                 scope: String::new(),
+                writeback: false,
             },
             insecure_tls: false,
             ca_cert_path: None,

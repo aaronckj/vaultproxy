@@ -108,6 +108,12 @@ pub struct AppState {
     /// cached entry has crossed `hard_expiry - REFRESH_MARGIN` or when the
     /// upstream rejects the call with 401.
     pub oauth_tokens: Arc<tokio::sync::RwLock<HashMap<String, (String, Instant)>>>,
+    /// Per-`vault_item` serialisation lock for OAuth refresh-token rotation.
+    /// Acquired by `get_or_refresh_oauth_refresh_token` around the entire
+    /// cache-check + POST + writeback sequence so two concurrent refreshes
+    /// don't race on a rotating refresh-token IdP. Lazily populated.
+    pub oauth_writeback_locks:
+        Arc<tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// mTLS certificate material generated at startup.
     pub client_certs: Option<crate::tpm::CertMaterial>,
     /// Optional cloud sync manager (enabled when CLOUD_EMAIL is set).
@@ -915,6 +921,7 @@ async fn apply_auth_and_send(
             client_secret_field,
             refresh_token_field,
             scope,
+            writeback,
         } => {
             let token = get_or_refresh_oauth_refresh_token(
                 state,
@@ -924,6 +931,7 @@ async fn apply_auth_and_send(
                 &client_secret_field,
                 &refresh_token_field,
                 &scope,
+                writeback,
                 false,
             )
             .await?;
@@ -942,6 +950,7 @@ async fn apply_auth_and_send(
                 &client_secret_field,
                 &refresh_token_field,
                 &scope,
+                writeback,
                 true,
             )
             .await?;
@@ -1082,7 +1091,7 @@ pub(crate) async fn get_or_refresh_oauth_token(
 /// out-of-band or switch the upstream to a non-rotating refresh-token
 /// grant if persistent rotation is needed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn get_or_refresh_oauth_refresh_token(
+pub async fn get_or_refresh_oauth_refresh_token(
     state: &AppState,
     vault_item: &str,
     token_url: &str,
@@ -1090,8 +1099,28 @@ pub(crate) async fn get_or_refresh_oauth_refresh_token(
     client_secret_field: &str,
     refresh_token_field: &str,
     scope: &str,
+    writeback: bool,
     force_refresh: bool,
 ) -> anyhow::Result<String> {
+    // Per-vault_item serialisation lock. Held from cache-check through POST
+    // through writeback so two concurrent refreshes don't race on a rotating
+    // IdP. Locks are lazily created and never evicted (one tiny entry per
+    // service for the process lifetime).
+    let lock = {
+        let read = state.oauth_writeback_locks.read().await;
+        if let Some(l) = read.get(vault_item) {
+            l.clone()
+        } else {
+            drop(read);
+            let mut write = state.oauth_writeback_locks.write().await;
+            write
+                .entry(vault_item.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        }
+    };
+    let _guard = lock.lock().await;
+
     if !force_refresh {
         let cache = state.oauth_tokens.read().await;
         if let Some((tok, expires_at)) = cache.get(vault_item) {
@@ -1191,12 +1220,62 @@ pub(crate) async fn get_or_refresh_oauth_refresh_token(
         .to_string();
     if let Some(new_rt) = body.get("refresh_token").and_then(Value::as_str) {
         if new_rt != refresh_token {
-            tracing::warn!(
-                vault_item,
-                "OAuth IdP rotated the refresh token; vault-proxy does not write back to the \
-                 vault — the new refresh token will be discarded after process exit. Rotate \
-                 the vault item out-of-band."
-            );
+            if writeback {
+                if refresh_token_field != "password" {
+                    tracing::warn!(
+                        vault_item,
+                        refresh_token_field,
+                        "OAuth refresh-token writeback only supports the default \
+                         refresh_token_field='password'; custom-field writeback is not yet \
+                         implemented. Discarding rotated RT — rotate the vault item out-of-band.",
+                    );
+                } else {
+                    // Test-stub fast path: if the integration test seeded the RT
+                    // via test_passwords, mirror the rotation there. Production
+                    // calls update_password_for_item which round-trips
+                    // Vaultwarden's encrypt + PUT.
+                    let stub_key = format!("{vault_item}:refresh_token");
+                    if state
+                        .vault
+                        .test_item_password("vault-proxy", &stub_key)
+                        .is_ok()
+                    {
+                        state
+                            .vault
+                            .seed_test_password("vault-proxy", &stub_key, new_rt)
+                            .await;
+                        tracing::info!(
+                            vault_item,
+                            "OAuth refresh-token rotated; mirrored to test-stub",
+                        );
+                    } else {
+                        match state
+                            .vault
+                            .update_password_for_item(vault_item, new_rt)
+                            .await
+                        {
+                            Ok(()) => tracing::info!(
+                                vault_item,
+                                "OAuth refresh-token rotated and written back to vault",
+                            ),
+                            Err(e) => tracing::warn!(
+                                vault_item,
+                                error = %e,
+                                "OAuth refresh-token writeback to vault failed; new RT will be \
+                                 discarded after process exit. Rotate the vault item out-of-band.",
+                            ),
+                        }
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    vault_item,
+                    "OAuth IdP rotated the refresh token but writeback is disabled \
+                     (oauth_writeback=false in services.toml). The new RT will be discarded \
+                     after process exit. Rotate the vault item out-of-band, or set \
+                     oauth_writeback=true on the service.",
+                );
+            }
         }
     }
     let ttl = body
@@ -1852,6 +1931,9 @@ impl AppState {
             unifi_sessions: Arc::new(crate::proxy::unifi_session::UnifiSessionCache::new()),
             session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             oauth_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
@@ -2109,6 +2191,9 @@ mod integration_tests {
             unifi_sessions: Arc::new(UnifiSessionCache::new()),
             session_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             oauth_tokens: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),

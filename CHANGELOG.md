@@ -5,6 +5,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.5.0] — 2026-05-25
+
+### Added
+
+- **OAuth refresh-token vault writeback.** New `oauth_writeback = true`
+  flag on `auth = "oauth_refresh"` services. When the IdP returns a
+  rotated `refresh_token` in the response, the proxy writes it back
+  to the vault item via `update_password_for_item`. Concurrent
+  refreshes are serialised via a per-`vault_item` `Mutex` held from
+  cache-check through POST through writeback, so a rotating IdP
+  doesn't deal two grants the second of which uses an already-
+  invalidated RT.
+  - Default `false` (preserves v1.3.2 behaviour: log + discard).
+  - Only supported when `refresh_token_field` is the default
+    `"password"`. Custom-field writeback logs a WARN and discards
+    the rotation (tracked as a v1.6 follow-up).
+  - Public OAuth flows that don't return a rotated RT see no
+    behaviour change.
+
+### Changed
+
+- `AppState.oauth_writeback_locks` (new) holds the per-`vault_item`
+  serialisation mutexes. Lazily populated; one entry per OAuth
+  refresh-token service for the process lifetime.
+- `proxy::get_or_refresh_oauth_refresh_token` is now `pub` (was
+  `pub(crate)`) so integration tests can drive it directly.
+- `VaultManager::seed_test_password` is production-visible (was cfg-
+  gated to `test-utils`). The companion reader `test_item_password`
+  was already production-visible; symmetry is preserved. No new
+  external API: the only way to populate the test_passwords map in
+  production is to call this from inside the proxy process itself.
+
+### Tests
+
+- `tests/transparent_oauth_refresh_writeback.rs` E2Es both legs:
+  writeback ON persists rotated RT to the stub map and the next
+  refresh uses it; writeback OFF leaves the stub untouched.
+
 ## [1.4.4] — 2026-05-25
 
 ### Added

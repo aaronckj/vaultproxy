@@ -189,6 +189,10 @@ login_include_username = false   # Duplicati's login API accepts only a password
 # # refresh_token_field = "password"   # holds the long-lived refresh token
 # # scope = "https://www.googleapis.com/auth/drive.readonly"
 # # transparent_mode = "host_inject"
+# # oauth_writeback = false             # v1.5+: when true, IdP-rotated RTs are
+# #                                     # written back to the vault item (only
+# #                                     # supported when refresh_token_field
+# #                                     # is the default "password").
 
 # ── UniFi dual auth (API key first, session fallback) ───────────────────────
 [[service]]

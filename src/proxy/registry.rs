@@ -85,6 +85,11 @@ struct ServiceConfig {
     /// OAuth refresh-token: vault field holding the refresh token.
     /// Default `"password"`.
     refresh_token_field: Option<String>,
+    /// OAuth refresh-token: when `true`, IdP-rotated refresh tokens are
+    /// written back to the vault item (only when `refresh_token_field` is
+    /// the default `"password"`). Default `false`.
+    #[serde(default)]
+    oauth_writeback: bool,
     #[serde(default)]
     insecure_tls: bool,
     /// Transparent HTTPS_PROXY mode for this service. Default = "off"
@@ -270,6 +275,12 @@ pub enum AuthPattern {
     /// `client_secret_field`  — vault field for client_secret (default empty; omits when blank).
     /// `refresh_token_field`  — vault field for refresh_token (default `"password"`).
     /// `scope`                — optional `scope` parameter; empty = no scope sent.
+    /// `writeback`            — opt-in (default `false`). When `true` and the
+    ///                          IdP returns a rotated refresh_token, write it
+    ///                          back to the vault item (only supported when
+    ///                          `refresh_token_field == "password"`). Concurrent
+    ///                          rotations are serialised via per-`vault_item`
+    ///                          mutex.
     OAuthRefresh {
         vault_item: String,
         token_url: String,
@@ -277,6 +288,7 @@ pub enum AuthPattern {
         client_secret_field: String,
         refresh_token_field: String,
         scope: String,
+        writeback: bool,
     },
 }
 
@@ -1434,6 +1446,7 @@ impl ServiceRegistry {
                             .clone()
                             .unwrap_or_else(|| "password".to_string()),
                         scope: svc.scope.clone().unwrap_or_default(),
+                        writeback: svc.oauth_writeback,
                     }
                 }
                 other => {
@@ -3149,6 +3162,7 @@ scope = "repo"
                 client_secret_field,
                 refresh_token_field,
                 scope,
+                writeback,
             } => {
                 assert_eq!(vault_item, "vault-proxy - GitHub OAuth");
                 assert_eq!(token_url, "https://github.com/login/oauth/access_token");
@@ -3156,6 +3170,7 @@ scope = "repo"
                 assert_eq!(client_secret_field, "client_secret");
                 assert_eq!(refresh_token_field, "refresh");
                 assert_eq!(scope, "repo");
+                assert!(!writeback, "writeback defaults off");
             }
             other => panic!("expected OAuthRefresh, got {:?}", other),
         }

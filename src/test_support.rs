@@ -31,6 +31,7 @@ pub async fn stub_app_state() -> AppState {
         unifi_sessions: Arc::new(UnifiSessionCache::new()),
         session_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         oauth_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         client_certs: None,
         cloud_sync: None,
         approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),

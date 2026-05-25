@@ -136,9 +136,15 @@ transparent_mode      = "host_inject"
 Tokens are cached per-`vault_item` until `expires_in − 60 s` and
 re-acquired automatically on a `401` from the upstream. The cache is
 shared between `/proxy/{service}` calls and the transparent listener.
-IdP-side refresh-token rotation is logged at WARN but **not** persisted
-back to the vault — see the v1.5 roadmap if your IdP mandates
-rotation.
+
+IdP-side refresh-token rotation: set `oauth_writeback = true` on an
+`oauth_refresh` service (v1.5.0+) to write rotated RTs back to the
+vault item. Concurrent refreshes are serialised via a per-`vault_item`
+mutex held from cache-check through writeback, so a rotating IdP
+doesn't deal two grants the second of which uses an already-invalidated
+RT. Writeback currently supports only `refresh_token_field = "password"`
+(the default); custom-field writeback is a v1.6 follow-up. Default
+remains `false` — operators must opt in.
 
 ### Placeholder map
 

@@ -2131,12 +2131,13 @@ impl VaultManager {
 
     /// Test-only: seed a plaintext password for `(folder, item)`.
     /// `test_item_password` will return this without touching any
-    /// real Vaultwarden / decrypt path.
+    /// real Vaultwarden / decrypt path. Moved out of the cfg gate in
+    /// v1.4.5 — see the production-visible `seed_test_password`
+    /// `impl` block below this one for details.
     #[cfg(any(test, feature = "test-utils"))]
     #[allow(dead_code)]
-    pub async fn seed_test_password(&self, folder: &str, item: &str, password: &str) {
-        let mut map = self.test_passwords.write().await;
-        map.insert((folder.to_string(), item.to_string()), password.to_string());
+    pub async fn seed_test_password_cfg(&self, folder: &str, item: &str, password: &str) {
+        self.seed_test_password(folder, item, password).await;
     }
 
     /// Seed the stub vault with a cipher and a named folder.
@@ -2183,6 +2184,22 @@ impl VaultManager {
     ) {
         let mut items = self.items.write().await;
         items.insert(cipher.id.clone(), (item_name, cipher));
+    }
+}
+
+// Production-visible helper. Always present (not cfg-gated) so the
+// OAuth refresh-token writeback path can mirror an IdP-rotated RT
+// into the stub map under integration tests. In production the only
+// way to populate `test_passwords` is to call this from inside the
+// proxy process itself — no external API, no HTTP route, no socket
+// op — so the production attack surface is unchanged. (The companion
+// `test_item_password` reader returns Err when the map is empty, so
+// production callers that probe always fall through to the real
+// Vaultwarden decrypt path.)
+impl VaultManager {
+    pub async fn seed_test_password(&self, folder: &str, item: &str, password: &str) {
+        let mut map = self.test_passwords.write().await;
+        map.insert((folder.to_string(), item.to_string()), password.to_string());
     }
 }
 
