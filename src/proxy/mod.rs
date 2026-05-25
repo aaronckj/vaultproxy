@@ -114,6 +114,16 @@ pub struct AppState {
     /// don't race on a rotating refresh-token IdP. Lazily populated.
     pub oauth_writeback_locks:
         Arc<tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+
+    /// Upstream HTTP/2 connection pool, keyed by `(host, port)`. Reuses
+    /// h2 sessions across many transparent requests instead of opening a
+    /// fresh connection per stream. `SendRequest<Bytes>` is `Clone` and
+    /// thread-safe; each request gets its own clone, drives one h2
+    /// stream, and drops the clone. Entries are evicted on send-error
+    /// (connection died / GOAWAY) by `h2_upstream::try_h2`.
+    pub h2_upstream_pool:
+        Arc<dashmap::DashMap<(String, u16), h2::client::SendRequest<bytes::Bytes>>>,
+
     /// mTLS certificate material generated at startup.
     pub client_certs: Option<crate::tpm::CertMaterial>,
     /// Optional cloud sync manager (enabled when CLOUD_EMAIL is set).
@@ -1936,6 +1946,7 @@ impl AppState {
             oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            h2_upstream_pool: Arc::new(dashmap::DashMap::new()),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
@@ -2196,6 +2207,7 @@ mod integration_tests {
             oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            h2_upstream_pool: Arc::new(dashmap::DashMap::new()),
             client_certs: None,
             cloud_sync: None,
             approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),

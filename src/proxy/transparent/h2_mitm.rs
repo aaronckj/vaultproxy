@@ -180,45 +180,48 @@ where
             // 4. Forward to upstream. Try h2 first (v1.8.0+); fall back
             //    to http/1.1 when the upstream picks http/1.1 on ALPN.
             let bytes_out = injected.body.len() as u64;
-            let (status, hdrs, body) =
-                match crate::proxy::transparent::h2_upstream::try_h2(&target, injected.clone())
-                    .await
-                {
-                    Ok(Some((s, h, b))) => (s, h, b.to_vec()),
-                    Ok(None) => {
-                        // Upstream picked http/1.1; do the http/1.1 path.
-                        let response_bytes =
-                            match crate::proxy::transparent::mitm::forward_to_upstream_for_h2(
-                                &target, injected,
-                            )
-                            .await
-                            {
-                                Ok(b) => b,
-                                Err(e) => {
-                                    warn!(
-                                        host = %target,
-                                        error = %e,
-                                        "h2 upstream http/1.1 forward failed",
-                                    );
-                                    return;
-                                }
-                            };
-                        match parse_http1_response(&response_bytes) {
-                            Some(t) => t,
-                            None => {
+            let (status, hdrs, body) = match crate::proxy::transparent::h2_upstream::try_h2_pooled(
+                &state,
+                &target,
+                injected.clone(),
+            )
+            .await
+            {
+                Ok(Some((s, h, b))) => (s, h, b.to_vec()),
+                Ok(None) => {
+                    // Upstream picked http/1.1; do the http/1.1 path.
+                    let response_bytes =
+                        match crate::proxy::transparent::mitm::forward_to_upstream_for_h2(
+                            &target, injected,
+                        )
+                        .await
+                        {
+                            Ok(b) => b,
+                            Err(e) => {
                                 warn!(
                                     host = %target,
-                                    "h2 unable to parse upstream http/1.1 response",
+                                    error = %e,
+                                    "h2 upstream http/1.1 forward failed",
                                 );
                                 return;
                             }
+                        };
+                    match parse_http1_response(&response_bytes) {
+                        Some(t) => t,
+                        None => {
+                            warn!(
+                                host = %target,
+                                "h2 unable to parse upstream http/1.1 response",
+                            );
+                            return;
                         }
                     }
-                    Err(e) => {
-                        warn!(host = %target, error = %e, "h2 upstream forward failed");
-                        return;
-                    }
-                };
+                }
+                Err(e) => {
+                    warn!(host = %target, error = %e, "h2 upstream forward failed");
+                    return;
+                }
+            };
 
             // 6. Build the h2 response. h2 forbids the connection-
             //    specific http/1.1 headers (Connection, Keep-Alive,

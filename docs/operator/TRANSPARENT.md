@@ -206,9 +206,11 @@ the existing http/1.1 forwarder runs. All four agent↔upstream wire
 combinations work — http/1.1↔http/1.1, h2↔http/1.1, h2↔h2,
 http/1.1↔h2.
 
-Limitations: no upstream h2 connection pool yet — every agent stream
-opens its own h2 session to the upstream. A pool keyed by
-`(host, port)` is tracked as v1.9 follow-up "HTTP/2 upstream pool".
+Upstream h2 connection pool (v1.10.0+): `AppState.h2_upstream_pool`
+caches one `SendRequest` per `(host, port)` so concurrent requests
+against the same upstream share one h2 connection (one frame
+multiplexer, one flow-control budget). Entries are evicted on send
+error so the next caller re-handshakes against a healthy upstream.
 
 ## SIEM audit sinks (v1.4.2 sync, v1.4.4 network)
 

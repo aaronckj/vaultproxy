@@ -5,6 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.10.0] — 2026-05-25
+
+### Added
+
+- **Upstream HTTP/2 connection pool.** `AppState.h2_upstream_pool`
+  is a `DashMap<(host, port), h2::client::SendRequest<Bytes>>` that
+  reuses h2 sessions across many transparent requests instead of
+  opening a fresh connection per stream. `SendRequest` is `Clone`
+  and thread-safe, so concurrent requests against the same upstream
+  share one frame multiplexer + one flow-control budget.
+- New `h2_upstream::try_h2_pooled` consults the pool first; on a
+  miss it handshakes, stores the new `SendRequest`, and runs the
+  request. On send error (GOAWAY / RST_STREAM / connection-died)
+  the entry is evicted so the next request re-handshakes against a
+  healthy upstream.
+- Both MITM paths (h2 agent via `h2_mitm`, http/1.1 agent via
+  `mitm::run_http1`) now call `try_h2_pooled` so all four
+  agent↔upstream wire combinations benefit from the pool.
+
+### Refactored
+
+- `h2_upstream` split the prior single-shot helper into
+  `handshake_tls` / `handshake_plain` / `drive_handshake` /
+  `send_request_on`. The pooled and non-pooled entry points share
+  the `send_request_on` path so a cached `SendRequest` and a fresh
+  one issue identical requests.
+
+### Tests
+
+- `tests/transparent_h2_upstream_pool.rs` drives 3 sequential h2
+  requests through the proxy against a counting h2c upstream;
+  asserts the upstream observed exactly 1 h2 connection (not 3).
+- All 19 prior transparent E2E tests still pass.
+
 ## [1.9.0] — 2026-05-25
 
 ### Added

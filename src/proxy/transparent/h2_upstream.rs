@@ -4,11 +4,12 @@
 //! transport reason), returns `Ok(None)` so the caller can fall back
 //! to the existing http/1.1 forwarder.
 //!
-//! Per-request: no connection pool yet. Each agent stream that lands
-//! in `h2_mitm` opens its own h2 connection to the upstream. A pool
-//! keyed by `(host, port)` is the natural v1.9 follow-up — drop a
-//! `DashMap<(String, u16), SendRequest<Bytes>>` here and have the
-//! upstream-side accept loop reuse the same `SendRequest` handle.
+//! Connection pool (v1.10.0+): `AppState.h2_upstream_pool` holds one
+//! `SendRequest<Bytes>` per `(host, port)`. `SendRequest` is `Clone`
+//! and thread-safe, so multiple in-flight requests against the same
+//! upstream share one h2 connection (one frame multiplexer, one
+//! flow-control budget). On send error (GOAWAY / RST_STREAM / TCP
+//! close) the entry is evicted and the next request re-handshakes.
 //!
 //! Test affordance: when `VP_TRANSPARENT_TEST_FORCE_H2=1` is set,
 //! skip TLS and run h2-with-prior-knowledge over plain TCP so the
@@ -76,24 +77,80 @@ pub fn serialise_as_http1(status: u16, headers: &[(String, String)], body: &Byte
 ///     should fall back).
 ///   * `Err(e)` for network/TLS/protocol errors.
 pub async fn try_h2(target: &ConnectTarget, req: HttpRequest) -> Result<Option<ParsedH2Response>> {
+    try_h2_inner(target, req, None).await
+}
+
+/// Pool-aware variant: reuses a cached `SendRequest<Bytes>` per
+/// `(host, port)` from `AppState.h2_upstream_pool` when present;
+/// stores the handshake result on first miss. Evicts on send error
+/// so the next caller re-handshakes against a healthy upstream.
+pub async fn try_h2_pooled(
+    state: &crate::proxy::AppState,
+    target: &ConnectTarget,
+    req: HttpRequest,
+) -> Result<Option<ParsedH2Response>> {
+    try_h2_inner(target, req, Some(&state.h2_upstream_pool)).await
+}
+
+type H2Pool = dashmap::DashMap<(String, u16), h2::client::SendRequest<Bytes>>;
+
+async fn try_h2_inner(
+    target: &ConnectTarget,
+    req: HttpRequest,
+    pool: Option<&H2Pool>,
+) -> Result<Option<ParsedH2Response>> {
     let force_h2c = std::env::var("VP_TRANSPARENT_TEST_FORCE_H2")
         .ok()
         .as_deref()
         == Some("1");
-    if force_h2c {
-        return Ok(Some(send_h2_plain(target, req).await?));
+
+    // Pool hit path: try the cached SendRequest first. On any send
+    // error, evict + fall through to a fresh handshake.
+    if let Some(p) = pool {
+        let key = (target.host.clone(), target.port);
+        let cached: Option<h2::client::SendRequest<Bytes>> = p.get(&key).map(|e| e.clone());
+        if let Some(send_req) = cached {
+            match send_request_on(send_req, target, &req).await {
+                Ok(parsed) => return Ok(Some(parsed)),
+                Err(e) => {
+                    tracing::debug!(
+                        host = %target,
+                        error = %e,
+                        "pooled h2 send failed; evicting and reconnecting",
+                    );
+                    p.remove(&key);
+                    // Fall through to fresh handshake below.
+                }
+            }
+        }
     }
-    // Test affordance: VP_TRANSPARENT_TEST_HTTP=1 routes through a
-    // plain-HTTP upstream (wiremock by default speaks no TLS). The
-    // TLS+ALPN h2 attempt would always fail in that mode, so skip
-    // straight to the http/1.1 fallback by returning Ok(None).
+
+    if force_h2c {
+        let send_req = handshake_plain(target).await?;
+        let parsed = send_request_on(send_req.clone(), target, &req).await?;
+        if let Some(p) = pool {
+            p.insert((target.host.clone(), target.port), send_req);
+        }
+        return Ok(Some(parsed));
+    }
     if std::env::var("VP_TRANSPARENT_TEST_HTTP").ok().as_deref() == Some("1") {
         return Ok(None);
     }
-    send_h2_tls(target, req).await
+    match handshake_tls(target).await? {
+        Some(send_req) => {
+            let parsed = send_request_on(send_req.clone(), target, &req).await?;
+            if let Some(p) = pool {
+                p.insert((target.host.clone(), target.port), send_req);
+            }
+            Ok(Some(parsed))
+        }
+        None => Ok(None),
+    }
 }
 
-async fn send_h2_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Option<ParsedH2Response>> {
+/// TLS handshake + h2 client handshake. Returns `Some(SendRequest)` when
+/// the upstream negotiated h2; `None` when it picked http/1.1.
+async fn handshake_tls(target: &ConnectTarget) -> Result<Option<h2::client::SendRequest<Bytes>>> {
     use rustls::{ClientConfig, RootCertStore};
     use tokio_rustls::TlsConnector;
 
@@ -104,7 +161,6 @@ async fn send_h2_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Option<
     let mut cfg = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    // Offer h2 first; rustls picks the first server-overlap.
     cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = TlsConnector::from(Arc::new(cfg));
     let server_name = target
@@ -114,44 +170,53 @@ async fn send_h2_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Option<
         .map_err(|e| anyhow::anyhow!("invalid server name '{}': {e}", target.host))?;
     let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port)).await?;
     let tls = connector.connect(server_name, tcp).await?;
-
     let alpn = tls.get_ref().1.alpn_protocol().map(|b| b.to_vec());
     if alpn.as_deref() != Some(b"h2") {
-        // Upstream picked http/1.1 (or didn't negotiate ALPN). Drop
-        // this connection and let the caller use the http/1.1 path.
         return Ok(None);
     }
-
-    let parsed = run_h2_exchange(tls, target, req).await?;
-    Ok(Some(parsed))
+    let send_req = drive_handshake(tls).await?;
+    Ok(Some(send_req))
 }
 
-async fn send_h2_plain(target: &ConnectTarget, req: HttpRequest) -> Result<ParsedH2Response> {
+/// Plain-TCP h2c handshake (test-only, gated by `VP_TRANSPARENT_TEST_FORCE_H2`).
+async fn handshake_plain(target: &ConnectTarget) -> Result<h2::client::SendRequest<Bytes>> {
     let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port)).await?;
-    run_h2_exchange(tcp, target, req).await
+    drive_handshake(tcp).await
 }
 
-async fn run_h2_exchange<IO>(
-    io: IO,
-    target: &ConnectTarget,
-    req: HttpRequest,
-) -> Result<ParsedH2Response>
+async fn drive_handshake<IO>(io: IO) -> Result<h2::client::SendRequest<Bytes>>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (h2, connection) = h2::client::handshake(io)
         .await
         .context("h2 client handshake")?;
-    // Drive the connection in a background task. The drive future
-    // completes when the connection closes; we don't need to await it
-    // before the response — h2's SendRequest::send_request returns
-    // immediately and the response future polls the connection.
+    // Spawn the connection driver. Stays alive until the connection
+    // closes (GOAWAY, TCP RST, EOF). After that the cached
+    // SendRequest's send_request calls start failing and the pool
+    // entry gets evicted by the caller.
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    let mut h2 = h2.ready().await.context("h2 client ready")?;
+    h2.ready().await.context("h2 client ready")
+}
 
-    // Build an http::Request from the HttpRequest.
+/// Send a single h2 request over `send_req` and return the parsed
+/// response. The `SendRequest` is consumed for the duration of the
+/// call but may be cloned by the caller before passing in if it
+/// expects to issue more requests on the same connection.
+async fn send_request_on(
+    mut send_req: h2::client::SendRequest<Bytes>,
+    target: &ConnectTarget,
+    req: &HttpRequest,
+) -> Result<ParsedH2Response> {
+    // Wait until the connection has capacity (poll_ready cycle).
+    let send_req = std::future::poll_fn(|cx| send_req.poll_ready(cx))
+        .await
+        .map(|_| send_req)
+        .context("h2 SendRequest poll_ready")?;
+    let mut send_req = send_req;
+
     let scheme = if std::env::var("VP_TRANSPARENT_TEST_FORCE_H2")
         .ok()
         .as_deref()
@@ -168,8 +233,6 @@ where
         .uri(&uri_str);
     for (k, v) in &req.headers {
         let lk = k.to_ascii_lowercase();
-        // Skip http/1-only and connection-specific headers; h2
-        // rejects them at frame-encode time.
         if matches!(
             lk.as_str(),
             "host"
@@ -188,7 +251,7 @@ where
     let has_body = !body_bytes.is_empty();
     let http_req = builder.body(()).context("h2 build request")?;
 
-    let (resp_fut, mut send_body) = h2
+    let (resp_fut, mut send_body) = send_req
         .send_request(http_req, !has_body)
         .context("h2 send_request")?;
     if has_body {
@@ -215,8 +278,6 @@ where
         let _ = body_stream.flow_control().release_capacity(c.len());
         body.extend_from_slice(&c);
     }
-    // h2's `Body` doesn't surface trailers via the data() iterator;
-    // we don't propagate trailers in v1.8.
     headers.retain(|(k, _)| !k.starts_with(':'));
     Ok((status, headers, Bytes::from(body)))
 }

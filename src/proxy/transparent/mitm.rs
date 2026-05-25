@@ -166,8 +166,12 @@ where
     //    to http/1.1 wire bytes so downstream sanitisation + the agent
     //    write path stay unchanged (agent itself is on http/1.1 here).
     let bytes_out = injected.body.len() as u64;
-    let response = match crate::proxy::transparent::h2_upstream::try_h2(&target, injected.clone())
-        .await
+    let response = match crate::proxy::transparent::h2_upstream::try_h2_pooled(
+        &state,
+        &target,
+        injected.clone(),
+    )
+    .await
     {
         Ok(Some((status, headers, body))) => {
             crate::proxy::transparent::h2_upstream::serialise_as_http1(status, &headers, &body)

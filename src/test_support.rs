@@ -32,6 +32,7 @@ pub async fn stub_app_state() -> AppState {
         session_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         oauth_tokens: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         oauth_writeback_locks: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        h2_upstream_pool: Arc::new(dashmap::DashMap::new()),
         client_certs: None,
         cloud_sync: None,
         approval_queue: Arc::new(tokio::sync::RwLock::new(VecDeque::new())),
