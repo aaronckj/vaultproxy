@@ -259,10 +259,16 @@ fn build_acceptor(leaf: &LeafCert) -> Result<TlsAcceptor> {
         .ok_or_else(|| anyhow::anyhow!("no PKCS8 key in leaf PEM"))?
         .context("parse leaf key PEM")?;
 
-    let cfg = ServerConfig::builder()
+    let mut cfg = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(key))
         .context("rustls ServerConfig")?;
+    // Advertise only HTTP/1.1 on the MITM leaf. The upstream forwarder
+    // and the wire-level parser only speak HTTP/1.1; if an h2-capable
+    // client negotiated h2 here we'd hand it raw bytes the parser
+    // can't read. Pinning ALPN to "http/1.1" forces the client to
+    // either downgrade or refuse — both safer than silent corruption.
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(TlsAcceptor::from(Arc::new(cfg)))
 }
 

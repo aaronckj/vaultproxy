@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.4.0
+## Shipped through v1.4.1
 
 | ID | Item | Version |
 |---|---|---|
@@ -13,6 +13,7 @@
 | G3 refresh | OAuth 2.0 `refresh_token` auth pattern (long-lived RT in vault, short-lived access token cached; IdP-side RT rotation logged but not written back to vault) | v1.3.2 |
 | G4 | Response prompt-injection sanitisation (opt-in via `VP_TRANSPARENT_SANITIZE_RESPONSES=1`) | v1.2.5 |
 | G4 CLI | `--transparent-sanitize-responses` CLI flag (env shim removed) | v1.3.1 |
+| HTTP/2 ALPN | MITM leaf cert pins ALPN to `http/1.1` (h2-capable clients downgrade; h2-only clients fail with ALPN mismatch) | v1.4.1 |
 | Wildcards | `*.host.com:port` patterns in `services.toml` for transparent_mode | v1.2.5 |
 | SIGHUP | Rebuild of transparent registry + placeholders without restart | v1.2.1 |
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
@@ -23,7 +24,7 @@
 | ID | Item | Notes |
 |---|---|---|
 | G3 RT-rotation | **Vault writeback for rotated refresh tokens** | The `oauth_refresh` flow currently logs but discards IdP-rotated refresh tokens. For IdPs that mandatorily rotate, add a vault writeback path so the new RT becomes the next-restart truth. Needs careful concurrency design (two requests competing on rotation). |
-| HTTP/2 | **HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1. Modern API clients increasingly default to h2 over ALPN. Significant: needs hyper-style h2 framing or rustls ALPN downgrade fallback. |
+| HTTP/2 native | **Native HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1; v1.4.1 forces clients to downgrade via ALPN. Operators that need native h2 to upstreams will need hyper-style h2 framing (multi-day work). |
 | SIEM | **Audit sinks** | `--audit-sink=stdout`, `--audit-sink=syslog`, OTLP / Datadog / Splunk forwarders for the audit log. Currently JSON-on-disk only. |
 
 ## v1.1 candidates (deferred or superseded)

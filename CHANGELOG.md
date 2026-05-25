@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.1] — 2026-05-25
+
+### Changed
+
+- **Transparent MITM leaf certs now pin ALPN to `http/1.1`.** Previously
+  the leaf cert advertised no ALPN, leaving negotiation up to the
+  client. Modern clients that default to ALPN `["h2", "http/1.1"]`
+  could negotiate h2 against a proxy whose MITM parser only speaks
+  HTTP/1.1, leading to silent stream corruption. Now the leaf
+  explicitly announces only `http/1.1`, so clients either downgrade
+  (h2-capable clients picking http/1.1 from the list) or fail the TLS
+  handshake with an ALPN mismatch (clients that demand h2 only). Both
+  outcomes are safer than the previous silent corruption.
+
+### Tests
+
+- New `tests/transparent_alpn_downgrade.rs` exercises both paths
+  (mixed offer downgrades to http/1.1; h2-only offer rejected).
+
 ## [1.4.0] — 2026-05-25
 
 ### Added
