@@ -208,7 +208,7 @@ impl AuditSink for SyslogSink {
             // implementation's internal mutex.
             if let Ok(c) = std::ffi::CString::new(line) {
                 unsafe {
-                    libc::syslog(libc::LOG_INFO, b"%s\0".as_ptr() as *const _, c.as_ptr());
+                    libc::syslog(libc::LOG_INFO, c"%s".as_ptr(), c.as_ptr());
                 }
             }
         }

@@ -258,11 +258,14 @@ where
     Ok(())
 }
 
+/// Parsed http/1.1 response shape: (status, headers, body).
+type ParsedHttp1 = (u16, Vec<(String, String)>, Vec<u8>);
+
 /// Parse a minimal HTTP/1.1 response wire-format buffer into
 /// `(status, headers, body)`. Returns `None` if the response can't
 /// be split at the first `\r\n\r\n` boundary or the status line is
 /// malformed.
-fn parse_http1_response(buf: &[u8]) -> Option<(u16, Vec<(String, String)>, Vec<u8>)> {
+fn parse_http1_response(buf: &[u8]) -> Option<ParsedHttp1> {
     let sep = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
     let (head, rest) = buf.split_at(sep);
     let body = rest.get(4..).unwrap_or_default().to_vec();
@@ -288,7 +291,7 @@ fn parse_http1_response(buf: &[u8]) -> Option<(u16, Vec<(String, String)>, Vec<u
 mod tests {
     use super::*;
 
-    fn raw(buf: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    fn raw(buf: &[u8]) -> ParsedHttp1 {
         parse_http1_response(buf).expect("parse")
     }
 

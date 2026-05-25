@@ -13,10 +13,10 @@
 //!
 //! Configuration lives in env vars rather than in `--audit-sink` argv
 //! so secrets stay out of the proxy's command line. Spec keywords:
-//!   - `otlp`     → `OTLP_AUDIT_URL` (required), `OTLP_AUDIT_HEADERS`
-//!                  (optional, comma-separated `key=value` pairs)
-//!   - `datadog`  → `DATADOG_AUDIT_URL`, `DATADOG_AUDIT_API_KEY`
-//!   - `splunk`   → `SPLUNK_AUDIT_URL`, `SPLUNK_AUDIT_TOKEN`
+//!   - `otlp`: `OTLP_AUDIT_URL` (required), `OTLP_AUDIT_HEADERS`
+//!     (optional, comma-separated `key=value` pairs)
+//!   - `datadog`: `DATADOG_AUDIT_URL`, `DATADOG_AUDIT_API_KEY`
+//!   - `splunk`: `SPLUNK_AUDIT_URL`, `SPLUNK_AUDIT_TOKEN`
 
 use crate::security::audit_log::AuditEntry;
 use crate::security::audit_sinks::AuditSink;

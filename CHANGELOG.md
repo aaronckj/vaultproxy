@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.7.1] — 2026-05-25
+
+### Fixed (CI)
+
+- Three clippy errors surfaced on rust 1.95.0 (CI's stable channel)
+  that the older 1.94.x local toolchain didn't emit. All purely
+  stylistic; no runtime behaviour change.
+  - `src/proxy/transparent/h2_mitm.rs`: extracted `ParsedHttp1` type
+    alias for `parse_http1_response`'s return shape
+    (`clippy::type_complexity`).
+  - `src/security/audit_sinks.rs`: switched the `libc::syslog`
+    format-string ptr from `b"%s\0".as_ptr()` to the modern
+    `c"%s".as_ptr()` (`clippy::manual_c_str_literals`).
+  - `src/security/audit_sinks_http.rs`: reflowed a multi-line doc
+    list-item so the continuation line aligns at 4 spaces
+    (`clippy::doc_overindented_list_items`).
+- Root cause for the v1.4.4 → v1.7.0 Docker-publish failures was
+  the same three lints; they tripped CI on every release since
+  v1.4.4 but didn't affect crates.io publication (which doesn't run
+  clippy) so the released artefacts were and remain correct.
+
 ## [1.7.0] — 2026-05-25
 
 ### Added
