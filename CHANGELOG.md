@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.2] — 2026-05-25
+
+### Added
+
+- **SIEM-friendly audit sinks.** New `--audit-sink=<spec>` /
+  `AUDIT_SINK=<spec>` flag fans out every `AuditLog::log()` call to
+  one or more sinks alongside the on-disk JSON file. Spec is a
+  comma-separated list; recognised sinks: `stdout`, `stderr`,
+  `syslog` (Unix only). Unknown entries are logged at WARN and
+  skipped. Empty / unset = file-only (the v1.4.x behaviour).
+- New `src/security/audit_sinks.rs` module exposes `AuditSink` trait
+  for downstream extension (network sinks like OTLP / Datadog HEC /
+  Splunk HEC remain v1.5 candidates).
+- Tests: `tests/audit_sink_integration.rs` covers the fan-out
+  contract; `parse_spec` unit tests cover empty / unknown /
+  duplicate input handling.
+
 ## [1.4.1] — 2026-05-25
 
 ### Changed

@@ -74,6 +74,10 @@ pub struct AuditLog {
     /// periodic save path for the rest of the process lifetime.
     state: Mutex<AuditState>,
     path: String,
+    /// SIEM-friendly sinks. Empty = file-only (the v1.4.x behaviour).
+    /// Each `log()` fans out to every sink in order; sink errors are
+    /// logged at WARN and never block the live append path.
+    sinks: Vec<Box<dyn crate::security::audit_sinks::AuditSink>>,
 }
 
 struct AuditState {
@@ -104,7 +108,14 @@ impl AuditLog {
                 write_count: 0,
             }),
             path: path.to_string(),
+            sinks: Vec::new(),
         }
+    }
+
+    /// Replace the SIEM sink list. main.rs calls this once at startup
+    /// after parsing `--audit-sink`. Existing sinks are dropped.
+    pub fn set_sinks(&mut self, sinks: Vec<Box<dyn crate::security::audit_sinks::AuditSink>>) {
+        self.sinks = sinks;
     }
 
     /// Acquire the state lock, recovering from poisoning so a panicked
@@ -125,6 +136,16 @@ impl AuditLog {
     /// appended to a JSONL archive at `<path>.archive` so transparent or
     /// high-frequency traffic does not lose audit history.
     pub fn log(&self, entry: AuditEntry) {
+        // Fan out to SIEM sinks first, using the original entry (before
+        // it's moved into the in-memory deque). Sinks are best-effort
+        // and synchronous — they MUST not block significant time.
+        // Empty sink list = no-op fast path.
+        if !self.sinks.is_empty() {
+            for sink in &self.sinks {
+                sink.emit(&entry);
+            }
+        }
+
         // Single-lock critical section: push, cap, bump counter, decide on
         // save. Gather a snapshot of entries if a save is due so `save_impl`
         // can run without re-acquiring the lock.

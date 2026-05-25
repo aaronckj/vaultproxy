@@ -214,6 +214,14 @@ struct Args {
     #[arg(long, env = "TRANSPARENT_MTLS_CLIENT_CA")]
     transparent_mtls_client_ca: Option<String>,
 
+    /// Comma-separated list of SIEM-friendly audit sinks to enable
+    /// alongside the on-disk audit log. Each `AuditLog::log()` call
+    /// fans out to every configured sink. Recognised: `stdout`,
+    /// `stderr`, `syslog`. Unknown entries are logged at WARN and
+    /// skipped. Empty / unset = file-only (the v1.4.x behaviour).
+    #[arg(long, env = "AUDIT_SINK", default_value = "")]
+    audit_sink: String,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1715,10 +1723,13 @@ async fn start_server(
             config_dir
         )),
     ));
-    let audit_log = Arc::new(security::audit_log::AuditLog::new(&format!(
-        "{}/audit-log.json",
-        config_dir
-    )));
+    let audit_log = {
+        let mut al = security::audit_log::AuditLog::new(&format!("{}/audit-log.json", config_dir));
+        if !args.audit_sink.is_empty() {
+            al.set_sinks(security::audit_sinks::parse_spec(&args.audit_sink));
+        }
+        Arc::new(al)
+    };
 
     // Build the HMAC-chained access log up front so both the local credential
     // socket and the daemon-side /rotate handler share the same in-process
