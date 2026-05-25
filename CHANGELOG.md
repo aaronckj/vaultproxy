@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.9.0] — 2026-05-25
+
+### Added
+
+- **Cross-protocol HTTP/2 upstream for HTTP/1.1 agents.** v1.8.0
+  added upstream h2 only when the agent itself spoke h2. v1.9.0
+  closes the matrix: the http/1.1 MITM path now also tries h2
+  against the upstream first (via the same `h2_upstream::try_h2`
+  helper). When the upstream picks h2, the parsed response is
+  re-serialised back to http/1.1 wire bytes
+  (`h2_upstream::serialise_as_http1`) for the agent. When the
+  upstream picks http/1.1, the path falls back to the existing
+  http/1.1 forwarder unchanged.
+- New `h2_upstream::serialise_as_http1(status, headers, body)`
+  helper: produces a complete HTTP/1.1 response with a
+  recomputed `Content-Length`, `Connection: close`, and the
+  connection-specific h2-forbidden headers dropped.
+
+### Tests
+
+- `tests/transparent_cross_protocol_h2_upstream.rs` drives a
+  vanilla reqwest http/1.1 agent through the proxy against an
+  h2c upstream, asserts the upstream sees the vault-injected
+  Bearer (not the agent's smuggled one) and the agent gets the
+  body back as a normal http/1.1 response.
+- All four agent↔upstream wire combinations now have E2E coverage:
+  http/1.1 ↔ http/1.1 (v1.1.0), h2 ↔ http/1.1 (v1.7.0),
+  h2 ↔ h2 (v1.8.0), http/1.1 ↔ h2 (v1.9.0).
+
+### Limitations
+
+- Still no upstream h2 connection pool — every request opens a
+  fresh h2 session to the upstream. Tracked as v1.10 "HTTP/2
+  upstream pool".
+
 ## [1.8.0] — 2026-05-25
 
 ### Added

@@ -26,6 +26,50 @@ use crate::proxy::transparent::mitm::HttpRequest;
 /// Parsed h2 response shape: (status, headers, body).
 pub type ParsedH2Response = (u16, Vec<(String, String)>, Bytes);
 
+/// Serialise a parsed h2 response into raw HTTP/1.1 wire bytes for the
+/// http/1.1 MITM path (agent speaks HTTP/1.1; upstream spoke h2). The
+/// status line uses a fixed reason phrase ("OK" for 2xx, "Error"
+/// otherwise) since h2 doesn't carry one. `Content-Length` is recomputed
+/// from `body`. Connection-specific h2-forbidden headers
+/// (Connection / Keep-Alive / Transfer-Encoding / Proxy-Connection /
+/// Upgrade) are dropped; h2 wouldn't carry them anyway.
+pub fn serialise_as_http1(status: u16, headers: &[(String, String)], body: &Bytes) -> Bytes {
+    let reason = if (200..300).contains(&status) {
+        "OK"
+    } else if (300..400).contains(&status) {
+        "Redirect"
+    } else {
+        "Error"
+    };
+    let mut buf: Vec<u8> = Vec::with_capacity(body.len() + 512);
+    buf.extend_from_slice(format!("HTTP/1.1 {status} {reason}\r\n").as_bytes());
+    let mut wrote_content_length = false;
+    for (k, v) in headers {
+        let lk = k.to_ascii_lowercase();
+        if matches!(
+            lk.as_str(),
+            "connection"
+                | "keep-alive"
+                | "proxy-connection"
+                | "transfer-encoding"
+                | "upgrade"
+                | "content-length"
+        ) {
+            continue;
+        }
+        buf.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+        if lk == "content-length" {
+            wrote_content_length = true;
+        }
+    }
+    if !wrote_content_length {
+        buf.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    }
+    buf.extend_from_slice(b"Connection: close\r\n\r\n");
+    buf.extend_from_slice(body);
+    Bytes::from(buf)
+}
+
 /// Attempt to send `req` over h2 to `target`. Returns:
 ///   * `Ok(Some(parsed))` if the upstream negotiated h2 and responded.
 ///   * `Ok(None)` if the upstream picked http/1.1 on ALPN (caller

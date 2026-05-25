@@ -192,13 +192,19 @@ native h2 framing; http/1.1-only clients keep their existing path;
 clients that demand `h2` only now succeed (v1.4.1–v1.6.x rejected
 them with an ALPN-mismatch).
 
-Upstream-side h2 (v1.8.0+): the h2 MITM path now tries h2 against
-the upstream first (TLS + ALPN `["h2", "http/1.1"]`). When the
-upstream picks h2 the response stays on the h2 wire end-to-end —
-no http/1.1 re-frame. When the upstream picks http/1.1 the path
-falls back to the existing http/1.1 forwarder and re-frames as
-before. The http/1.1 MITM path (agent speaks HTTP/1.1) still always
-forwards to the upstream over http/1.1.
+Upstream-side h2 (v1.8.0+): the h2 MITM path tries h2 against the
+upstream first (TLS + ALPN `["h2", "http/1.1"]`). When the upstream
+picks h2 the response stays on the h2 wire end-to-end — no http/1.1
+re-frame. When the upstream picks http/1.1 the path falls back to
+the existing http/1.1 forwarder.
+
+Cross-protocol upstream h2 for http/1.1 agents (v1.9.0+): the
+http/1.1 MITM path now tries h2 against the upstream too. On
+success the parsed h2 response is re-serialised back to http/1.1
+wire bytes for the agent; on failure (or upstream picking http/1.1)
+the existing http/1.1 forwarder runs. All four agent↔upstream wire
+combinations work — http/1.1↔http/1.1, h2↔http/1.1, h2↔h2,
+http/1.1↔h2.
 
 Limitations: no upstream h2 connection pool yet — every agent stream
 opens its own h2 session to the upstream. A pool keyed by

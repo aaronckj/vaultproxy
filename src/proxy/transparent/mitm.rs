@@ -160,9 +160,24 @@ where
         _ => unreachable!("mitm::run only called for HostInject / Placeholder"),
     };
 
-    // 5. Forward to upstream over real TLS.
+    // 5. Forward to upstream. v1.9.0+: try h2 first; on Ok(None) the
+    //    upstream picked http/1.1 on ALPN so fall back to the existing
+    //    http/1.1 forwarder. The h2 parsed response is serialised back
+    //    to http/1.1 wire bytes so downstream sanitisation + the agent
+    //    write path stay unchanged (agent itself is on http/1.1 here).
     let bytes_out = injected.body.len() as u64;
-    let response = forward_to_upstream(&target, injected).await?;
+    let response = match crate::proxy::transparent::h2_upstream::try_h2(&target, injected.clone())
+        .await
+    {
+        Ok(Some((status, headers, body))) => {
+            crate::proxy::transparent::h2_upstream::serialise_as_http1(status, &headers, &body)
+        }
+        Ok(None) => forward_to_upstream(&target, injected).await?,
+        Err(e) => {
+            tracing::warn!(host = %target, error = %e, "h2 upstream attempt failed; falling back to http/1.1");
+            forward_to_upstream(&target, injected).await?
+        }
+    };
     // Optional response sanitisation. Off by default. Operators flip on
     // via --transparent-sanitize-responses / TRANSPARENT_SANITIZE_RESPONSES.
     let response = if state.transparent_sanitize_responses {

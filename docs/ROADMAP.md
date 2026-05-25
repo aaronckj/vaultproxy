@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.8.0
+## Shipped through v1.9.0
 
 | ID | Item | Version |
 |---|---|---|
@@ -16,6 +16,7 @@
 | HTTP/2 ALPN | MITM leaf cert pins ALPN to `http/1.1` (h2-capable clients downgrade; h2-only clients fail with ALPN mismatch) | v1.4.1 |
 | HTTP/2 native | Native h2 MITM path via `h2_mitm::run_h2`. Agent-side native h2 framing; upstream-side still HTTP/1.1 (re-framed on the way back). ALPN advertises `["h2", "http/1.1"]`. | v1.7.0 |
 | HTTP/2 upstream | Native h2 to the upstream too (`h2_upstream::try_h2`). End-to-end h2 when both sides speak it; falls back to http/1.1 on upstream ALPN miss. | v1.8.0 |
+| HTTP/2 cross-protocol | Upstream h2 reachable from http/1.1 agents too (`h2_upstream::serialise_as_http1` re-serialises the parsed h2 response). | v1.9.0 |
 | SIEM stdout/syslog | `--audit-sink=<stdout\|stderr\|syslog>` fans out the audit log to SIEM-friendly sinks | v1.4.2 |
 | SIEM network | `--audit-sink=<otlp\|datadog\|splunk>` HTTP-based forwarders (batched, env-configured) | v1.4.4 |
 | G3 RT-writeback | OAuth refresh-token vault writeback via `oauth_writeback = true` on `oauth_refresh` services. Per-`vault_item` mutex serialises rotations. | v1.5.0 |
@@ -25,12 +26,11 @@
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
 | Errors | Typed `TransparentErrorCode` envelope across all transparent error paths | v1.2.2 |
 
-## v1.9 candidates
+## v1.10 candidates
 
 | ID | Item | Notes |
 |---|---|---|
-| HTTP/2 upstream pool | **h2 client pool** | v1.8.0 opens a fresh h2 connection per agent stream. A `DashMap<(host, port), SendRequest<Bytes>>` would reuse upstream h2 sessions across many agent streams. Needs careful eviction on RST_STREAM / GOAWAY. |
-| HTTP/2 cross-protocol | **agent http/1.1 ↔ upstream h2** | v1.8.0 only enables upstream h2 when the agent itself speaks h2. Adding upstream h2 for the http/1.1 MITM path needs a separate h2-response → http/1.1-response converter. |
+| HTTP/2 upstream pool | **h2 client pool** | Every request still opens a fresh h2 connection to the upstream. A `DashMap<(host, port), SendRequest<Bytes>>` would reuse upstream h2 sessions across many agent requests. Needs careful eviction on RST_STREAM / GOAWAY. |
 | HTTP/2 trailers / push | h2 trailers + server push on both sides. Rare; defer until a real workload asks. |
 
 ## v1.1 candidates (deferred or superseded)
