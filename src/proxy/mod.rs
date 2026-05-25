@@ -296,6 +296,12 @@ pub struct AppState {
             Option<Arc<tokio::sync::RwLock<Vec<crate::proxy::registry::TransparentPlaceholder>>>>,
         >,
     >,
+
+    /// Run upstream HTTP response bodies through the prompt-injection
+    /// sanitiser before returning them to the agent. Off by default;
+    /// adds a small per-request CPU cost. Set via `--transparent-sanitize-responses`
+    /// or `TRANSPARENT_SANITIZE_RESPONSES=1`.
+    pub transparent_sanitize_responses: bool,
 }
 
 /// Configuration for the SMB mount helper. Populated from CLI flags
@@ -1683,6 +1689,7 @@ impl AppState {
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "transparent")]
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_sanitize_responses: false,
         }
     }
 }
@@ -1939,6 +1946,7 @@ mod integration_tests {
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
             #[cfg(feature = "transparent")]
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_sanitize_responses: false,
         })
     }
 

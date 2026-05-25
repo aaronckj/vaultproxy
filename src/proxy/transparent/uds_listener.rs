@@ -88,31 +88,32 @@ pub async fn spawn_uds_listener(
                         );
                         continue;
                     }
-                    // From here, the per-accept body is identical to
-                    // the TCP listener. The handle_connection function
-                    // in super::mod.rs is private; replicating the
-                    // body would duplicate code, so we down-cast to
-                    // the same trait shape by funnelling through the
-                    // existing TCP handler via a memory pipe.
-                    //
-                    // For v1.3 simplicity: keep the UDS listener as a
-                    // build-only API surface (operators can opt in via
-                    // a follow-up CLI flag). The accept loop logs the
-                    // accepted peer uid but does NOT yet dispatch to
-                    // the MITM path — that wiring is a follow-up that
-                    // teases handle_connection into a pub(super) fn.
-                    let _ = (
-                        stream,
-                        state.clone(),
-                        cert_factory.clone(),
-                        tr_registry.clone(),
-                        placeholders.clone(),
-                        unregistered_policy,
-                    );
-                    warn!(
-                        "transparent UDS listener: accepted connection, but \
-                         dispatch path not wired in v1.3 — closing"
-                    );
+                    let state = state.clone();
+                    let cf = cert_factory.clone();
+                    let tr = tr_registry.clone();
+                    let ph_cell = placeholders.clone();
+                    let policy = unregistered_policy;
+                    let peer = format!("uds:uid={our_uid}");
+                    tokio::spawn(async move {
+                        let ph_snapshot = std::sync::Arc::new(ph_cell.read().await.clone());
+                        if let Err(e) = super::handle_connection(
+                            stream,
+                            peer.clone(),
+                            state,
+                            cf,
+                            tr,
+                            ph_snapshot,
+                            policy,
+                        )
+                        .await
+                        {
+                            warn!(
+                                peer = %peer,
+                                error = %e,
+                                "transparent UDS connection ended with error",
+                            );
+                        }
+                    });
                 }
                 Err(e) => {
                     error!(error = %e, "transparent UDS accept failed");

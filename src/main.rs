@@ -169,6 +169,22 @@ struct Args {
     )]
     transparent_unregistered_policy: String,
 
+    /// Run upstream HTTP response bodies through the same prompt-injection
+    /// sanitiser used elsewhere before returning them to the agent. Adds a
+    /// small per-request CPU cost; off by default. Skips chunked and non-
+    /// textual responses defensively.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_SANITIZE_RESPONSES", default_value_t = false)]
+    transparent_sanitize_responses: bool,
+
+    /// Optional Unix-domain-socket path for the transparent listener. When
+    /// set, vault-proxy ALSO listens on this socket and authenticates
+    /// callers via `SO_PEERCRED` (uid match). Empty / unset = TCP only.
+    /// Default suggestion: `$XDG_RUNTIME_DIR/vaultproxy-transparent.sock`.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_UDS", default_value = "")]
+    transparent_uds: String,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1833,6 +1849,10 @@ async fn start_server(
         },
         transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
         transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+        #[cfg(feature = "transparent")]
+        transparent_sanitize_responses: args.transparent_sanitize_responses,
+        #[cfg(not(feature = "transparent"))]
+        transparent_sanitize_responses: false,
     });
 
     // Spawn the transparent HTTPS_PROXY listener (Phase 1: passthrough only).
@@ -1881,11 +1901,29 @@ async fn start_server(
         // reserved for future use right now.
         let _ = crate::proxy::registry::TransparentMode::parse(&args.transparent_default_mode)
             .map_err(|e| anyhow::anyhow!("--transparent-default-mode: {e}"))?;
-        let (tr_cell, ph_cell) =
-            crate::proxy::transparent::spawn_listener_with_policy(addr, state.clone(), ca, policy)
-                .await?;
+        let (tr_cell, ph_cell) = crate::proxy::transparent::spawn_listener_with_policy(
+            addr,
+            state.clone(),
+            ca.clone(),
+            policy,
+        )
+        .await?;
         *state.transparent_registry.write().await = Some(tr_cell);
         *state.transparent_placeholders.write().await = Some(ph_cell);
+
+        // Optional UDS variant — shares the same CA + policy as the TCP
+        // listener. Operators expose it instead of (or in addition to)
+        // TCP for SO_PEERCRED-authenticated callers.
+        if !args.transparent_uds.is_empty() {
+            let uds_path = std::path::PathBuf::from(&args.transparent_uds);
+            crate::proxy::transparent::uds_listener::spawn_uds_listener(
+                uds_path,
+                state.clone(),
+                ca,
+                policy,
+            )
+            .await?;
+        }
     }
 
     // Build router with rate limiting on sensitive endpoints.
@@ -4049,6 +4087,7 @@ mod browser_rotate_guard_tests {
             smb: crate::proxy::SmbConfig::default(),
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_sanitize_responses: false,
         })
     }
 
@@ -4195,6 +4234,7 @@ mod browser_status_tests {
             smb: crate::proxy::SmbConfig::default(),
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+            transparent_sanitize_responses: false,
         })
     }
 

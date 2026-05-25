@@ -61,5 +61,6 @@ pub async fn stub_app_state() -> AppState {
         transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(feature = "transparent")]
         transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
+        transparent_sanitize_responses: false,
     }
 }

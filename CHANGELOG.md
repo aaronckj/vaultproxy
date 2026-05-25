@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.3.1] — 2026-05-25
+
+### Added
+
+- **Transparent UDS listener — dispatch wired.** `--transparent-uds <path>`
+  (env: `TRANSPARENT_UDS`) binds an additional listener on a Unix-domain
+  socket alongside the TCP listener. Authenticates callers via
+  `SO_PEERCRED` (uid match) and now routes accepted connections through
+  the shared `handle_connection` MITM path (the v1.2.5 scaffold closed
+  accepted streams without dispatching).
+- **`--transparent-sanitize-responses` CLI flag** (env:
+  `TRANSPARENT_SANITIZE_RESPONSES`) — promotes the v1.2.5
+  `VP_TRANSPARENT_SANITIZE_RESPONSES=1` env shim into a first-class
+  AppState-backed flag. Default off; flip on for response prompt-injection
+  scrubbing.
+- E2E coverage in `tests/transparent_uds_dispatch.rs` driving the UDS path
+  end-to-end (CONNECT + TLS over UDS + wiremock upstream).
+
+### Changed
+
+- `handle_connection` is now generic over the agent-side I/O type
+  (`AsyncRead + AsyncWrite + Unpin`) so the TCP and UDS listeners share
+  one implementation. `mitm::run` and `passthrough::tunnel_with_audit`
+  follow the same generalisation; upstream side is still TCP.
+- `peer` argument on `handle_connection` is now a `String` so non-TCP
+  peers (UDS uid stamp) can be passed in for logging.
+
+### Removed
+
+- `VP_TRANSPARENT_SANITIZE_RESPONSES` env shim. Use
+  `--transparent-sanitize-responses` / `TRANSPARENT_SANITIZE_RESPONSES`.
+
 ## [1.3.0] — 2026-05-25
 
 ### Added

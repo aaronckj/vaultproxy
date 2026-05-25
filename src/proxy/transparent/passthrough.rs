@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use std::time::{Duration, Instant};
-use tokio::io::{copy_bidirectional, AsyncWriteExt};
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::info;
@@ -29,11 +29,17 @@ pub async fn tunnel(agent: TcpStream, target: ConnectTarget) -> Result<()> {
 /// `audit_log` is supplied. Used by the transparent listener (Phase 7)
 /// so passthrough traffic is recorded with `trigger=transparent`,
 /// `transparent_mode="passthrough"`.
-pub async fn tunnel_with_audit(
-    mut agent: TcpStream,
+///
+/// Generic over the agent-side stream so the UDS listener variant can
+/// share this path with the TCP listener. Upstream is always TCP.
+pub async fn tunnel_with_audit<A>(
+    mut agent: A,
     target: ConnectTarget,
     audit_log: Option<std::sync::Arc<crate::security::audit_log::AuditLog>>,
-) -> Result<()> {
+) -> Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+{
     let start = Instant::now();
 
     // Connect upstream with 10s budget.

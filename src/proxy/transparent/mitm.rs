@@ -9,8 +9,7 @@ use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio_rustls::TlsAcceptor;
 use tracing::info;
 
@@ -29,8 +28,8 @@ pub struct HttpRequest {
 
 /// Run the MITM loop for one CONNECT request.
 #[allow(clippy::too_many_arguments)]
-pub async fn run(
-    mut agent_plaintext: TcpStream,
+pub async fn run<A>(
+    mut agent_plaintext: A,
     target: ConnectTarget,
     service: Arc<ServiceEntry>,
     cert_factory: Arc<CertFactory>,
@@ -39,7 +38,10 @@ pub async fn run(
     placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
     audit_log: Arc<crate::security::audit_log::AuditLog>,
     state: Arc<crate::proxy::AppState>,
-) -> Result<()> {
+) -> Result<()>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+{
     let start = Instant::now();
 
     // 1. Tell the agent the tunnel is open (BEFORE the leaf cert prep
@@ -111,16 +113,9 @@ pub async fn run(
     // 5. Forward to upstream over real TLS.
     let bytes_out = injected.body.len() as u64;
     let response = forward_to_upstream(&target, injected).await?;
-    // Optional response sanitisation. Off by default; opt in with
-    // VP_TRANSPARENT_SANITIZE_RESPONSES=1 so operators can A/B test
-    // before flipping on a default. Production wiring of the flag
-    // through AppState lands in a follow-up; the env switch lets
-    // us ship the path now without an irreversible default change.
-    let response = if std::env::var("VP_TRANSPARENT_SANITIZE_RESPONSES")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
+    // Optional response sanitisation. Off by default. Operators flip on
+    // via --transparent-sanitize-responses / TRANSPARENT_SANITIZE_RESPONSES.
+    let response = if state.transparent_sanitize_responses {
         maybe_sanitize_response(response)
     } else {
         response
@@ -343,7 +338,7 @@ async fn forward_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Bytes> 
         .clone()
         .try_into()
         .map_err(|e| anyhow::anyhow!("invalid server name '{}': {e}", target.host))?;
-    let tcp = TcpStream::connect((target.host.as_str(), target.port)).await?;
+    let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port)).await?;
     let mut tls = connector.connect(server_name, tcp).await?;
 
     let buf = serialize_request(&req, &target.host);
@@ -354,7 +349,7 @@ async fn forward_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Bytes> 
 }
 
 async fn forward_plaintext(target: &ConnectTarget, req: HttpRequest) -> Result<Bytes> {
-    let mut tcp = TcpStream::connect((target.host.as_str(), target.port)).await?;
+    let mut tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port)).await?;
     let buf = serialize_request(&req, &target.host);
     tcp.write_all(&buf).await?;
     let mut response = Vec::new();

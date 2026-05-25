@@ -110,18 +110,26 @@ pub async fn spawn_listener_with_policy(
                     let tr = tr_registry.clone();
                     let ph_cell = placeholders.clone();
                     let policy = unregistered_policy;
+                    let peer_str = peer.to_string();
                     tokio::spawn(async move {
                         // Snapshot the placeholder Vec under a short read
                         // lock so SIGHUP rebuilds can swap the list while
                         // in-flight requests work from their captured
                         // snapshot.
                         let ph_snapshot = Arc::new(ph_cell.read().await.clone());
-                        if let Err(e) =
-                            handle_connection(stream, peer, state, cf, tr, ph_snapshot, policy)
-                                .await
+                        if let Err(e) = handle_connection(
+                            stream,
+                            peer_str.clone(),
+                            state,
+                            cf,
+                            tr,
+                            ph_snapshot,
+                            policy,
+                        )
+                        .await
                         {
                             warn!(
-                                peer = %peer,
+                                peer = %peer_str,
                                 error = %e,
                                 "transparent connection ended with error",
                             );
@@ -174,15 +182,18 @@ pub async fn rebuild_from_state(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
-    peer: std::net::SocketAddr,
+pub(super) async fn handle_connection<S>(
+    mut stream: S,
+    peer: String,
     state: Arc<AppState>,
     cert_factory: Arc<cert_factory::CertFactory>,
     tr_registry: registry::TransparentRegistryCell,
     placeholders: Arc<Vec<crate::proxy::registry::TransparentPlaceholder>>,
     unregistered_policy: UnregisteredPolicy,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let target = match connect::read_connect_line(&mut stream).await {
         Ok(t) => t,
         Err(e) => {
