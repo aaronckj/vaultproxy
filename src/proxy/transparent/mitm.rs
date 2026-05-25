@@ -173,8 +173,13 @@ where
     )
     .await
     {
-        Ok(Some((status, headers, body))) => {
-            crate::proxy::transparent::h2_upstream::serialise_as_http1(status, &headers, &body)
+        Ok(Some((status, headers, body, trailers))) => {
+            crate::proxy::transparent::h2_upstream::serialise_as_http1(
+                status,
+                &headers,
+                &body,
+                trailers.as_deref(),
+            )
         }
         Ok(None) => forward_to_upstream(&target, injected).await?,
         Err(e) => {

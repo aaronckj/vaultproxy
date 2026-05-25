@@ -5,6 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.11.0] — 2026-05-25
+
+### Added
+
+- **HTTP/2 trailers pass-through.** gRPC carries its status in
+  trailers (`grpc-status` / `grpc-message`), so transparent gRPC
+  proxying needs them. The h2 MITM path now drains the upstream's
+  TRAILERS frame after the body, then re-emits it on the agent
+  stream via `SendStream::send_trailers`. End-of-stream flags on
+  the response HEADERS / body DATA frames are computed so the h2
+  framing is correct (`end_stream` on DATA = false when trailers
+  follow).
+- `h2_upstream::ParsedH2Response` gains a fourth tuple element:
+  `Option<Vec<(String, String)>>` for trailers. Callers that don't
+  speak h2 to the agent (the http/1.1 MITM path) get a startup
+  WARN when the upstream returns trailers — gRPC over plain
+  http/1.1 isn't supported and the trailers are dropped.
+
+### Tests
+
+- `tests/transparent_h2_trailers.rs` spins up an h2c upstream that
+  sends `{body: "grpc-body", trailers: {grpc-status: "0",
+  grpc-message: "OK"}}`; drives an h2 agent through the proxy;
+  asserts the agent receives both the body and the trailers
+  end-to-end.
+
+### Not implemented
+
+- **HTTP/2 server push** is intentionally not supported. Browsers
+  have removed it (Chrome 106+, Firefox 113+); it's effectively
+  dead in modern stacks.
+
 ## [1.10.0] — 2026-05-25
 
 ### Added

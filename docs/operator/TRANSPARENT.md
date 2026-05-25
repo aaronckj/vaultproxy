@@ -212,6 +212,13 @@ against the same upstream share one h2 connection (one frame
 multiplexer, one flow-control budget). Entries are evicted on send
 error so the next caller re-handshakes against a healthy upstream.
 
+HTTP/2 trailers (v1.11.0+): pass through end-to-end on the h2-↔-h2
+and h2-↔-h2-via-http/1.1-agent paths. gRPC works — `grpc-status`
+and `grpc-message` reach the agent. The http/1.1 MITM path drops
+trailers with a WARN; gRPC over plain HTTP/1.1 isn't a real
+protocol, so this is the right shape. Server push is intentionally
+unsupported — modern browsers have removed it.
+
 ## SIEM audit sinks (v1.4.2 sync, v1.4.4 network)
 
 `--audit-sink=<spec>` / `AUDIT_SINK=<spec>` fans out the audit log to

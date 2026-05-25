@@ -180,48 +180,50 @@ where
             // 4. Forward to upstream. Try h2 first (v1.8.0+); fall back
             //    to http/1.1 when the upstream picks http/1.1 on ALPN.
             let bytes_out = injected.body.len() as u64;
-            let (status, hdrs, body) = match crate::proxy::transparent::h2_upstream::try_h2_pooled(
-                &state,
-                &target,
-                injected.clone(),
-            )
-            .await
-            {
-                Ok(Some((s, h, b))) => (s, h, b.to_vec()),
-                Ok(None) => {
-                    // Upstream picked http/1.1; do the http/1.1 path.
-                    let response_bytes =
-                        match crate::proxy::transparent::mitm::forward_to_upstream_for_h2(
-                            &target, injected,
-                        )
-                        .await
-                        {
-                            Ok(b) => b,
-                            Err(e) => {
+            let (status, hdrs, body, trailers) =
+                match crate::proxy::transparent::h2_upstream::try_h2_pooled(
+                    &state,
+                    &target,
+                    injected.clone(),
+                )
+                .await
+                {
+                    Ok(Some((s, h, b, t))) => (s, h, b.to_vec(), t),
+                    Ok(None) => {
+                        // Upstream picked http/1.1; do the http/1.1 path.
+                        // No trailers when upstream itself is http/1.1.
+                        let response_bytes =
+                            match crate::proxy::transparent::mitm::forward_to_upstream_for_h2(
+                                &target, injected,
+                            )
+                            .await
+                            {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    warn!(
+                                        host = %target,
+                                        error = %e,
+                                        "h2 upstream http/1.1 forward failed",
+                                    );
+                                    return;
+                                }
+                            };
+                        match parse_http1_response(&response_bytes) {
+                            Some((s, h, b)) => (s, h, b, None),
+                            None => {
                                 warn!(
                                     host = %target,
-                                    error = %e,
-                                    "h2 upstream http/1.1 forward failed",
+                                    "h2 unable to parse upstream http/1.1 response",
                                 );
                                 return;
                             }
-                        };
-                    match parse_http1_response(&response_bytes) {
-                        Some(t) => t,
-                        None => {
-                            warn!(
-                                host = %target,
-                                "h2 unable to parse upstream http/1.1 response",
-                            );
-                            return;
                         }
                     }
-                }
-                Err(e) => {
-                    warn!(host = %target, error = %e, "h2 upstream forward failed");
-                    return;
-                }
-            };
+                    Err(e) => {
+                        warn!(host = %target, error = %e, "h2 upstream forward failed");
+                        return;
+                    }
+                };
 
             // 6. Build the h2 response. h2 forbids the connection-
             //    specific http/1.1 headers (Connection, Keep-Alive,
@@ -250,7 +252,12 @@ where
                 }
             };
 
-            let mut send = match respond.send_response(h2_resp, body.is_empty()) {
+            // end_of_stream is true only when there are NO body bytes
+            // AND NO trailers — otherwise we still need to send those
+            // frames after the HEADERS.
+            let has_trailers = trailers.as_ref().is_some_and(|t| !t.is_empty());
+            let end_of_stream = body.is_empty() && !has_trailers;
+            let mut send = match respond.send_response(h2_resp, end_of_stream) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(host = %target, error = %e, "h2 send_response failed");
@@ -258,9 +265,28 @@ where
                 }
             };
             if !body.is_empty() {
-                if let Err(e) = send.send_data(Bytes::from(body.clone()), true) {
+                // end_stream on DATA = true only if no trailers follow.
+                let body_end = !has_trailers;
+                if let Err(e) = send.send_data(Bytes::from(body.clone()), body_end) {
                     warn!(host = %target, error = %e, "h2 send_data failed");
                     return;
+                }
+            }
+            if let Some(tr_pairs) = trailers {
+                if !tr_pairs.is_empty() {
+                    let mut tr_map = http::HeaderMap::new();
+                    for (k, v) in &tr_pairs {
+                        if let (Ok(name), Ok(val)) = (
+                            http::HeaderName::from_bytes(k.as_bytes()),
+                            http::HeaderValue::from_str(v),
+                        ) {
+                            tr_map.insert(name, val);
+                        }
+                    }
+                    if let Err(e) = send.send_trailers(tr_map) {
+                        warn!(host = %target, error = %e, "h2 send_trailers failed");
+                        return;
+                    }
                 }
             }
 

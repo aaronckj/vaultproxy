@@ -24,8 +24,16 @@ use std::sync::Arc;
 use crate::proxy::transparent::connect::ConnectTarget;
 use crate::proxy::transparent::mitm::HttpRequest;
 
-/// Parsed h2 response shape: (status, headers, body).
-pub type ParsedH2Response = (u16, Vec<(String, String)>, Bytes);
+/// Parsed h2 response shape: (status, headers, body, trailers).
+/// `trailers` is `None` when the upstream sent no TRAILERS frame.
+/// gRPC clients put `grpc-status` / `grpc-message` here, so the
+/// trailer pass-through (v1.11.0+) is required for gRPC end-to-end.
+pub type ParsedH2Response = (
+    u16,
+    Vec<(String, String)>,
+    Bytes,
+    Option<Vec<(String, String)>>,
+);
 
 /// Serialise a parsed h2 response into raw HTTP/1.1 wire bytes for the
 /// http/1.1 MITM path (agent speaks HTTP/1.1; upstream spoke h2). The
@@ -34,7 +42,19 @@ pub type ParsedH2Response = (u16, Vec<(String, String)>, Bytes);
 /// from `body`. Connection-specific h2-forbidden headers
 /// (Connection / Keep-Alive / Transfer-Encoding / Proxy-Connection /
 /// Upgrade) are dropped; h2 wouldn't carry them anyway.
-pub fn serialise_as_http1(status: u16, headers: &[(String, String)], body: &Bytes) -> Bytes {
+pub fn serialise_as_http1(
+    status: u16,
+    headers: &[(String, String)],
+    body: &Bytes,
+    trailers: Option<&[(String, String)]>,
+) -> Bytes {
+    if trailers.is_some_and(|t| !t.is_empty()) {
+        tracing::warn!(
+            "h2-to-http/1.1 conversion: upstream returned trailers but the agent is on \
+             http/1.1; trailers dropped (gRPC over http/1.1 not supported by the http/1.1 \
+             MITM path).",
+        );
+    }
     let reason = if (200..300).contains(&status) {
         "OK"
     } else if (300..400).contains(&status) {
@@ -278,6 +298,23 @@ async fn send_request_on(
         let _ = body_stream.flow_control().release_capacity(c.len());
         body.extend_from_slice(&c);
     }
+    // Drain trailers if any. Returns None when no TRAILERS frame
+    // arrived; gRPC always sends them with grpc-status + grpc-message.
+    let trailers = match body_stream.trailers().await.context("h2 trailers")? {
+        Some(map) => {
+            let pairs: Vec<(String, String)> = map
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        v.to_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect();
+            Some(pairs)
+        }
+        None => None,
+    };
     headers.retain(|(k, _)| !k.starts_with(':'));
-    Ok((status, headers, Bytes::from(body)))
+    Ok((status, headers, Bytes::from(body), trailers))
 }

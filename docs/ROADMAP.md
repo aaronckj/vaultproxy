@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.10.0
+## Shipped through v1.11.0
 
 | ID | Item | Version |
 |---|---|---|
@@ -18,6 +18,7 @@
 | HTTP/2 upstream | Native h2 to the upstream too (`h2_upstream::try_h2`). End-to-end h2 when both sides speak it; falls back to http/1.1 on upstream ALPN miss. | v1.8.0 |
 | HTTP/2 cross-protocol | Upstream h2 reachable from http/1.1 agents too (`h2_upstream::serialise_as_http1` re-serialises the parsed h2 response). | v1.9.0 |
 | HTTP/2 upstream pool | `DashMap<(host, port), SendRequest<Bytes>>` reuses upstream h2 sessions across requests (`h2_upstream::try_h2_pooled`). | v1.10.0 |
+| HTTP/2 trailers | gRPC-shaped trailers pass through end-to-end on the h2 path (drained from the upstream `RecvStream::trailers`, re-emitted via `SendStream::send_trailers`). | v1.11.0 |
 | SIEM stdout/syslog | `--audit-sink=<stdout\|stderr\|syslog>` fans out the audit log to SIEM-friendly sinks | v1.4.2 |
 | SIEM network | `--audit-sink=<otlp\|datadog\|splunk>` HTTP-based forwarders (batched, env-configured) | v1.4.4 |
 | G3 RT-writeback | OAuth refresh-token vault writeback via `oauth_writeback = true` on `oauth_refresh` services. Per-`vault_item` mutex serialises rotations. | v1.5.0 |
@@ -27,11 +28,13 @@
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
 | Errors | Typed `TransparentErrorCode` envelope across all transparent error paths | v1.2.2 |
 
-## v1.11 candidates
+## Out of scope (declined as of v1.11.0)
 
-| ID | Item | Notes |
-|---|---|---|
-| HTTP/2 trailers / push | h2 trailers + server push on both sides. Rare; defer until a real workload asks. |
+- **HTTP/2 server push** — removed from Chrome 106+, Firefox 113+;
+  effectively dead in modern stacks. Won't implement.
+- **gRPC over HTTP/1.1** — gRPC requires h2. The http/1.1 MITM path
+  drops trailers with a WARN; clients that want gRPC need an h2
+  agent.
 
 ## v1.1 candidates (deferred or superseded)
 
