@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.3.1
+## Shipped through v1.3.2
 
 | ID | Item | Version |
 |---|---|---|
@@ -8,7 +8,8 @@
 | G1.1 | Default-on (`default = ["transparent"]`) + real vault decryption in `inject_host` | v1.2.0 |
 | G2 partial | SO_PEERCRED Unix-socket listener scaffold | v1.2.5 |
 | G2 dispatch | UDS listener wired through `handle_connection` (TLS MITM + passthrough on UDS) + `--transparent-uds` CLI flag | v1.3.1 |
-| G3 partial | OAuth 2.0 `client_credentials` auth pattern (token cache + 401 refresh, works in both `/proxy/{service}` and transparent host_inject) | v1.3.0 |
+| G3 client | OAuth 2.0 `client_credentials` auth pattern (token cache + 401 refresh, works in both `/proxy/{service}` and transparent host_inject) | v1.3.0 |
+| G3 refresh | OAuth 2.0 `refresh_token` auth pattern (long-lived RT in vault, short-lived access token cached; IdP-side RT rotation logged but not written back to vault) | v1.3.2 |
 | G4 | Response prompt-injection sanitisation (opt-in via `VP_TRANSPARENT_SANITIZE_RESPONSES=1`) | v1.2.5 |
 | G4 CLI | `--transparent-sanitize-responses` CLI flag (env shim removed) | v1.3.1 |
 | Wildcards | `*.host.com:port` patterns in `services.toml` for transparent_mode | v1.2.5 |
@@ -21,7 +22,7 @@
 | ID | Item | Notes |
 |---|---|---|
 | G2 mTLS | **mTLS listener** | Add optional client-cert auth for the TCP listener so it can be safely exposed beyond loopback. UDS variant already covers same-host process-isolation use cases. |
-| G3 refresh | **OAuth refresh-token flow** | `auth = "oauth_refresh"` — long-lived refresh token in the vault, short-lived access token cached. Refresh on access expiry / 401. |
+| G3 RT-rotation | **Vault writeback for rotated refresh tokens** | The `oauth_refresh` flow currently logs but discards IdP-rotated refresh tokens. For IdPs that mandatorily rotate, add a vault writeback path so the new RT becomes the next-restart truth. Needs careful concurrency design (two requests competing on rotation). |
 | HTTP/2 | **HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1. Modern API clients increasingly default to h2 over ALPN. Significant: needs hyper-style h2 framing or rustls ALPN downgrade fallback. |
 | SIEM | **Audit sinks** | `--audit-sink=stdout`, `--audit-sink=syslog`, OTLP / Datadog / Splunk forwarders for the audit log. Currently JSON-on-disk only. |
 

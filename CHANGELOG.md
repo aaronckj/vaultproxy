@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.3.2] — 2026-05-25
+
+### Added
+
+- **OAuth 2.0 refresh-token auth pattern** — new
+  `auth = "oauth_refresh"` in `services.toml`. Fields:
+  `token_url` (required), optional `key_field` (default `"username"`)
+  and `secret_field` (default empty — public OAuth clients omit
+  client_secret entirely), optional `refresh_token_field`
+  (default `"password"`), optional `scope`. The long-lived refresh
+  token lives in the vault; vault-proxy exchanges it for short-lived
+  access tokens, caches them per-`vault_item` until `expires_in − 60 s`,
+  and re-acquires on a `401` from the upstream. Token cache is shared
+  with `oauth_client_credentials` (`AppState.oauth_tokens`).
+- E2E coverage in `tests/transparent_host_inject_oauth_refresh.rs`
+  against wiremock-stubbed token + upstream endpoints.
+
+### Limitations
+
+- IdP-side refresh-token rotation is **logged but not persisted back to
+  the vault**. Operators using IdPs that mandatorily rotate refresh
+  tokens on every grant must rotate the vault item out-of-band.
+
 ## [1.3.1] — 2026-05-25
 
 ### Added

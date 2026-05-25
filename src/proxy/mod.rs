@@ -904,6 +904,51 @@ async fn apply_auth_and_send(
                 build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token);
             send_request(request).await
         }
+
+        // ------------------------------------------------------------------ //
+        // OAuth refresh-token                                                 //
+        // ------------------------------------------------------------------ //
+        AuthPattern::OAuthRefresh {
+            vault_item,
+            token_url,
+            client_id_field,
+            client_secret_field,
+            refresh_token_field,
+            scope,
+        } => {
+            let token = get_or_refresh_oauth_refresh_token(
+                state,
+                &vault_item,
+                &token_url,
+                &client_id_field,
+                &client_secret_field,
+                &refresh_token_field,
+                &scope,
+                false,
+            )
+            .await?;
+            let request =
+                build_request(state, service, ca_client.clone(), method.clone(), url, req)?
+                    .bearer_auth(&token);
+            let resp = send_request(request).await?;
+            if resp.status != 401 {
+                return Ok(resp);
+            }
+            let token = get_or_refresh_oauth_refresh_token(
+                state,
+                &vault_item,
+                &token_url,
+                &client_id_field,
+                &client_secret_field,
+                &refresh_token_field,
+                &scope,
+                true,
+            )
+            .await?;
+            let request =
+                build_request(state, service, ca_client, method, url, req)?.bearer_auth(&token);
+            send_request(request).await
+        }
     }
 }
 
@@ -1006,6 +1051,154 @@ pub(crate) async fn get_or_refresh_oauth_token(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("oauth response missing access_token: {}", body))?
         .to_string();
+    let ttl = body
+        .get("expires_in")
+        .and_then(Value::as_u64)
+        .map(Duration::from_secs)
+        .unwrap_or(OAUTH_DEFAULT_TTL);
+    let hard_expiry = Instant::now() + ttl.saturating_sub(OAUTH_REFRESH_MARGIN);
+
+    state
+        .oauth_tokens
+        .write()
+        .await
+        .insert(vault_item.to_string(), (access_token.clone(), hard_expiry));
+    Ok(access_token)
+}
+
+// -------------------------------------------------------------------------- //
+// OAuth refresh-token cache                                                    //
+// -------------------------------------------------------------------------- //
+
+/// OAuth refresh-token flow. Reads the long-lived refresh token from the
+/// vault, exchanges it for an access token, caches access token per
+/// vault_item until `expires_in − 60 s`.
+///
+/// Refresh-token rotation: when the IdP returns a new `refresh_token`
+/// in the response, the rotation is LOGGED at WARN level but NOT
+/// persisted back to the vault — vault writeback is intentionally out
+/// of scope for this helper. Operators using IdPs that mandatorily
+/// rotate refresh tokens on every grant must rotate the vault item
+/// out-of-band or switch the upstream to a non-rotating refresh-token
+/// grant if persistent rotation is needed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn get_or_refresh_oauth_refresh_token(
+    state: &AppState,
+    vault_item: &str,
+    token_url: &str,
+    client_id_field: &str,
+    client_secret_field: &str,
+    refresh_token_field: &str,
+    scope: &str,
+    force_refresh: bool,
+) -> anyhow::Result<String> {
+    if !force_refresh {
+        let cache = state.oauth_tokens.read().await;
+        if let Some((tok, expires_at)) = cache.get(vault_item) {
+            if Instant::now() < *expires_at {
+                return Ok(tok.clone());
+            }
+        }
+    }
+
+    // Test stub short-circuit: integration tests seed
+    // `<vault_item>:client_id` and `<vault_item>:refresh_token`
+    // (plus optionally `<vault_item>:client_secret`).
+    let (client_id, client_secret, refresh_token) = if let (Ok(id), Ok(rt)) = (
+        state
+            .vault
+            .test_item_password("vault-proxy", &format!("{vault_item}:client_id")),
+        state
+            .vault
+            .test_item_password("vault-proxy", &format!("{vault_item}:refresh_token")),
+    ) {
+        let secret = state
+            .vault
+            .test_item_password("vault-proxy", &format!("{vault_item}:client_secret"))
+            .unwrap_or_default();
+        (id, secret, rt)
+    } else {
+        let client_id_buf = if client_id_field == "username" {
+            state
+                .vault
+                .decrypt_username(vault_item)?
+                .ok_or_else(|| anyhow::anyhow!("vault item '{}' has no username", vault_item))?
+        } else {
+            state.vault.decrypt_field(vault_item, client_id_field)?
+        };
+        let refresh_buf = if refresh_token_field == "password" {
+            state.vault.decrypt_password(vault_item)?
+        } else {
+            state.vault.decrypt_field(vault_item, refresh_token_field)?
+        };
+        let client_id = std::str::from_utf8(&client_id_buf)
+            .map_err(|e| anyhow::anyhow!("client_id not utf-8: {}", e))?
+            .to_string();
+        let refresh_token = std::str::from_utf8(&refresh_buf)
+            .map_err(|e| anyhow::anyhow!("refresh_token not utf-8: {}", e))?
+            .to_string();
+        drop(client_id_buf);
+        drop(refresh_buf);
+
+        let client_secret = if client_secret_field.is_empty() {
+            String::new()
+        } else {
+            let buf = if client_secret_field == "password" {
+                state.vault.decrypt_password(vault_item)?
+            } else {
+                state.vault.decrypt_field(vault_item, client_secret_field)?
+            };
+            let s = std::str::from_utf8(&buf)
+                .map_err(|e| anyhow::anyhow!("client_secret not utf-8: {}", e))?
+                .to_string();
+            drop(buf);
+            s
+        };
+
+        (client_id, client_secret, refresh_token)
+    };
+
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &refresh_token),
+        ("client_id", &client_id),
+    ];
+    if !client_secret.is_empty() {
+        form.push(("client_secret", &client_secret));
+    }
+    if !scope.is_empty() {
+        form.push(("scope", scope));
+    }
+    let resp = state
+        .http
+        .post(token_url)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("oauth refresh request failed: {}", e))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("oauth refresh response not json: {}", e))?;
+    if !status.is_success() {
+        anyhow::bail!("oauth refresh endpoint returned {}: {}", status, body);
+    }
+    let access_token = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("oauth response missing access_token: {}", body))?
+        .to_string();
+    if let Some(new_rt) = body.get("refresh_token").and_then(Value::as_str) {
+        if new_rt != refresh_token {
+            tracing::warn!(
+                vault_item,
+                "OAuth IdP rotated the refresh token; vault-proxy does not write back to the \
+                 vault — the new refresh token will be discarded after process exit. Rotate \
+                 the vault item out-of-band."
+            );
+        }
+    }
     let ttl = body
         .get("expires_in")
         .and_then(Value::as_u64)

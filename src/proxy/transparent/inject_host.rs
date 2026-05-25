@@ -117,6 +117,29 @@ pub async fn inject(
             req.headers
                 .push(("Authorization".into(), format!("Bearer {token}")));
         }
+        AuthPattern::OAuthRefresh {
+            vault_item,
+            token_url,
+            client_id_field,
+            client_secret_field,
+            refresh_token_field,
+            scope,
+        } => {
+            let token = crate::proxy::get_or_refresh_oauth_refresh_token(
+                &state,
+                vault_item,
+                token_url,
+                client_id_field,
+                client_secret_field,
+                refresh_token_field,
+                scope,
+                false,
+            )
+            .await
+            .with_context(|| format!("oauth refresh for vault item '{vault_item}'"))?;
+            req.headers
+                .push(("Authorization".into(), format!("Bearer {token}")));
+        }
         other => {
             bail!(
                 "transparent host_inject does not support auth pattern {:?}; service '{}'",

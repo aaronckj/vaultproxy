@@ -82,6 +82,9 @@ struct ServiceConfig {
     /// OAuth client-credentials: optional `scope` value sent in the
     /// token request body. Empty / omitted = no scope.
     scope: Option<String>,
+    /// OAuth refresh-token: vault field holding the refresh token.
+    /// Default `"password"`.
+    refresh_token_field: Option<String>,
     #[serde(default)]
     insecure_tls: bool,
     /// Transparent HTTPS_PROXY mode for this service. Default = "off"
@@ -246,6 +249,35 @@ pub enum AuthPattern {
         client_secret_field: String,
         scope: String,
     },
+
+    /// OAuth 2.0 refresh-token flow. The long-lived refresh token lives in
+    /// the vault under `refresh_token_field` (default `"password"`).
+    /// vault-proxy POSTs the configured `token_url` with
+    /// `grant_type=refresh_token&refresh_token=…&client_id=…&client_secret=…`,
+    /// parses `access_token` + `expires_in` from the JSON response, caches
+    /// for `expires_in - 60s`, attaches as `Authorization: Bearer <token>`
+    /// on every request. Refresh on 401 from upstream.
+    ///
+    /// If the upstream rotates the refresh token (returns a new
+    /// `refresh_token` in the response), the rotation is LOGGED but NOT
+    /// persisted back to the vault — operators must rotate the vault item
+    /// out-of-band when the IdP issues a rotated token. Most IdPs allow
+    /// the original refresh token to keep working until explicit rotation.
+    ///
+    /// `vault_item`           — vault item holding the refresh token + creds.
+    /// `token_url`            — full URL of the token endpoint.
+    /// `client_id_field`      — vault field for client_id (default `"username"`).
+    /// `client_secret_field`  — vault field for client_secret (default empty; omits when blank).
+    /// `refresh_token_field`  — vault field for refresh_token (default `"password"`).
+    /// `scope`                — optional `scope` parameter; empty = no scope sent.
+    OAuthRefresh {
+        vault_item: String,
+        token_url: String,
+        client_id_field: String,
+        client_secret_field: String,
+        refresh_token_field: String,
+        scope: String,
+    },
 }
 
 impl AuthPattern {
@@ -282,6 +314,7 @@ impl AuthPattern {
             AuthPattern::Session { vault_item, .. } => vault_item,
             AuthPattern::UnifiDual { vault_item, .. } => vault_item,
             AuthPattern::OAuthClientCredentials { vault_item, .. } => vault_item,
+            AuthPattern::OAuthRefresh { vault_item, .. } => vault_item,
         }
     }
 }
@@ -1368,6 +1401,36 @@ impl ServiceRegistry {
                             .unwrap_or_else(|| "username".to_string()),
                         client_secret_field: svc
                             .secret_field
+                            .clone()
+                            .unwrap_or_else(|| "password".to_string()),
+                        scope: svc.scope.clone().unwrap_or_default(),
+                    }
+                }
+                "oauth_refresh" => {
+                    let token_url = match svc.token_url {
+                        Some(u) => u,
+                        None => {
+                            tracing::warn!(
+                                "service '{}': auth=oauth_refresh requires token_url — skipping",
+                                svc.name
+                            );
+                            continue;
+                        }
+                    };
+                    AuthPattern::OAuthRefresh {
+                        vault_item: svc.vault_item,
+                        token_url,
+                        client_id_field: svc
+                            .key_field
+                            .clone()
+                            .unwrap_or_else(|| "username".to_string()),
+                        // Empty = omit client_secret from the refresh request.
+                        // Many public OAuth providers (Google, GitHub) accept a
+                        // refresh-token grant without a client_secret when the
+                        // client is configured as "public".
+                        client_secret_field: svc.secret_field.clone().unwrap_or_default(),
+                        refresh_token_field: svc
+                            .refresh_token_field
                             .clone()
                             .unwrap_or_else(|| "password".to_string()),
                         scope: svc.scope.clone().unwrap_or_default(),
@@ -3058,6 +3121,96 @@ token_url = "https://example.com/oauth/token"
             }
             other => panic!("expected OAuthClientCredentials, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_oauth_refresh_round_trip() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "github_user"
+base_url = "https://api.github.com"
+auth = "oauth_refresh"
+vault_item = "vault-proxy - GitHub OAuth"
+token_url = "https://github.com/login/oauth/access_token"
+key_field = "client_id"
+secret_field = "client_secret"
+refresh_token_field = "refresh"
+scope = "repo"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("github_user").unwrap();
+        match &svc.auth {
+            AuthPattern::OAuthRefresh {
+                vault_item,
+                token_url,
+                client_id_field,
+                client_secret_field,
+                refresh_token_field,
+                scope,
+            } => {
+                assert_eq!(vault_item, "vault-proxy - GitHub OAuth");
+                assert_eq!(token_url, "https://github.com/login/oauth/access_token");
+                assert_eq!(client_id_field, "client_id");
+                assert_eq!(client_secret_field, "client_secret");
+                assert_eq!(refresh_token_field, "refresh");
+                assert_eq!(scope, "repo");
+            }
+            other => panic!("expected OAuthRefresh, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_oauth_refresh_defaults_omit_secret() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "google_pub"
+base_url = "https://www.googleapis.com"
+auth = "oauth_refresh"
+vault_item = "vault-proxy - Google OAuth"
+token_url = "https://oauth2.googleapis.com/token"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        let svc = registry.get("google_pub").unwrap();
+        match &svc.auth {
+            AuthPattern::OAuthRefresh {
+                client_id_field,
+                client_secret_field,
+                refresh_token_field,
+                scope,
+                ..
+            } => {
+                assert_eq!(client_id_field, "username");
+                assert!(
+                    client_secret_field.is_empty(),
+                    "default empty secret field — public clients should omit it"
+                );
+                assert_eq!(refresh_token_field, "password");
+                assert!(scope.is_empty());
+            }
+            other => panic!("expected OAuthRefresh, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_oauth_refresh_missing_token_url_skipped() {
+        let f = write_toml(
+            r#"
+[[service]]
+name = "broken_refresh"
+base_url = "https://api.example.com"
+auth = "oauth_refresh"
+vault_item = "vault-proxy - Broken OAuth"
+"#,
+        );
+        let registry = ServiceRegistry::from_toml_file(f.path());
+        assert!(
+            registry.get("broken_refresh").is_none(),
+            "service missing token_url must be skipped"
+        );
     }
 
     #[test]

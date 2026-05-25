@@ -166,6 +166,30 @@ login_include_username = false   # Duplicati's login API accepts only a password
 # # scope = "repo read:org"
 # # transparent_mode = "host_inject"
 
+# ── OAuth 2.0 refresh-token (v1.3.2+) ────────────────────────────────────────
+# Same shape as oauth_client_credentials, but the long-lived secret in the
+# vault is the *refresh token* and vault-proxy exchanges it for short-lived
+# access tokens via `grant_type=refresh_token`. `refresh_token_field`
+# nominates which Vaultwarden field holds the refresh token (default
+# "password"). Leave `secret_field` unset for public OAuth clients (Google,
+# GitHub, etc. accept refresh grants without a client_secret).
+#
+# IdP-side refresh-token rotation: logged but NOT persisted back to the
+# vault. Operators using IdPs that mandatorily rotate the refresh token on
+# every grant must rotate the vault item out-of-band.
+#
+# [[service]]
+# name = "google_drive"
+# base_url = "https://www.googleapis.com"
+# auth = "oauth_refresh"
+# vault_item = "vault-proxy - Google OAuth"
+# token_url = "https://oauth2.googleapis.com/token"
+# # key_field = "username"             # holds client_id
+# # secret_field = "client_secret"     # optional; omit for public clients
+# # refresh_token_field = "password"   # holds the long-lived refresh token
+# # scope = "https://www.googleapis.com/auth/drive.readonly"
+# # transparent_mode = "host_inject"
+
 # ── UniFi dual auth (API key first, session fallback) ───────────────────────
 [[service]]
 name = "unifi_home"
