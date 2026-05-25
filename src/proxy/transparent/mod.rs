@@ -21,6 +21,7 @@ pub mod init;
 pub mod inject_host;
 pub mod inject_placeholder;
 pub mod mitm;
+pub mod mtls_listener;
 pub mod passthrough;
 pub mod registry;
 pub mod uds_listener;

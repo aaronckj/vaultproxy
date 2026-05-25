@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.0] — 2026-05-25
+
+### Added
+
+- **Transparent mTLS-fronted listener.** New
+  `--transparent-mtls-listen <addr>` (env: `TRANSPARENT_MTLS_LISTEN`)
+  binds an additional listener that requires the agent to present a
+  client certificate signed by `--transparent-mtls-client-ca` and to
+  trust the server cert configured at `--transparent-mtls-server-cert`
+  / `--transparent-mtls-server-key`. Inside the outer TLS jacket, the
+  same plaintext CONNECT + per-host MITM flow runs as on the plain TCP
+  listener. Intended for exposing the transparent listener beyond
+  loopback (e.g. over Tailscale). Loopback TCP and UDS listeners
+  remain unaffected.
+- E2E coverage in `tests/transparent_mtls_listener.rs` issuing an
+  in-memory mTLS chain with rcgen, driving the full outer-mTLS + inner
+  MITM round-trip, and verifying that callers without a client cert
+  are rejected.
+
+### Security
+
+- Operators MUST treat the mTLS listener's server cert + key as if it
+  were the transparent CA key (`SECURITY.md` covers the latter). The
+  CA that signs client certs need not live on the proxy host once
+  client certs are issued.
+
 ## [1.3.2] — 2026-05-25
 
 ### Added

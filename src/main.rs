@@ -185,6 +185,35 @@ struct Args {
     #[arg(long, env = "TRANSPARENT_UDS", default_value = "")]
     transparent_uds: String,
 
+    /// Optional mTLS-fronted listener address for the transparent listener.
+    /// Agents must present a client cert signed by `--transparent-mtls-client-ca`
+    /// and trust the cert configured at `--transparent-mtls-server-cert`. Use
+    /// for exposing the transparent listener beyond loopback (e.g. over
+    /// Tailscale). All three mTLS flags must be set together. Empty / unset
+    /// = mTLS listener disabled.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_MTLS_LISTEN", default_value = "")]
+    transparent_mtls_listen: String,
+
+    /// Path to the PEM-encoded server certificate the transparent mTLS
+    /// listener presents to agents. Required when `--transparent-mtls-listen`
+    /// is set.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_MTLS_SERVER_CERT")]
+    transparent_mtls_server_cert: Option<String>,
+
+    /// Path to the PEM-encoded private key paired with
+    /// `--transparent-mtls-server-cert`. Must be mode 0600.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_MTLS_SERVER_KEY")]
+    transparent_mtls_server_key: Option<String>,
+
+    /// Path to the PEM-encoded CA bundle used to verify agent client
+    /// certificates. Required when `--transparent-mtls-listen` is set.
+    #[cfg(feature = "transparent")]
+    #[arg(long, env = "TRANSPARENT_MTLS_CLIENT_CA")]
+    transparent_mtls_client_ca: Option<String>,
+
     /// Bitwarden cloud account email (enables cloud sync when set).
     #[arg(long, env = "CLOUD_EMAIL")]
     cloud_email: Option<String>,
@@ -1919,7 +1948,57 @@ async fn start_server(
             crate::proxy::transparent::uds_listener::spawn_uds_listener(
                 uds_path,
                 state.clone(),
+                ca.clone(),
+                policy,
+            )
+            .await?;
+        }
+
+        // Optional mTLS variant for off-loopback exposure. Requires the
+        // server cert/key + the CA that signs client certs. The MITM CA
+        // is shared with the TCP listener (it signs the per-host leaf
+        // certs for upstream interception); the mTLS material is separate
+        // (outer jacket between agent and proxy).
+        if !args.transparent_mtls_listen.is_empty() {
+            let mtls_addr: std::net::SocketAddr =
+                args.transparent_mtls_listen.parse().map_err(|e| {
+                    anyhow::anyhow!(
+                        "--transparent-mtls-listen '{}' is not a valid addr: {e}",
+                        args.transparent_mtls_listen,
+                    )
+                })?;
+            let server_cert_path =
+                args.transparent_mtls_server_cert
+                    .as_deref()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                        "--transparent-mtls-listen set but --transparent-mtls-server-cert missing"
+                    )
+                    })?;
+            let server_key_path = args.transparent_mtls_server_key.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--transparent-mtls-listen set but --transparent-mtls-server-key missing"
+                )
+            })?;
+            let client_ca_path = args.transparent_mtls_client_ca.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--transparent-mtls-listen set but --transparent-mtls-client-ca missing"
+                )
+            })?;
+            use anyhow::Context as _;
+            let mtls = crate::proxy::transparent::mtls_listener::MtlsMaterial {
+                server_cert_pem: std::fs::read_to_string(server_cert_path)
+                    .with_context(|| format!("read {server_cert_path}"))?,
+                server_key_pem: std::fs::read_to_string(server_key_path)
+                    .with_context(|| format!("read {server_key_path}"))?,
+                client_ca_pem: std::fs::read_to_string(client_ca_path)
+                    .with_context(|| format!("read {client_ca_path}"))?,
+            };
+            crate::proxy::transparent::mtls_listener::spawn_mtls_listener(
+                mtls_addr,
+                state.clone(),
                 ca,
+                mtls,
                 policy,
             )
             .await?;
