@@ -1726,7 +1726,10 @@ async fn start_server(
     let audit_log = {
         let mut al = security::audit_log::AuditLog::new(&format!("{}/audit-log.json", config_dir));
         if !args.audit_sink.is_empty() {
-            al.set_sinks(security::audit_sinks::parse_spec(&args.audit_sink));
+            al.set_sinks(security::audit_sinks::parse_spec_with_http(
+                &args.audit_sink,
+                &http,
+            ));
         }
         Arc::new(al)
     };

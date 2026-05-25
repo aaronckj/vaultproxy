@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.4.4] — 2026-05-25
+
+### Added
+
+- **Network audit sinks: OTLP / Datadog Logs / Splunk HEC.** Extends
+  the v1.4.2 `AuditSink` trait with three HTTP-based forwarders:
+    - `--audit-sink=otlp` — POSTs to `OTLP_AUDIT_URL` with an OTLP
+      `LogsData` envelope. Optional `OTLP_AUDIT_HEADERS` carries
+      comma-separated `key=value` header pairs (typically the bearer
+      auth header).
+    - `--audit-sink=datadog` — POSTs to `DATADOG_AUDIT_URL` with a
+      JSON array of `{service, ddsource, message, timestamp}` records.
+      Auth via `DATADOG_AUDIT_API_KEY` (DD-API-KEY header).
+    - `--audit-sink=splunk` — POSTs to `SPLUNK_AUDIT_URL` with
+      newline-delimited `{"event": <entry>, "sourcetype": "vaultproxy:audit"}`
+      records. Auth via `SPLUNK_AUDIT_TOKEN` (Splunk HEC bearer).
+- All three share a bounded-mpsc + background-flusher design: each
+  `emit()` enqueues non-blockingly, the flusher batches up to 50
+  entries or 5s (whichever fires first), and a failed POST drops the
+  batch with a WARN. Loss-intolerant operators keep the on-disk file
+  (it always fans out alongside).
+- Secrets live in env vars, not in `--audit-sink` argv — keeps tokens
+  out of `/proc/<pid>/cmdline`.
+
+### Tests
+
+- New `tests/audit_sink_http_integration.rs` E2Es all three transports
+  against wiremock, verifying batching + headers + body shape.
+
 ## [1.4.3] — 2026-05-25
 
 ### Docs

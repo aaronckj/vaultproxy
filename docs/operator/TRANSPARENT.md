@@ -184,22 +184,32 @@ error. Both outcomes are safer than the pre-v1.4.1 behaviour where
 silent stream corruption was possible. Native HTTP/2 framing is
 tracked in `docs/ROADMAP.md`.
 
-## SIEM audit sinks (v1.4.2+)
+## SIEM audit sinks (v1.4.2 sync, v1.4.4 network)
 
 `--audit-sink=<spec>` / `AUDIT_SINK=<spec>` fans out the audit log to
 SIEM-friendly sinks in addition to the on-disk JSON file. Spec is a
-comma-separated list; recognised: `stdout`, `stderr`, `syslog` (Unix
-only). Unknown entries are logged at WARN and skipped. Empty / unset
-= file-only (the v1.4.x behaviour).
+comma-separated list of sink names. Unknown entries are logged at
+WARN and skipped. Empty / unset = file-only (the v1.4.x behaviour).
 
-Each emitted line is a single-line JSON object — the same `AuditEntry`
-shape that the on-disk file uses, so any SIEM that parses JSON can
-ingest the stream verbatim.
+Synchronous sinks (v1.4.2):
+- `stdout` — newline-delimited JSON to stdout; pair with `systemd StandardOutput=journal`
+- `stderr` — same to stderr
+- `syslog` — Unix syslog at LOG_INFO with ident `vaultproxy`
+
+Network sinks (v1.4.4) — batched (50 entries or 5 s) and best-effort.
+Secrets live in env vars, not argv:
+
+| Sink | URL env | Auth env | Wire shape |
+|---|---|---|---|
+| `otlp` | `OTLP_AUDIT_URL` (required) | `OTLP_AUDIT_HEADERS` (optional, comma-separated `key=value`) | OTLP HTTP `LogsData` envelope |
+| `datadog` | `DATADOG_AUDIT_URL` | `DATADOG_AUDIT_API_KEY` (DD-API-KEY header) | JSON array of `{service, ddsource, message, timestamp}` |
+| `splunk` | `SPLUNK_AUDIT_URL` | `SPLUNK_AUDIT_TOKEN` (Splunk HEC bearer) | Newline-delimited `{"event": …, "sourcetype": "vaultproxy:audit"}` |
 
 Examples:
 - `--audit-sink=stdout` — pair with `systemd StandardOutput=journal`
 - `--audit-sink=syslog` — local rsyslog / journald
-- `--audit-sink=stdout,syslog` — both at once
+- `--audit-sink=stdout,syslog,splunk` — three at once
+- `--audit-sink=datadog` plus `DATADOG_AUDIT_URL=https://http-intake.logs.datadoghq.com/api/v2/logs` + `DATADOG_AUDIT_API_KEY=<key>` in env
 
 ## CLI reference
 

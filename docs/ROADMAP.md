@@ -1,6 +1,6 @@
 # Roadmap
 
-## Shipped through v1.4.2
+## Shipped through v1.4.4
 
 | ID | Item | Version |
 |---|---|---|
@@ -15,6 +15,7 @@
 | G4 CLI | `--transparent-sanitize-responses` CLI flag (env shim removed) | v1.3.1 |
 | HTTP/2 ALPN | MITM leaf cert pins ALPN to `http/1.1` (h2-capable clients downgrade; h2-only clients fail with ALPN mismatch) | v1.4.1 |
 | SIEM stdout/syslog | `--audit-sink=<stdout\|stderr\|syslog>` fans out the audit log to SIEM-friendly sinks | v1.4.2 |
+| SIEM network | `--audit-sink=<otlp\|datadog\|splunk>` HTTP-based forwarders (batched, env-configured) | v1.4.4 |
 | Wildcards | `*.host.com:port` patterns in `services.toml` for transparent_mode | v1.2.5 |
 | SIGHUP | Rebuild of transparent registry + placeholders without restart | v1.2.1 |
 | Audit | `<path>.archive` JSONL eviction trail | v1.2.3 |
@@ -26,7 +27,6 @@
 |---|---|---|
 | G3 RT-rotation | **Vault writeback for rotated refresh tokens** | The `oauth_refresh` flow currently logs but discards IdP-rotated refresh tokens. For IdPs that mandatorily rotate, add a vault writeback path so the new RT becomes the next-restart truth. Needs careful concurrency design (two requests competing on rotation). |
 | HTTP/2 native | **Native HTTP/2 transparent support** | Current MITM only speaks HTTP/1.1; v1.4.1 forces clients to downgrade via ALPN. Operators that need native h2 to upstreams will need hyper-style h2 framing (multi-day work). |
-| SIEM network | **Network audit sinks** | OTLP / Datadog HEC / Splunk HEC forwarders building on the `AuditSink` trait introduced in v1.4.2. |
 
 ## v1.1 candidates (deferred or superseded)
 

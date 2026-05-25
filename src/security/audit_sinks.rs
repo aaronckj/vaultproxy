@@ -29,6 +29,66 @@ pub trait AuditSink: Send + Sync {
 /// Unknown sink names are logged at WARN and skipped (rather than
 /// aborting startup) so a typo in one entry doesn't take the whole
 /// audit pipeline offline.
+///
+/// Network sinks (`otlp`, `datadog`, `splunk`) require an `http`
+/// client argument since they spawn a background flusher that POSTs
+/// batches over HTTP. Caller supplies the shared `reqwest::Client`
+/// so connection pools are reused across sinks. The non-network
+/// `parse_spec` shim below stays for tests and any code path that
+/// only needs stdout/stderr/syslog.
+pub fn parse_spec_with_http(spec: &str, http: &reqwest::Client) -> Vec<Box<dyn AuditSink>> {
+    use crate::security::audit_sinks_http::{HttpSink, HttpTransport};
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut sinks: Vec<Box<dyn AuditSink>> = Vec::new();
+    for raw in spec.split(',') {
+        let name = raw.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        match name.as_str() {
+            "stdout" => sinks.push(Box::new(StdoutSink)),
+            "stderr" => sinks.push(Box::new(StderrSink)),
+            "syslog" => match SyslogSink::open() {
+                Ok(s) => sinks.push(Box::new(s)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "audit sink 'syslog' unavailable on this platform — skipping",
+                    );
+                }
+            },
+            "otlp" => match HttpTransport::from_env_otlp() {
+                Ok(t) => sinks.push(Box::new(HttpSink::spawn(t, http.clone()))),
+                Err(e) => tracing::warn!(error = %e, "audit sink 'otlp' skipped"),
+            },
+            "datadog" => match HttpTransport::from_env_datadog() {
+                Ok(t) => sinks.push(Box::new(HttpSink::spawn(t, http.clone()))),
+                Err(e) => tracing::warn!(error = %e, "audit sink 'datadog' skipped"),
+            },
+            "splunk" => match HttpTransport::from_env_splunk() {
+                Ok(t) => sinks.push(Box::new(HttpSink::spawn(t, http.clone()))),
+                Err(e) => tracing::warn!(error = %e, "audit sink 'splunk' skipped"),
+            },
+            other => {
+                tracing::warn!(
+                    sink = %other,
+                    "unknown audit sink — valid: stdout | stderr | syslog | otlp | datadog | splunk",
+                );
+            }
+        }
+    }
+    sinks
+}
+
+/// Shim that constructs only the synchronous sinks (no HTTP client
+/// required). Used by tests and by paths that don't want to pay for
+/// the network-sink machinery. Network sink names log a WARN and are
+/// skipped.
+#[allow(dead_code)]
 pub fn parse_spec(spec: &str) -> Vec<Box<dyn AuditSink>> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut sinks: Vec<Box<dyn AuditSink>> = Vec::new();
@@ -52,10 +112,16 @@ pub fn parse_spec(spec: &str) -> Vec<Box<dyn AuditSink>> {
                     );
                 }
             },
+            "otlp" | "datadog" | "splunk" => {
+                tracing::warn!(
+                    sink = %name,
+                    "network audit sink requested without an http client — use parse_spec_with_http",
+                );
+            }
             other => {
                 tracing::warn!(
                     sink = %other,
-                    "unknown audit sink — valid: stdout | stderr | syslog",
+                    "unknown audit sink — valid: stdout | stderr | syslog | otlp | datadog | splunk",
                 );
             }
         }
