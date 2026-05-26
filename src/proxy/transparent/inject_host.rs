@@ -24,6 +24,21 @@ const FORBIDDEN_HEADERS: &[&str] = &[
     "x-plex-token",
     "cookie",
     "proxy-authorization",
+    // h2 pseudo-headers — h2 carries these out-of-band, but a malicious
+    // or confused agent could try to smuggle them inline. Stripping is
+    // defence-in-depth: the h2 library normally rejects pseudo-headers
+    // outside the pseudo-header block, but the http/1.1 → injector
+    // path doesn't validate, so we strip here.
+    ":authority",
+    ":scheme",
+    ":method",
+    ":path",
+    ":status",
+    // Trailer-related fields that an agent has no business setting on a
+    // request — if the upstream sends trailers we'll surface them
+    // separately on the h2 path.
+    "trailer",
+    "te",
 ];
 
 /// Inject vault credentials into the agent's request based on
@@ -188,5 +203,27 @@ mod tests {
         strip_forbidden_headers(&mut h);
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].0, "Accept");
+    }
+
+    #[test]
+    fn h2_pseudo_headers_and_trailer_fields_stripped() {
+        // Defence-in-depth (v1.11.1+): a confused or hostile agent that
+        // smuggles h2 pseudo-headers or trailer-control headers inline on
+        // an http/1.1 request must not be able to influence routing or
+        // upstream framing.
+        let mut h = vec![
+            (":authority".into(), "evil.example".into()),
+            (":scheme".into(), "https".into()),
+            (":method".into(), "DELETE".into()),
+            (":path".into(), "/admin".into()),
+            (":status".into(), "200".into()),
+            ("trailer".into(), "X-Sneaky".into()),
+            ("te".into(), "trailers".into()),
+            ("Content-Type".into(), "application/json".into()),
+        ];
+        strip_forbidden_headers(&mut h);
+        // Only Content-Type survives.
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].0, "Content-Type");
     }
 }

@@ -2002,6 +2002,20 @@ async fn start_server(
                 )
             })?;
             use anyhow::Context as _;
+            use std::os::unix::fs::PermissionsExt;
+            // mTLS server key is a Tier-1 secret (see SECURITY.md): a leak
+            // lets an attacker impersonate the proxy to every agent that
+            // trusts the corresponding server cert. Enforce 0600 the same
+            // way TransparentCa::load_byo does for the MITM CA key —
+            // refuse to start rather than load a world-readable key.
+            let key_meta = std::fs::metadata(server_key_path)
+                .with_context(|| format!("stat {server_key_path}"))?;
+            let mode = key_meta.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                anyhow::bail!(
+                    "--transparent-mtls-server-key {server_key_path} must be mode 0600, found {mode:o}",
+                );
+            }
             let mtls = crate::proxy::transparent::mtls_listener::MtlsMaterial {
                 server_cert_pem: std::fs::read_to_string(server_cert_path)
                     .with_context(|| format!("read {server_cert_path}"))?,

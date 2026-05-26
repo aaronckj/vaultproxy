@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.11.1] — 2026-05-26
+
+### Security
+
+- **mTLS server key 0600 enforcement.** `--transparent-mtls-server-key`
+  is now mode-checked at startup, mirroring `TransparentCa::load_byo`'s
+  treatment of the MITM CA key. A world-readable mTLS server key now
+  refuses to start instead of silently loading. The mTLS server key is
+  a Tier-1 secret (SECURITY.md) — a leak lets an attacker impersonate
+  the proxy to every agent that trusts the corresponding server cert.
+- **HTTP/2 trailer sanitisation.** The h2 MITM path now drops
+  pseudo-header names (`:`-prefixed) and connection-specific names
+  (`connection`, `keep-alive`, `proxy-connection`, `transfer-encoding`,
+  `upgrade`, `te`, `trailer`, `host`, `content-length`) from upstream-
+  supplied trailers before re-emitting on the agent stream. h2
+  enforces this on send, but failing there would abort the stream
+  after we'd already sent the response body. Drop quietly instead.
+- **`FORBIDDEN_HEADERS` extended** with h2 pseudo-headers (`:authority`,
+  `:scheme`, `:method`, `:path`, `:status`) and trailer-control fields
+  (`trailer`, `te`). Defence-in-depth against a confused or hostile
+  agent smuggling these inline on an http/1.1 request.
+
+### Tests
+
+- New `h2_pseudo_headers_and_trailer_fields_stripped` covers the
+  extended `FORBIDDEN_HEADERS` list.
+
+### Source
+
+- Findings from a v1.2.5..v1.11.0 security audit (cavecrew-reviewer
+  subagent). Two additional 🟡 findings (seed_test_password
+  ungating, oauth-writeback cache-write ordering) inspected and
+  determined to be either defence-in-depth deferrable or already
+  correct as implemented. No 🔴 critical findings.
+
 ## [1.11.0] — 2026-05-25
 
 ### Added

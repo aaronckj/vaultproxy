@@ -276,6 +276,30 @@ where
                 if !tr_pairs.is_empty() {
                     let mut tr_map = http::HeaderMap::new();
                     for (k, v) in &tr_pairs {
+                        // Defence-in-depth: a malicious or buggy upstream
+                        // could send pseudo-header names (`:`-prefixed) or
+                        // h2-forbidden connection-specific names inside
+                        // TRAILERS. RFC 9113 §8.1 / §8.2 forbid both;
+                        // h2-the-crate enforces this on send, but failing
+                        // here would abort the stream after we've already
+                        // sent the response body. Drop them quietly.
+                        let lk = k.to_ascii_lowercase();
+                        if lk.starts_with(':')
+                            || matches!(
+                                lk.as_str(),
+                                "connection"
+                                    | "keep-alive"
+                                    | "proxy-connection"
+                                    | "transfer-encoding"
+                                    | "upgrade"
+                                    | "te"
+                                    | "trailer"
+                                    | "host"
+                                    | "content-length"
+                            )
+                        {
+                            continue;
+                        }
                         if let (Ok(name), Ok(val)) = (
                             http::HeaderName::from_bytes(k.as_bytes()),
                             http::HeaderValue::from_str(v),
@@ -283,9 +307,11 @@ where
                             tr_map.insert(name, val);
                         }
                     }
-                    if let Err(e) = send.send_trailers(tr_map) {
-                        warn!(host = %target, error = %e, "h2 send_trailers failed");
-                        return;
+                    if !tr_map.is_empty() {
+                        if let Err(e) = send.send_trailers(tr_map) {
+                            warn!(host = %target, error = %e, "h2 send_trailers failed");
+                            return;
+                        }
                     }
                 }
             }
