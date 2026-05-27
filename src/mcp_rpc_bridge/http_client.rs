@@ -65,6 +65,9 @@ impl HttpClient {
             .unwrap_or("")
             .to_lowercase();
         let body = resp.text().await.context("read upstream body")?;
+        if body.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
         if ct.contains("text/event-stream") {
             // SSE: each event is one or more lines, terminated by a
             // blank line. `data:` lines carry the payload. For a

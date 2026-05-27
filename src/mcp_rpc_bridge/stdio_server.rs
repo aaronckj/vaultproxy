@@ -65,6 +65,16 @@ where
                 continue;
             }
         };
+        // JSON-RPC notifications have no `id` — fire-and-forget with no
+        // response written to stdout.
+        let is_notification = !req.as_object().map_or(false, |o| o.contains_key("id"));
+        if is_notification {
+            if let Err(e) = forwarder.forward(req).await {
+                tracing::debug!(error = %e, "notification forward (non-fatal)");
+            }
+            continue;
+        }
+
         let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let resp = match forwarder.forward(req).await {
             Ok(v) => v,
