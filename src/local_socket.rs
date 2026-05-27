@@ -118,9 +118,12 @@ pub async fn run(
     }
 }
 
-/// Read SO_PEERCRED and return `(uid, pid)` for the connected peer. The pid
-/// is best-effort — on some kernels/libc it may be 0 even on success, in
-/// which case callers should treat it as "unknown".
+/// Read peer credentials from the connected Unix stream.
+///
+/// On Linux uses `SO_PEERCRED` (returns uid + pid). On macOS uses
+/// `LOCAL_PEERCRED` via `xucred` (returns uid only, pid reported as 0).
+/// The pid is best-effort — callers should treat 0 as "unknown".
+#[cfg(target_os = "linux")]
 fn peer_cred(stream: &UnixStream) -> Option<(u32, u32)> {
     use std::os::unix::io::AsRawFd;
     let fd = stream.as_raw_fd();
@@ -137,6 +140,28 @@ fn peer_cred(stream: &UnixStream) -> Option<(u32, u32)> {
     };
     if rc == 0 {
         Some((cred.uid, cred.pid as u32))
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn peer_cred(stream: &UnixStream) -> Option<(u32, u32)> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut cred: libc::xucred = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::xucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            0, // SOL_LOCAL
+            libc::LOCAL_PEERCRED,
+            &mut cred as *mut _ as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc == 0 {
+        Some((cred.cr_uid, 0))
     } else {
         None
     }
