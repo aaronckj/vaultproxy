@@ -37,21 +37,36 @@ impl HttpClient {
     }
 
     /// Send a single request body to the upstream with the current
-    /// bearer header. Returns the parsed JSON body on 2xx, or an error
-    /// containing the status + body snippet on non-2xx.
+    /// bearer header. Retries once on connection errors (cold-start race).
     async fn send_once(&self, body: &serde_json::Value) -> Result<reqwest::Response> {
         let token = self.injector.current_token().await;
-        let resp = self
+        let bearer = format!("Bearer {}", token.expose_secret());
+        let result = self
             .http
             .post(&self.upstream)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json, text/event-stream")
-            .header(AUTHORIZATION, format!("Bearer {}", token.expose_secret()))
+            .header(AUTHORIZATION, bearer.clone())
             .json(body)
             .send()
-            .await
-            .with_context(|| format!("POST {}", self.upstream))?;
-        Ok(resp)
+            .await;
+        match result {
+            Ok(resp) => Ok(resp),
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                tracing::warn!(error = ?e, "first attempt failed, retrying once");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.http
+                    .post(&self.upstream)
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(ACCEPT, "application/json, text/event-stream")
+                    .header(AUTHORIZATION, bearer)
+                    .json(body)
+                    .send()
+                    .await
+                    .with_context(|| format!("POST {} failed after retry", self.upstream))
+            }
+            Err(e) => Err(e).with_context(|| format!("POST {} failed", self.upstream)),
+        }
     }
 
     /// Parse a streamable-HTTP / SSE response into a single JSON value.

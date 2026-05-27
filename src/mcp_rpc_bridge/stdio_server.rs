@@ -79,7 +79,7 @@ where
         let resp = match forwarder.forward(req).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "forwarder error");
+                tracing::warn!(error = ?e, "forwarder error");
                 write_error(&mut writer, id, -32099, format!("Forwarder error: {e}")).await?;
                 continue;
             }
