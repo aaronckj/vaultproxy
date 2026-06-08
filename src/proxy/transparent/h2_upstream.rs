@@ -292,10 +292,15 @@ async fn send_request_on(
         })
         .collect();
     let mut body_stream = resp.into_body();
+    // SEC/DoS: cap the upstream-controlled response body held in memory.
+    const MAX_H2_BODY_BYTES: usize = 256 * 1024 * 1024;
     let mut body = Vec::new();
     while let Some(chunk) = body_stream.data().await {
         let c = chunk.context("h2 body chunk")?;
         let _ = body_stream.flow_control().release_capacity(c.len());
+        if body.len() + c.len() > MAX_H2_BODY_BYTES {
+            anyhow::bail!("upstream h2 response body exceeded {MAX_H2_BODY_BYTES} bytes");
+        }
         body.extend_from_slice(&c);
     }
     // Drain trailers if any. Returns None when no TRAILERS frame

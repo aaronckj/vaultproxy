@@ -9,7 +9,7 @@
 - Credentials appearing in MCP tool responses visible to AI agents
 - Credentials in shell history or log files
 - Stolen-disk recovery of credentials (with `--features tpm` — keystore is hardware-bound)
-- SSRF via `services.toml`: link-local (169.254.0.0/16, fe80::/10), cloud-metadata (169.254.169.254, fd00:ec2::254), and loopback targets are rejected at registry load time across all 9 validated SSRF vectors
+- SSRF via `services.toml`: blocks loopback, link-local, and cloud-metadata endpoints (IPv4 + IPv6) at registry-load time
 - Log injection via service names: ASCII control characters (including `\n`, `\r`, `\t`) in service names are rejected at load time
 - Path traversal in `login_path`: `..` and `.` path segments are rejected at load time
 - Arbitrary command execution in launcher mode: shell interpreters (bash, sh, python, node, etc.) are blocked as launch targets
@@ -30,7 +30,7 @@
 - Destructive endpoints (`/vault/items/delete`, `/vault/items/update`, `/vault/folders/delete`) are tighter: 10 req/60 s per caller
 - Credential audit endpoint (`/vault/audit/run`) decrypts every vault password for HMAC fingerprinting — capped at 2 req/60 s per caller to prevent decrypt-loop DoS
 - No credential-based auth on the endpoint itself — the trust model is OS-level process isolation
-- Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <internal-token>`. The token is written to `$CONFIG_DIR/internal-token` (mode 0600) at startup and rotated on each restart.
+- Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/rotate`, `/browser/*`, `/vault/notes`) require `Authorization: Bearer <internal-token>`. The token is written to `$CONFIG_DIR/internal-token` (mode 0600); it is generated on first start, persisted at 0600, and regenerated only if the file is deleted.
 - Auth-override headers (`Authorization`, `X-Api-Key`, `X-Plex-Token`, `Cookie`, `Host`, etc.) supplied by callers in `POST /proxy` requests are blocked — auth is always injected from the vault, never from the caller
 - Duplicate query parameters that shadow keys already present in the service `base_url` are rejected
 - Upstream response bodies are capped at 32 MB (configurable via `UPSTREAM_BODY_LIMIT_MB`) to prevent heap exhaustion from malicious upstreams
@@ -55,7 +55,7 @@ All MCP servers sharing `127.0.0.1` would otherwise share a single rate-limit bu
 
 ## Browser rotation subsystem (`--features browser`)
 
-- Routes: `POST /browser/rotate`, `POST /browser/rotate` (all gated behind internal bearer token)
+- Routes: `POST /browser/rotate`, `GET /browser/status`, `GET /browser/screenshot`, `POST /browser/abort` (all gated behind internal bearer token)
 - Vision model (LiteLLM/Qwen3-VL via MLbox) receives base64 PNG screenshots and returns JSON action descriptors
 - LLM responses are sanitised by `sanitize_output` **before** JSON parsing — injection phrases, `<tool_call>` tags, and LLM control tokens are replaced with `[FILTERED]` before any field value can influence Playwright selectors or downstream tool calls
 - Screenshots and LLM calls never leave the homelab network (all traffic goes to `LITELLM_URL`, which should be the local MLbox endpoint)
@@ -112,10 +112,12 @@ vault-proxy resolves credentials from Vaultwarden and spawns the server via fork
 
 For maximum security on sensitive services, prefer Tier 1 (native integration or a fork that adds vault-proxy support).
 
-## Transparent HTTPS_PROXY (default-on since v1.2.0)
+## Transparent HTTPS_PROXY (opt-in via `--features transparent`, since v1.12.0)
 
-vault-proxy runs an additional listener (default `127.0.0.1:3203`) that
-accepts HTTPS_PROXY-style CONNECT requests. For services that opt in
+When built with `--features transparent`, vault-proxy runs an additional
+listener (default `127.0.0.1:3203`) that
+accepts HTTPS_PROXY-style CONNECT requests. Most deployments do not need
+this — prefer the explicit `POST /proxy` path. For services that opt in
 (`transparent_mode = "host_inject" | "placeholder"`), the listener
 performs a TLS MITM, decrypts the agent's HTTP/1.1 request, injects
 vault credentials, and forwards over a fresh TLS connection to the
@@ -132,6 +134,8 @@ trusted the CA. The key is stored 0600. vault-proxy refuses to start
 if the key file is not mode 0600 (no `--allow-insecure-ca` escape
 flag). The startup banner prints the SHA-256 fingerprint so operators
 can verify it on every restart.
+
+**The transparent CA is trusted only by the agent process you explicitly configure to trust it — never system-wide.**
 
 - Default loopback bind. Non-loopback `--transparent-listen` produces a `SECURITY:` startup warning.
 - Pre-existing agent auth headers (`Authorization`, `X-Api-Key`, `X-Plex-Token`, `Cookie`, `Proxy-Authorization`) are stripped before vault credential injection — agents cannot smuggle in conflicting credentials.
@@ -181,9 +185,8 @@ refresh token is written back to the vault via
 `update_password_for_item`. Per-`vault_item` `Mutex` serialisation
 prevents two concurrent refreshes from racing on a rotating IdP.
 
-Writeback currently only supports `refresh_token_field = "password"`
-(the default). Custom-field writeback is tracked as a v1.6
-follow-up.
+Writeback supports `refresh_token_field = "password"` (the default);
+custom `refresh_token_field` writeback shipped in v1.6.0.
 
 ### Audit log + SIEM sinks (v1.4.2 sync, v1.4.4 network)
 
@@ -216,4 +219,4 @@ Please include:
 - Impact assessment
 - Suggested fix (if any)
 
-We aim to respond within 48 hours and ship a fix within 14 days for confirmed critical issues.
+This is a solo-maintained project, so please set expectations accordingly: I aim to acknowledge reports as soon as I reasonably can and to prioritise fixes for confirmed critical issues, but I cannot commit to a fixed enterprise-style response or fix SLA.

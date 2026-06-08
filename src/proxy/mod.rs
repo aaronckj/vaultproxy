@@ -121,6 +121,9 @@ pub struct AppState {
     /// thread-safe; each request gets its own clone, drives one h2
     /// stream, and drops the clone. Entries are evicted on send-error
     /// (connection died / GOAWAY) by `h2_upstream::try_h2`.
+    // Only read by the transparent h2 upstream path; harmless but unread when
+    // the `transparent` feature is off (default since v1.12.0).
+    #[cfg_attr(not(feature = "transparent"), allow(dead_code))]
     pub h2_upstream_pool:
         Arc<dashmap::DashMap<(String, u16), h2::client::SendRequest<bytes::Bytes>>>,
 
@@ -317,6 +320,7 @@ pub struct AppState {
     /// sanitiser before returning them to the agent. Off by default;
     /// adds a small per-request CPU cost. Set via `--transparent-sanitize-responses`
     /// or `TRANSPARENT_SANITIZE_RESPONSES=1`.
+    #[cfg_attr(not(feature = "transparent"), allow(dead_code))]
     pub transparent_sanitize_responses: bool,
 }
 
@@ -1063,12 +1067,21 @@ pub(crate) async fn get_or_refresh_oauth_token(
         .await
         .map_err(|e| anyhow::anyhow!("oauth token response not json: {}", e))?;
     if !status.is_success() {
-        anyhow::bail!("oauth token endpoint returned {}: {}", status, body);
+        anyhow::bail!(
+            "oauth token endpoint returned {}: {}",
+            status,
+            oauth_body_summary(&body)
+        );
     }
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("oauth response missing access_token: {}", body))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "oauth response missing access_token ({})",
+                oauth_body_summary(&body)
+            )
+        })?
         .to_string();
     let ttl = body
         .get("expires_in")
@@ -1083,6 +1096,29 @@ pub(crate) async fn get_or_refresh_oauth_token(
         .await
         .insert(vault_item.to_string(), (access_token.clone(), hard_expiry));
     Ok(access_token)
+}
+
+/// Summarise an OAuth token-endpoint JSON body for error logs WITHOUT leaking
+/// secret values. A success body carries secret `access_token`/`refresh_token`;
+/// an error body carries the non-secret `error` / `error_description` fields
+/// (RFC 6749 §5.2). We surface the latter and only the KEY NAMES of the former
+/// — token values are never interpolated into an error that may hit journald.
+fn oauth_body_summary(body: &Value) -> String {
+    match body.as_object() {
+        Some(obj) => {
+            let err = obj.get("error").and_then(Value::as_str);
+            let desc = obj.get("error_description").and_then(Value::as_str);
+            match (err, desc) {
+                (Some(e), Some(d)) => format!("error={e}, error_description={d}"),
+                (Some(e), None) => format!("error={e}"),
+                _ => {
+                    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+                    format!("body keys: [{}]", keys.join(", "))
+                }
+            }
+        }
+        None => "non-object body".to_string(),
+    }
 }
 
 // -------------------------------------------------------------------------- //
@@ -1221,12 +1257,21 @@ pub async fn get_or_refresh_oauth_refresh_token(
         .await
         .map_err(|e| anyhow::anyhow!("oauth refresh response not json: {}", e))?;
     if !status.is_success() {
-        anyhow::bail!("oauth refresh endpoint returned {}: {}", status, body);
+        anyhow::bail!(
+            "oauth refresh endpoint returned {}: {}",
+            status,
+            oauth_body_summary(&body)
+        );
     }
     let access_token = body
         .get("access_token")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("oauth response missing access_token: {}", body))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "oauth response missing access_token ({})",
+                oauth_body_summary(&body)
+            )
+        })?
         .to_string();
     if let Some(new_rt) = body.get("refresh_token").and_then(Value::as_str) {
         if new_rt != refresh_token {

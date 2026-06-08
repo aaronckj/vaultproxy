@@ -1,9 +1,23 @@
 # cargo audit configuration for vaultproxy
-# Managed by the iter-4 security audit pass.
+# Managed by the iter-4 security audit pass and the public-launch hardening
+# review. Kept in sync with deny.toml so cargo audit and cargo deny agree.
 
 [advisories]
 
-# RUSTSEC-2023-0071: rsa 0.9 Marvin Attack (timing side-channel in RSA).
-# No fixed version available. Tracked in Cargo.toml with a TODO comment.
-# Used only for org-key unwrapping at vault sync on a localhost-only service.
-ignore = ["RUSTSEC-2023-0071"]
+# Ignored advisories (each with an honest, short justification):
+#
+# RUSTSEC-2023-0071: rsa 0.9 Marvin Attack (RSA timing side-channel). No fixed
+#   release exists. Only reachable via trusted-upstream org-key unwrap at vault
+#   sync on a localhost-only service; not attacker-influenced timing.
+# RUSTSEC-2025-0134: rustls-pemfile unmaintained. Advisory only (no vuln);
+#   pulled in transitively.
+# RUSTSEC-2026-0002: lru 0.12.5 unsound IterMut. Not used in the unsound
+#   pattern here.
+# RUSTSEC-2026-0097: rand unsound advisory. Not exercised in an unsound code
+#   path here.
+ignore = [
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2025-0134",
+    "RUSTSEC-2026-0002",
+    "RUSTSEC-2026-0097",
+]

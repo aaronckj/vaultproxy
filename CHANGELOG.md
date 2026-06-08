@@ -5,6 +5,85 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.12.0] — 2026-06-08
+
+Security-hardening release following a full review. One credential-exfiltration
+bug fixed, several log/DoS-hardening fixes, and the transparent MITM proxy
+returned to opt-in.
+
+### Security
+
+- **`/vault/test-credential` no longer follows HTTP redirects (credential
+  exfiltration fix).** The client for this open-router endpoint decrypts vault
+  credentials and POSTs them, but was built without
+  `redirect::Policy::none()` — reqwest's default follows 3xx and re-sends the
+  body on 307/308, so an agent-supplied URL returning `307 → http://attacker/`
+  could harvest the plaintext credential. Redirects are now disabled, matching
+  every other client in the codebase. The UniFi dual-auth probe and
+  session-login clients received the same fix.
+- **Retired the `mcp-bearer-bridge` binary.** It exec'd
+  `npx mcp-remote … --header "Authorization: Bearer <token>"` with the live
+  token in argv — world-readable at `/proc/<pid>/cmdline` for the process
+  lifetime. Use the native `mcp-rpc-bridge`, which keeps the token in-process
+  and injects it only at header-serialization time.
+- **Request-smuggling parity on the http/1.1 transparent path.**
+  `serialize_request` now also strips `Transfer-Encoding` before appending its
+  own `Content-Length`, removing the CL.TE ambiguity on the credential-bearing
+  upstream request. The h2 paths already did this.
+- **OAuth token bodies are no longer logged.** The token / refresh error paths
+  interpolated the full token-endpoint JSON (which can contain a live
+  access/refresh token) into errors that reach journald. They now log status,
+  the non-secret `error` / `error_description` fields, and key names only.
+- **Recursive audit-log masking.** `summarize_args` / `summarize_result`
+  masked only top-level sensitive keys; a secret nested under
+  `{"data":{"token":"…"}}` was stringified and byte-truncated into the on-disk
+  and SIEM audit log. Masking now walks nested objects and arrays.
+- **SSRF guard hardening.** The outbound-URL check also blocks `0.0.0.0/8`,
+  IPv6 unspecified (`::`), IPv4-mapped-IPv6 loopback (`::ffff:127.0.0.1`), and
+  broadcast. RFC1918 and IPv6 unique-local ranges remain allowed by design —
+  reaching LAN services is the purpose of vault-proxy.
+- **UTF-8 panic hardening (per-request / process DoS).** Char-boundary-safe
+  truncation in the MCP HTTP bridge, audit summaries, and the response
+  sanitiser. The prompt-injection `case_insensitive_replace` was rewritten as a
+  byte-wise ASCII fold — the old `to_lowercase()` approach mis-indexed the
+  original string when lowercasing changed byte length, panicking on
+  attacker-controlled bodies. The bridge truncation panic previously unwound
+  out of the single request loop and exited the whole process.
+- **Body-size caps (256 MiB)** on the transparent request and response paths
+  (http/1.1 and both h2 paths) so an agent- or upstream-supplied oversized body
+  can't OOM the proxy.
+- **Modulo bias removed** from `generate_admin_password` via rejection sampling.
+- Removed the private service names from the public `rotate` MCP tool
+  description.
+
+### Changed
+
+- **BREAKING (default features): the transparent HTTPS-MITM proxy is now
+  OPT-IN.** `default` no longer includes `transparent` (it was default-on from
+  v1.2 through v1.11). A host-trusted MITM CA that can decrypt the agent's TLS
+  is the wrong default for a credential tool; most deployments should use the
+  explicit `POST /proxy` path. Re-enable with `cargo build --features
+  transparent` or the Docker `FEATURES=transparent` build-arg. Published
+  `:latest` images and the crates.io binary no longer bind the transparent
+  listener by default.
+
+### CI / supply chain
+
+- Added a `cargo audit` + `cargo deny` gate (`.github/workflows/audit.yml`,
+  `deny.toml`) running on push, PR, and weekly schedule.
+- SHA-pinned GitHub Actions, added image provenance + SBOM + cosign keyless
+  signing, and `--locked` builds.
+
+### Docs
+
+- Corrected README / SECURITY claims to match the code: dropped the inaccurate
+  "HIBP" framing (the credential audit is local HMAC-SHA256 fingerprinting, by
+  design — no hash egress), corrected the internal-token lifecycle wording,
+  marked auto-rotation as partial/experimental, fixed the OAuth-writeback and
+  SSRF descriptions, and reframed the transparent proxy as opt-in.
+
+---
+
 ## [1.11.1] — 2026-05-26
 
 ### Security

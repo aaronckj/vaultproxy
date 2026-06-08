@@ -45,8 +45,8 @@
 | G3 | **OAuth flows** | `auth = "oauth_client_credentials"` and `auth = "oauth_refresh"` patterns for upstream services that require OAuth. |
 | G4 | **Response prompt-injection sanitisation** | Optional `sanitize_responses` flag that runs upstream JSON responses through the same `sanitize_output` helper used by the browser-rotation pipeline before they are returned to the MCP layer. |
 | G11 | **SIEM audit sinks** | `--audit-sink=stdout`, `--audit-sink=syslog`, and OTLP/Datadog/Splunk forwarders for the audit log. Currently the log is JSON-on-disk only — see [operator/AUDIT-LOG.md](operator/AUDIT-LOG.md). |
-| G12 | **HIBP scan pagination** | The credential audit caps at 1 000 items (see [operator/CRED-AUDIT.md](operator/CRED-AUDIT.md)). v1.1 will add pagination or chunked async scan. |
-| G13 | **Generic `/rotate` strategies** | The internal `POST /rotate` endpoint is defined and gated behind the internal token, but all built-in rotation strategies (`sonarr`, `radarr`) currently return `501 Not Implemented`. The stub exists for API compatibility with planned tooling — **do not build production workflows on `/rotate` in v1.0.** v1.1 will ship at least one working strategy (`vaultwarden_password` or `bearer_regenerate_via_admin_api`). For browser-driven rotation that already works today, see [operator/BROWSER-ROTATION.md](operator/BROWSER-ROTATION.md). |
+| G12 | **Credential audit scan pagination** | The credential audit caps at 1 000 items (see [operator/CRED-AUDIT.md](operator/CRED-AUDIT.md)). v1.1 will add pagination or chunked async scan. |
+| G13 | **Generic `/rotate` strategies** | The internal `POST /rotate` endpoint is defined and gated behind the internal token. For generic services like Sonarr/Radarr it returns a typed `unsupported` result (they need config-file access, not an API call) — **do not build production workflows on generic `/rotate`.** Working strategies today are browser-vision (experimental) and UniFi key-bootstrap. For browser-driven rotation, see [operator/BROWSER-ROTATION.md](operator/BROWSER-ROTATION.md). |
 
 ## v1.2+ candidates
 

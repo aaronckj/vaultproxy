@@ -288,18 +288,17 @@ impl AuditLog {
                 {
                     "***".to_string()
                 } else {
-                    truncate_str(&v.to_string(), 50)
+                    truncate_str(&mask_sensitive(v).to_string(), 50)
                 };
                 parts.push(format!("{}={}", k, val));
             }
             parts.join(", ")
         } else {
-            truncate_str(&args.to_string(), MAX_SUMMARY_LEN)
+            truncate_str(&mask_sensitive(args).to_string(), MAX_SUMMARY_LEN)
         };
 
         if summary.len() > MAX_SUMMARY_LEN {
-            summary.truncate(MAX_SUMMARY_LEN);
-            summary.push_str("...");
+            summary = truncate_str(&summary, MAX_SUMMARY_LEN);
         }
         summary
     }
@@ -314,10 +313,14 @@ impl AuditLog {
     /// persist those values to disk in plaintext. The audit log is world-
     /// readable by any process running as the same UID as vault-proxy.
     ///
-    /// Fix: apply the same `SENSITIVE_FIELDS` masking used by `summarize_args`
-    /// so values in known-sensitive keys are replaced with `***` before the
-    /// entry is written. Non-object result shapes (arrays, scalars) are
-    /// serialised as-is but still truncated.
+    /// Fix: recursively mask values under known-sensitive keys (see
+    /// `mask_sensitive`) so secrets in objects, arrays, and nested values are
+    /// replaced with `***` before the entry is written; the result is then
+    /// truncated.
+    ///
+    /// Known limitation: masking is key-based on parsed JSON. A secret embedded
+    /// inside a JSON *string* leaf (e.g. `{"text":"{\"token\":\"…\"}"}`) is not
+    /// inspected, and is masked only if a higher-level key name matches.
     pub fn summarize_result(result: &serde_json::Value) -> String {
         let summary = if let Some(obj) = result.as_object() {
             let mut parts = Vec::new();
@@ -328,13 +331,13 @@ impl AuditLog {
                 {
                     "***".to_string()
                 } else {
-                    truncate_str(&v.to_string(), 50)
+                    truncate_str(&mask_sensitive(v).to_string(), 50)
                 };
                 parts.push(format!("{}={}", k, val));
             }
             parts.join(", ")
         } else {
-            result.to_string()
+            mask_sensitive(result).to_string()
         };
         truncate_str(&summary, MAX_SUMMARY_LEN)
     }
@@ -350,9 +353,46 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        let mut result = s[..max_len].to_string();
+        // Truncate at the largest char boundary <= max_len. Tool args and
+        // upstream results are attacker-influenced; `&s[..max_len]` panics on a
+        // multi-byte boundary.
+        let mut end = max_len;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut result = s[..end].to_string();
         result.push_str("...");
         result
+    }
+}
+
+/// Recursively clone `value`, replacing any value whose KEY name contains a
+/// `SENSITIVE_FIELDS` token with `"***"`. Walks nested objects and arrays, so a
+/// secret nested under e.g. `{"data":{"token":"…"}}` is masked — not just
+/// top-level keys (iter audit fix: the previous top-level-only masking
+/// stringified nested objects verbatim and only byte-truncated them into the
+/// on-disk / SIEM audit log). String leaves are not parsed for embedded JSON,
+/// so this is key-based masking only.
+fn mask_sensitive(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(obj) => {
+            let mut out = serde_json::Map::with_capacity(obj.len());
+            for (k, v) in obj {
+                if SENSITIVE_FIELDS
+                    .iter()
+                    .any(|f| k.to_lowercase().contains(f))
+                {
+                    out.insert(k.clone(), serde_json::Value::String("***".to_string()));
+                } else {
+                    out.insert(k.clone(), mask_sensitive(v));
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(mask_sensitive).collect())
+        }
+        other => other.clone(),
     }
 }
 
@@ -396,6 +436,31 @@ mod tests {
             "items_count key must appear: {summary}"
         );
         // Masked fields show ***.
+        assert!(
+            summary.contains("***"),
+            "masked value must be *** in: {summary}"
+        );
+    }
+
+    /// v1.12.0 regression test: secrets NESTED under a non-sensitive key, and
+    /// inside arrays of objects, must be masked too — not just top-level keys.
+    /// Guards the recursive `mask_sensitive` against a silent revert.
+    #[test]
+    fn summarize_result_masks_nested_and_array_secrets() {
+        let result = json!({
+            "data": { "token": "SECRET_NESTED" },
+            "list": [ { "password": "P_IN_ARRAY" } ],
+            "status": "ok",
+        });
+        let summary = AuditLog::summarize_result(&result);
+        assert!(
+            !summary.contains("SECRET_NESTED"),
+            "nested token must be masked: {summary}"
+        );
+        assert!(
+            !summary.contains("P_IN_ARRAY"),
+            "password inside array-of-objects must be masked: {summary}"
+        );
         assert!(
             summary.contains("***"),
             "masked value must be *** in: {summary}"

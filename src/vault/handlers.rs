@@ -281,40 +281,55 @@ pub(crate) fn is_allowed_outbound_url(raw: &str) -> bool {
     if BLOCKED_HOSTS.iter().any(|b| b.eq_ignore_ascii_case(host)) {
         return false;
     }
-    // If the host is a literal IP, also block loopback, link-local, and
-    // IMDS-adjacent ranges.
-    // NOTE: url::Url::host_str() returns IPv6 addresses with enclosing
-    // brackets (e.g. "[fe80::1]"). Rust's IpAddr parser does NOT accept
-    // brackets, so we must strip them before parsing or the IPv6 link-local
-    // check silently passes for fe80:: addresses.
+    // If the host is a literal IP, block the dangerous ranges. NOTE:
+    // url::Url::host_str() returns IPv6 addresses with enclosing brackets
+    // (e.g. "[fe80::1]"); Rust's IpAddr parser does NOT accept brackets, so
+    // strip them before parsing or the IPv6 checks silently pass.
+    //
+    // Residual (acceptable under the trusted-local-caller threat model): this
+    // check only inspects LITERAL IP hosts. A DNS name that resolves to a
+    // blocked IP (loopback / cloud-metadata) is NOT caught here, and reqwest
+    // re-resolves at connect time (rebinding). Disabling redirects on the
+    // credential-bearing callers (`test_credential`, UniFi) closes the 307/308
+    // body-resend vector, but NOT this direct-resolution case. Fully closing it
+    // needs resolve-then-pin in those callers; left as a known limitation.
     let host_for_ip = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = host_for_ip.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(v4) => {
-                let octs = v4.octets();
-                // 127.0.0.0/8 — loopback (blocks loop-back into vault-proxy itself)
-                if octs[0] == 127 {
-                    return false;
-                }
-                // 169.254.0.0/16 — link-local / cloud metadata
-                if octs[0] == 169 && octs[1] == 254 {
-                    return false;
-                }
-            }
-            std::net::IpAddr::V6(v6) => {
-                // ::1 — IPv6 loopback
-                if v6.is_loopback() {
-                    return false;
-                }
-                // fe80::/10 link-local
-                let seg = v6.segments();
-                if seg[0] & 0xffc0 == 0xfe80 {
-                    return false;
-                }
-            }
+        if is_blocked_ip(ip) {
+            return false;
         }
     }
     true
+}
+
+/// Block loopback, link-local / cloud-metadata, unspecified, and broadcast
+/// addresses for outbound SSRF defence. RFC1918 (v4) and unique-local (v6)
+/// ranges are intentionally ALLOWED — reaching LAN services (Sonarr on
+/// 192.168.x, Home Assistant, etc.) is the whole purpose of vault-proxy.
+/// IPv4-mapped IPv6 (e.g. `::ffff:127.0.0.1`) is normalised to V4 first so a
+/// mapped loopback can't slip through the V6 branch.
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    let ip = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()            // 127.0.0.0/8
+                || v4.is_link_local()   // 169.254.0.0/16 (IMDS)
+                || v4.octets()[0] == 0  // 0.0.0.0/8 (incl. unspecified)
+                || v4.is_broadcast() // 255.255.255.255
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()                              // ::1
+                || v6.is_unspecified()                   // ::
+                || (v6.segments()[0] & 0xffc0 == 0xfe80) // fe80::/10 link-local
+        }
+    }
 }
 
 /// Flow IDs come from the HA config-flow engine and are normally UUIDs.
@@ -1723,6 +1738,13 @@ pub async fn test_credential(
 
     let client = match Client::builder()
         .danger_accept_invalid_certs(true) // LAN services commonly have self-signed
+        // SEC: never follow redirects. This endpoint POSTs decrypted vault
+        // credentials and is on the open router; reqwest's default policy
+        // follows 3xx and re-sends the body on 307/308, so a host returning
+        // `307 -> http://attacker/` would exfiltrate the plaintext credential.
+        // Treat any 3xx as the probe result instead. Mirrors every other
+        // production client in the repo.
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(10))
         .build()
     {
@@ -4339,6 +4361,33 @@ mod ssrf_tests {
         assert!(
             !is_allowed_outbound_url("http://LOCALHOST:8080/"),
             "case-insensitive localhost must be blocked"
+        );
+    }
+
+    /// v1.12.0: additional SSRF block forms — IPv4-mapped IPv6 loopback,
+    /// 0.0.0.0/8, IPv4 broadcast, IPv6 unspecified — plus the intentional
+    /// ALLOW of IPv6 unique-local (the ULA analogue of RFC1918).
+    #[test]
+    fn additional_ssrf_forms_blocked_and_ula_allowed() {
+        assert!(
+            !is_allowed_outbound_url("http://[::ffff:127.0.0.1]/"),
+            "IPv4-mapped IPv6 loopback must not bypass via the V6 branch"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://0.0.0.0/"),
+            "0.0.0.0 (0.0.0.0/8 / unspecified) must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://255.255.255.255/"),
+            "IPv4 broadcast must be blocked"
+        );
+        assert!(
+            !is_allowed_outbound_url("http://[::]/"),
+            "IPv6 unspecified :: must be blocked"
+        );
+        assert!(
+            is_allowed_outbound_url("http://[fd12:3456::1]:8123/"),
+            "IPv6 unique-local (ULA) is the LAN analogue of RFC1918 — allowed"
         );
     }
 

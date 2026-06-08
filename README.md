@@ -5,7 +5,7 @@
 [![CI](https://github.com/aaronckj/vaultproxy/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/aaronckj/vaultproxy/actions/workflows/docker-publish.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](rust-toolchain.toml)
-[![transparent: on](https://img.shields.io/badge/transparent--proxy-default--on%20v1.2-success)](docs/operator/TRANSPARENT.md)
+[![transparent: opt-in](https://img.shields.io/badge/transparent--proxy-opt--in%20v1.12-informational)](docs/operator/TRANSPARENT.md)
 
 **Secure credential sidecar for MCP servers — backed by [Vaultwarden](https://github.com/dani-garcia/vaultwarden).**
 
@@ -28,7 +28,7 @@ vaultproxy fixes this with a small loopback HTTP service that:
 - Reads every credential from one place — your Vaultwarden folder.
 - Injects the correct auth pattern per service (`X-Api-Key`, Bearer, Basic, session cookie, UniFi dual-mode, query param).
 - Keeps secrets out of the MCP server's address space entirely (native `/proxy` mode), or at worst out of disk (launcher mode).
-- Detects weak / reused / pwned credentials, and (optionally) rotates them automatically via a Playwright + vision-LLM agent.
+- Detects weak / reused credentials via HMAC-SHA256 fingerprints (all local — no password hashes ever leave your LAN; HIBP is explicitly out of scope by design), and (optionally) rotates some of them via a Playwright + vision-LLM agent.
 
 ### How it compares
 
@@ -38,8 +38,8 @@ vaultproxy fixes this with a small loopback HTTP service that:
 | Hides credentials from AI | ✅ | ✅ | ✅ | ✅ | ❌ exposes vault to AI |
 | Auth patterns built-in | bearer, header, basic, session, query, UniFi dual | bearer | bearer | bearer | n/a |
 | Hot-reload (SIGHUP + HTTP) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Credential audit (weak/reused/HIBP) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Auto credential rotation | ✅ Playwright + vision LLM | ❌ | ❌ | ❌ | ❌ |
+| Credential audit (weak/reused, local HMAC — no HIBP) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Auto credential rotation | 🚧 partial (browser-vision, experimental) | ❌ | ❌ | ❌ | ❌ |
 | TPM sealing | ✅ optional | ❌ | ❌ | ❌ | ❌ |
 | Dual integration: smart `/proxy` + dumb `--launch` | ✅ | proxy only | proxy only | proxy only | n/a |
 | Transparent `HTTPS_PROXY` (zero-mod agents) | ✅ `--features transparent` (v1.1.0 beta) | ✅ | ❌ | ✅ | n/a |
@@ -132,6 +132,16 @@ Add `insecure_tls = true` for LAN services with self-signed certs (logs a startu
 
 ---
 
+## Do you actually need the MITM? (most people don't)
+
+The two modes above cover almost everyone. Reach for the explicit `POST /proxy` path first — it never touches your TLS trust store and is the recommended way to use vaultproxy.
+
+The transparent HTTPS-MITM listener is **opt-in** (since v1.12.0) and exists only for unmodified third-party agents that can't be taught to call `/proxy` (and can't be launched via `--launch` either). Enable it at build time with `--features transparent`. If your agent can call `/proxy`, you do not need this.
+
+**The transparent CA is trusted only by the agent process you explicitly configure to trust it — never system-wide.**
+
+---
+
 ## Feature highlights
 
 | Feature | Status | Where |
@@ -139,8 +149,8 @@ Add `insecure_tls = true` for LAN services with self-signed certs (logs a startu
 | 6 built-in auth patterns | ✅ stable | this README |
 | SIGHUP + `POST /vault/reload-services` hot-reload with atomic swap and rollback-to-empty guard | ✅ stable | [docs/operator/RELOAD.md](docs/operator/RELOAD.md) |
 | Per-caller rate limiting via `X-Caller-Id` / `VAULT_PROXY_CALLER_ID` | ✅ stable | [SECURITY.md](SECURITY.md) |
-| Credential audit (weak/reused + HIBP k-anonymity) | ✅ stable | [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) |
-| Browser-driven credential rotation (Playwright + vision LLM) | ✅ `--features browser` | [docs/operator/BROWSER-ROTATION.md](docs/operator/BROWSER-ROTATION.md) |
+| Credential audit — weak/reused detection via HMAC-SHA256 fingerprints (all local — no password hashes ever leave your LAN; HIBP is explicitly out of scope by design) | ✅ stable | [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) |
+| Credential rotation: browser-vision (Playwright + vision LLM, experimental, off by default) + UniFi key-bootstrap; generic *arr API rotation not supported (`POST /rotate` returns a typed `unsupported`) | 🚧 partial, `--features browser` | [docs/operator/BROWSER-ROTATION.md](docs/operator/BROWSER-ROTATION.md) |
 | TPM-sealed keystore | ✅ `--features tpm` | [SECURITY.md](SECURITY.md) |
 | Web dashboard | ✅ `--features dashboard` (127.0.0.1:3202) | [docs/operator/DASHBOARD.md](docs/operator/DASHBOARD.md) |
 | Audit log (JSON, sensitive fields masked, 1000-entry cap) | ✅ stable | [docs/operator/AUDIT-LOG.md](docs/operator/AUDIT-LOG.md) |
@@ -153,7 +163,15 @@ Planned for v1.2+: SIGHUP rebuild of transparent registry, audit log entries for
 
 ## Security stance (one-paragraph version)
 
-vaultproxy binds to `127.0.0.1:3201` only. The trust model is **OS-level process isolation** — any local process running as the same user can call `/proxy`. There is no mTLS or caller authentication on the proxy endpoint by design (network isolation is the primary defence; a startup warning fires on any non-loopback bind). Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/browser/*`, `/vault/notes`) require an `Authorization: Bearer <internal-token>` from `$CONFIG_DIR/internal-token` (mode 0600, rotated on every restart). Credentials are decrypted in-process from an encrypted keystore; plaintext never appears in logs. Optional TPM sealing binds the keystore to the host machine. SSRF, log-injection, path-traversal, and arbitrary-command launcher guards are enforced at config load. Full threat model: [SECURITY.md](SECURITY.md). Report vulnerabilities privately via [GitHub Security Advisories](../../security/advisories/new).
+vaultproxy binds to `127.0.0.1:3201` only. The trust model is **OS-level process isolation** — any local process running as the same user can call `/proxy`. There is no mTLS or caller authentication on the proxy endpoint by design (network isolation is the primary defence; a startup warning fires on any non-loopback bind). Internal endpoints (`/vault/connecterr-secrets`, `/vault/reload-services`, `/browser/*`, `/vault/notes`) require an `Authorization: Bearer <internal-token>` from `$CONFIG_DIR/internal-token` (mode 0600; generated on first start, persisted at 0600, and regenerated only if the file is deleted). Credentials are decrypted in-process from an encrypted keystore; plaintext never appears in logs. Optional TPM sealing binds the keystore to the host machine. SSRF, log-injection, path-traversal, and arbitrary-command launcher guards are enforced at config load. Full threat model: [SECURITY.md](SECURITY.md). Report vulnerabilities privately via [GitHub Security Advisories](../../security/advisories/new).
+
+---
+
+## Project status
+
+vaultproxy is a young project maintained by one person, and it has not had a third-party security audit yet. Set expectations accordingly.
+
+The thing that makes that easy to live with: **vaultproxy stores no secrets of its own.** Every credential lives in your Vaultwarden — vaultproxy just reads, injects, and forwards. If the project is ever abandoned, you revert to plain env vars or Vault Agent in minutes, with zero lock-in.
 
 ---
 
@@ -172,6 +190,12 @@ A pre-built image is published to `ghcr.io/aaronckj/vaultproxy` via the GitHub A
 ### Cargo (bare metal)
 
 ```bash
+cargo install vaultproxy                        # from crates.io (headless)
+```
+
+Or build from source:
+
+```bash
 cargo build --release                          # headless
 cargo build --release --features tpm           # + TPM sealing (needs libtss2-dev)
 cargo build --release --features dashboard     # + web UI on 127.0.0.1:3202
@@ -188,7 +212,7 @@ cargo build --release --features browser       # + Playwright rotation (needs Li
 - [docs/operator/CLI.md](docs/operator/CLI.md) — every CLI flag and env var
 - [docs/operator/RELOAD.md](docs/operator/RELOAD.md) — SIGHUP and `POST /vault/reload-services` semantics
 - [docs/operator/RUNBOOK.md](docs/operator/RUNBOOK.md) — diagnosing common failures
-- [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) — weak/reused/HIBP scan + apply workflow
+- [docs/operator/CRED-AUDIT.md](docs/operator/CRED-AUDIT.md) — weak/reused scan + apply workflow (local HMAC fingerprints; no HIBP)
 - [docs/operator/AUDIT-LOG.md](docs/operator/AUDIT-LOG.md) — audit log format and shipping
 - [docs/operator/BROWSER-ROTATION.md](docs/operator/BROWSER-ROTATION.md) — rotation via Playwright + vision LLM
 - [docs/operator/LAUNCHER.md](docs/operator/LAUNCHER.md) — `--launch` mode and `mcp-servers.toml`

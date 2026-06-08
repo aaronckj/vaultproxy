@@ -80,7 +80,8 @@ pub struct CloneItemParams {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct RotateParams {
-    /// Registered rotation service name (e.g. "wi-mcp", "wi-mcp-admin").
+    /// Registered rotation service name (must match a service configured for
+    /// rotation on the daemon).
     pub service: String,
     /// Rotation strategy. Currently only "api" is accepted; defaults to "api".
     pub strategy: Option<String>,
@@ -392,7 +393,7 @@ impl VaultMcpServer {
     /// separate processes appending to the same file would interleave
     /// lines once a payload exceeds PIPE_BUF.
     #[tool(
-        description = "Rotate credentials for a service via the running vault-proxy daemon. Known services: 'wi-mcp' (mints fresh bearer for wi-mcp), 'wi-mcp-admin' (rotates the wi-mcp dashboard auth password). Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim."
+        description = "Rotate credentials for a registered service via the running vault-proxy daemon. The MCP process posts to the daemon's POST /rotate; the daemon resolves the rotation strategy configured for the named service. An unknown service name returns a typed error result, and some registered-but-stubbed services return 'unsupported' — generic API-key/password rotation is not broadly implemented. Requires the daemon to be live (default http://127.0.0.1:3201; override with VP_URL env). Returns the daemon's JSON response verbatim."
     )]
     pub async fn rotate(&self, Parameters(p): Parameters<RotateParams>) -> String {
         let config_dir = std::env::var("CONFIG_DIR").unwrap_or_default();

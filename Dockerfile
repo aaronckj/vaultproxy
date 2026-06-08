@@ -97,16 +97,16 @@ ARG FEATURES=""
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
-    && if [ -n "$FEATURES" ]; then cargo build --release --features "$FEATURES" 2>/dev/null; \
-       else cargo build --release 2>/dev/null; fi; \
+    && if [ -n "$FEATURES" ]; then cargo build --locked --release --features "$FEATURES" 2>/dev/null; \
+       else cargo build --locked --release 2>/dev/null; fi; \
     rm -rf src
 
 # Copy real source and compile.
 COPY src ./src
 # Touch main.rs to force recompile (the dummy main above left stale artifacts).
 RUN touch src/main.rs \
-    && if [ -n "$FEATURES" ]; then cargo build --release --features "$FEATURES"; \
-       else cargo build --release; fi
+    && if [ -n "$FEATURES" ]; then cargo build --locked --release --features "$FEATURES"; \
+       else cargo build --locked --release; fi
 
 # ---------------------------------------------------------------------------- #
 # Stage 2: runtime                                                              #

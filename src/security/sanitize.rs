@@ -191,7 +191,14 @@ fn sanitize_internal(text: &str, aggressive: bool) -> String {
     }
 
     if result.len() > MAX_OUTPUT_SIZE {
-        result.truncate(MAX_OUTPUT_SIZE);
+        // Truncate at the largest char boundary <= MAX_OUTPUT_SIZE. `result` is
+        // an attacker-controlled service body; `String::truncate` panics if the
+        // index lands mid-codepoint.
+        let mut end = MAX_OUTPUT_SIZE;
+        while end > 0 && !result.is_char_boundary(end) {
+            end -= 1;
+        }
+        result.truncate(end);
         result.push_str("\n[OUTPUT TRUNCATED]");
     }
 
@@ -221,26 +228,40 @@ pub fn sanitize_json(value: &mut Value) {
     }
 }
 
-/// Replace all occurrences of `needle` in `haystack` case-insensitively.
+/// Replace all occurrences of `needle` in `haystack`, ASCII-case-insensitively.
+///
+/// Implemented as a byte-wise ASCII scan over the ORIGINAL string rather than
+/// the previous `haystack.to_lowercase()` approach: `to_lowercase()` can change
+/// byte length (e.g. `İ` → `i̇`), so offsets found in the lowercased copy did
+/// not map back to the original and `&haystack[..]` slicing could panic on an
+/// attacker-controlled body. The injection needles are ASCII phrases, so an
+/// ASCII-only fold is sufficient and never indexes mid-codepoint: the boundary
+/// guards reject any match that would land mid-codepoint, so a non-ASCII needle
+/// is panic-safe — it just isn't folded case-insensitively for its non-ASCII
+/// bytes (only an exact byte sequence matches).
 fn case_insensitive_replace(haystack: &str, needle: &str, replacement: &str) -> String {
-    let lower_haystack = haystack.to_lowercase();
-    let lower_needle = needle.to_lowercase();
-    let needle_len = needle.len();
-
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
     let mut result = String::with_capacity(haystack.len());
+    let mut i = 0;
     let mut last_end = 0;
-
-    // Find all occurrences in the lowercased version, then replace in original.
-    let mut search_start = 0;
-    while let Some(pos) = lower_haystack[search_start..].find(&lower_needle) {
-        let abs_pos = search_start + pos;
-        result.push_str(&haystack[last_end..abs_pos]);
-        result.push_str(replacement);
-        last_end = abs_pos + needle_len;
-        search_start = last_end;
+    while i + nb.len() <= hb.len() {
+        if haystack.is_char_boundary(i)
+            && haystack.is_char_boundary(i + nb.len())
+            && hb[i..i + nb.len()].eq_ignore_ascii_case(nb)
+        {
+            result.push_str(&haystack[last_end..i]);
+            result.push_str(replacement);
+            i += nb.len();
+            last_end = i;
+        } else {
+            i += 1;
+        }
     }
     result.push_str(&haystack[last_end..]);
-
     result
 }
 

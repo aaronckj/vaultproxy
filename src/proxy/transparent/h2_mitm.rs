@@ -80,11 +80,17 @@ where
             // 1. Drain the h2 request body so we can convert into the
             //    HttpRequest shape the existing injectors expect.
             let (parts, mut body) = req.into_parts();
+            // SEC/DoS: cap the agent-controlled request body held in memory.
+            const MAX_H2_BODY_BYTES: usize = 256 * 1024 * 1024;
             let mut body_bytes = Vec::new();
             while let Some(chunk) = body.data().await {
                 match chunk {
                     Ok(c) => {
                         let _ = body.flow_control().release_capacity(c.len());
+                        if body_bytes.len() + c.len() > MAX_H2_BODY_BYTES {
+                            warn!(host = %target, "h2 request body exceeded cap, dropping stream");
+                            return;
+                        }
                         body_bytes.extend_from_slice(&c);
                     }
                     Err(e) => {

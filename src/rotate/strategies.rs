@@ -142,7 +142,14 @@ pub async fn bootstrap_unifi_api_key(
         let api_key = body["data"]["apiKey"]
             .as_str()
             .ok_or_else(|| {
-                anyhow::anyhow!("bootstrap: 'apiKey' not found in UniFi response: {}", body)
+                // Don't interpolate the raw body — on API-shape drift it may
+                // still carry the new key under an unexpected path. Log only
+                // the top-level key names.
+                let keys: Vec<&str> = body
+                    .as_object()
+                    .map(|o| o.keys().map(String::as_str).collect())
+                    .unwrap_or_default();
+                anyhow::anyhow!("bootstrap: 'apiKey' not found in UniFi response (keys: {keys:?})")
             })?
             .to_string();
 
@@ -408,13 +415,24 @@ pub(crate) fn generate_admin_password(len: usize) -> zeroize::Zeroizing<String> 
     use rand::rngs::OsRng;
     use rand::RngCore;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut buf = vec![0u8; len];
-    OsRng.fill_bytes(&mut buf);
-    let s: String = buf
-        .into_iter()
-        .map(|b| CHARSET[(b as usize) % CHARSET.len()] as char)
-        .collect();
-    zeroize::Zeroizing::new(s)
+    // Rejection sampling to remove modulo bias: only accept random bytes below
+    // the largest multiple of CHARSET.len() that fits in a u8 (248 for len 62),
+    // so every character is drawn with equal probability.
+    let max_unbiased = (256 / CHARSET.len()) * CHARSET.len();
+    let mut out = String::with_capacity(len);
+    let mut buf = [0u8; 64];
+    while out.len() < len {
+        OsRng.fill_bytes(&mut buf);
+        for &b in buf.iter() {
+            if (b as usize) < max_unbiased {
+                out.push(CHARSET[(b as usize) % CHARSET.len()] as char);
+                if out.len() == len {
+                    break;
+                }
+            }
+        }
+    }
+    zeroize::Zeroizing::new(out)
 }
 
 /// Rotate the wi-mcp admin password: read current creds from the vault,

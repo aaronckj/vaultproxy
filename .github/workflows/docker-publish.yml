@@ -35,18 +35,30 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # id-token: write is required for cosign keyless (OIDC) signing of the
+      # pushed image. Harmless on PRs (signing step is gated to tag pushes).
+      id-token: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain (version from rust-toolchain.toml)
-        # dtolnay/rust-toolchain@master requires an explicit `toolchain` input —
-        # it does NOT auto-read rust-toolchain.toml (despite the docs implying
+        # dtolnay/rust-toolchain requires an explicit `toolchain` input — it
+        # does NOT auto-read rust-toolchain.toml (despite the docs implying
         # otherwise). We pass `toolchain: stable` explicitly here so CI matches
         # the channel declared in rust-toolchain.toml. If the channel in that
         # file changes (e.g. to a specific version), update this line too.
-        uses: dtolnay/rust-toolchain@master
+        #
+        # dtolnay/rust-toolchain publishes NO version tags — it is referenced by
+        # named-channel branches (`stable`, `1.75.0`, ...). Changed from the
+        # generic `@master` (which floats across all channels) to the dedicated
+        # `@stable` channel branch so the ref is scoped to the stable toolchain.
+        # NOTE: `@stable` is still a mutable branch ref. For a fully immutable
+        # pin, replace with the current commit SHA of that branch, e.g.
+        #   uses: dtolnay/rust-toolchain@<sha> # stable
+        # (left as @stable here because no SHA could be verified offline).
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -55,7 +67,7 @@ jobs:
         # Caches ~/.cargo registry/cache + target/ keyed on
         # Cargo.lock + toolchain + workflow file hashes. Drops cold-cache
         # CI runs from ~21min (observed on v1.0.4) to ~5min.
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@aa7c1c80a07a27a84c0aa76d0cef0aad3830e330 # v2.7.8
         with:
           shared-key: "transparent-feature-matrix"
           cache-on-failure: true
@@ -69,7 +81,8 @@ jobs:
         # iter-49: CI must enforce the same clippy-clean requirement stated in
         # CONTRIBUTING.md.  Without this step a PR that introduces a new
         # warning would pass CI, contradicting the stated policy.
-        run: cargo clippy --all-targets -- -D warnings
+        # --locked: fail if Cargo.lock would change (no surprise dep drift in CI).
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run Clippy (full feature matrix)
         # iter-83: the browser and engine modules are feature-gated, so the
@@ -79,14 +92,14 @@ jobs:
         # iter-82's targeted #[allow(dead_code)] annotations remain correct as
         # the scaffold is wired up, and that no new warnings creep in under
         # any feature combination.
-        run: cargo clippy --all-targets --features browser,engine,dashboard -- -D warnings
+        run: cargo clippy --locked --all-targets --features browser,engine,dashboard -- -D warnings
 
       - name: Run tests
         # iter-43: --all-targets ensures tests in [[bench]], [[example]], and
         # integration test binaries are all exercised.  Without it, cargo test
         # only compiles and runs lib + [[bin]] tests, silently skipping any
         # test functions inside bench or example targets.
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
 
       - name: Run tests (full feature matrix)
         # iter-82: the browser and engine modules are feature-gated and not
@@ -96,52 +109,57 @@ jobs:
         # feature combination before merge.  The dashboard feature adds no
         # tests of its own but is included so the feature-combination compile
         # path (browser + engine + dashboard together) is validated in CI.
-        run: cargo test --all-targets --features browser,engine,dashboard
+        run: cargo test --locked --all-targets --features browser,engine,dashboard
 
       - name: Run integration tests
         # --test-threads=1 serialises the transparent smoke clients
         # (curl/python/node) that share the VP_TRANSPARENT_TEST_HTTP
         # process-global env var. Removing the flag lets the smoke
         # tests race and fail intermittently.
-        run: cargo test --all-targets --features test-utils -- --test-threads=1
+        run: cargo test --locked --all-targets --features test-utils -- --test-threads=1
 
       - name: Clippy (transparent feature)
         # iter-126 (v1.1.0-beta.2): the transparent HTTPS_PROXY listener
         # is a separate compilation path. Without this step a clippy
         # regression in src/proxy/transparent/* would only surface when
         # an operator built with --features transparent.
-        run: cargo clippy --all-targets --features transparent,test-utils -- -D warnings
+        run: cargo clippy --locked --all-targets --features transparent,test-utils -- -D warnings
 
       - name: Run tests (transparent feature)
         # Same rationale: the host_inject / placeholder E2Es only compile
         # under --features transparent,test-utils. --test-threads=1
         # serialises the smoke clients (curl / python / node) because
         # they share the VP_TRANSPARENT_TEST_HTTP env var.
-        run: cargo test --all-targets --features transparent,test-utils -- --test-threads=1
+        run: cargo test --locked --all-targets --features transparent,test-utils -- --test-threads=1
 
       - name: Clippy (all features)
         # All four opt-in features together — guarantees no new feature
         # combination breaks compilation or surfaces a clippy warning.
-        run: cargo clippy --all-targets --features browser,engine,dashboard,transparent,test-utils -- -D warnings
+        run: cargo clippy --locked --all-targets --features browser,engine,dashboard,transparent,test-utils -- -D warnings
 
       - name: Run tests (all features)
-        run: cargo test --all-targets --features browser,engine,dashboard,transparent,test-utils -- --test-threads=1
+        run: cargo test --locked --all-targets --features browser,engine,dashboard,transparent,test-utils -- --test-threads=1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - name: Log in to GitHub Container Registry
         # Only authenticate on tag pushes — PRs run without push permissions.
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: docker/login-action@v3
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install cosign
+        # Pulled in for keyless image signing below. Installed on all events but
+        # the signing step itself is gated to tag pushes.
+        uses: sigstore/cosign-installer@053f9b74638557590800a301da1ba82351507e2c # v3.8.1
+
       - name: Extract metadata (tags, labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -151,7 +169,8 @@ jobs:
             type=sha,format=short
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        id: build
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
@@ -159,7 +178,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Supply-chain attestations on the published image:
+          #   provenance — SLSA build provenance attestation.
+          #   sbom       — embed an SPDX SBOM attestation.
+          provenance: true
+          sbom: true
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             IMAGE_VERSION=${{ steps.meta.outputs.version }}
+
+      - name: Sign the published image (keyless / OIDC)
+        # Only sign images that were actually pushed (tag pushes). Keyless
+        # signing uses the workflow's OIDC identity (id-token: write) — no
+        # long-lived keys. The digest from build-push-action pins the exact
+        # image manifest that is signed.
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          echo "$TAGS" | while read -r tag; do
+            [ -z "$tag" ] && continue
+            image="${tag%%:*}@${DIGEST}"
+            echo "Signing ${image}"
+            cosign sign --yes "${image}"
+          done
 

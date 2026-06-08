@@ -26,8 +26,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
-        run: cargo build --release --bins
+      # transparent is opt-in as of v1.12.0, so build/test BOTH the shipped
+      # default (no transparent) and the opt-in path.
+      - name: Build (default features)
+        run: cargo build --release --bins --locked
 
-      - name: Test
-        run: cargo test --release --features test-utils
+      - name: Build (transparent)
+        run: cargo build --release --bins --features transparent --locked
+
+      - name: Test (default features)
+        run: cargo test --release --features test-utils --locked
+
+      # The transparent E2E smoke tests each bind a listener; run single-threaded
+      # so concurrent instances don't race on ports.
+      - name: Test (transparent)
+        run: cargo test --release --features test-utils,transparent --locked -- --test-threads=1

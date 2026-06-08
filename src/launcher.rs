@@ -808,7 +808,7 @@ pub async fn launch(
         // `env` mappings so an explicit `var = "VAULT_PROXY_URL"` in the config
         // can override it (operator has the last word).
         .env("VAULT_PROXY_URL", &vault_proxy_url)
-        // Inject VAULT_PROXY_SOCKET so children (e.g. mcp-bearer-bridge) can
+        // Inject VAULT_PROXY_SOCKET so children (e.g. mcp-rpc-bridge) can
         // reach the credential socket without inheriting XDG_RUNTIME_DIR —
         // which is excluded from the safe-var list above to avoid handing
         // children access to the user's D-Bus / Wayland / systemd sockets.

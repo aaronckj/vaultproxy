@@ -1,4 +1,8 @@
-//! Token-resolution logic for `mcp-bearer-bridge`.
+//! Token-resolution helper (formerly backing the `mcp-bearer-bridge` binary,
+//! which was retired in v1.12.0 because it leaked the token via the spawned
+//! `npx mcp-remote` argv — `/proc/<pid>/cmdline`. Use the native
+//! `mcp-rpc-bridge` instead). This module is retained for its socket-based
+//! token-resolution logic and its tests.
 //!
 //! Resolves the Bearer token for the upstream HTTP MCP server using, in
 //! priority order:

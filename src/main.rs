@@ -447,7 +447,7 @@ struct Args {
     /// The hook runs AFTER the rotation has been committed to the vault, so
     /// a non-zero exit code is logged but does NOT undo the rotation. Use
     /// this to bounce downstream services that cache the rotated credential,
-    /// e.g. `docker restart wi-mcp` after the wi-mcp bearer rotates.
+    /// e.g. `docker restart <downstream-service>` after the credential rotates.
     #[arg(long, env = "ON_ROTATION_SCRIPT", default_value = "")]
     on_rotation: String,
 
@@ -1892,7 +1892,9 @@ async fn start_server(
             creds_dir: args.smb_creds_dir.clone(),
             fstab_path: args.smb_fstab_path.clone(),
         },
+        #[cfg(feature = "transparent")]
         transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+        #[cfg(feature = "transparent")]
         transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
         #[cfg(feature = "transparent")]
         transparent_sanitize_responses: args.transparent_sanitize_responses,
@@ -4196,7 +4198,9 @@ mod browser_rotate_guard_tests {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: crate::proxy::SmbConfig::default(),
+            #[cfg(feature = "transparent")]
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "transparent")]
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
             transparent_sanitize_responses: false,
         })
@@ -4345,7 +4349,9 @@ mod browser_status_tests {
             reload_mutex: Arc::new(tokio::sync::Mutex::new(())),
             audit_mutex: Arc::new(tokio::sync::Mutex::new(())),
             smb: crate::proxy::SmbConfig::default(),
+            #[cfg(feature = "transparent")]
             transparent_registry: Arc::new(tokio::sync::RwLock::new(None)),
+            #[cfg(feature = "transparent")]
             transparent_placeholders: Arc::new(tokio::sync::RwLock::new(None)),
             transparent_sanitize_responses: false,
         })

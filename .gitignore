@@ -9,4 +9,9 @@
 # placed outside config/ (e.g. a custom --config-dir path used for tests).
 *.enc
 *.tpm_enc
+# Environment / secret files. `.env` alone did NOT match `wg.env` (the
+# WireGuard private-key env used by deploy/), so a `git add -A` could leak it.
+# `*.env` catches all of them; `*.env.example` files end in `.example` and are
+# not matched, so checked-in examples stay tracked.
 .env
+*.env

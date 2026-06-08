@@ -218,6 +218,10 @@ pub async fn handle_request(
     // UDM serves a self-signed TLS cert; accept it.
     let bare = Client::builder()
         .danger_accept_invalid_certs(true)
+        // SEC: don't follow redirects — the API-key probe and the session
+        // login below carry credentials; a spoofed/hostile UDM could 307 the
+        // request to capture the login body. base_url is operator-validated.
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(effective_timeout))
         .build()
         .map_err(|e| anyhow!("build bare reqwest client: {e}"))?;
@@ -390,6 +394,10 @@ async fn login(base_url: &str, ctx: &UnifiDualAuthCtx, timeout_secs: u64) -> Res
     let client = Client::builder()
         .cookie_store(true)
         .danger_accept_invalid_certs(true)
+        // SEC: don't follow redirects on the login POST — it carries the
+        // username+password body; a hostile/spoofed UDM could 307 it to an
+        // attacker host and capture the credential.
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_secs))
         .build()
         .map_err(|e| anyhow!("build unifi session client: {e}"))?;

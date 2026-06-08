@@ -67,7 +67,7 @@ where
         };
         // JSON-RPC notifications have no `id` — fire-and-forget with no
         // response written to stdout.
-        let is_notification = !req.as_object().map_or(false, |o| o.contains_key("id"));
+        let is_notification = !req.as_object().is_some_and(|o| o.contains_key("id"));
         if is_notification {
             if let Err(e) = forwarder.forward(req).await {
                 tracing::debug!(error = %e, "notification forward (non-fatal)");

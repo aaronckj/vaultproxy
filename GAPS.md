@@ -50,11 +50,11 @@ vault-proxy sits in **A**, with a **Vaultwarden-specific** backend (the others u
 | Per-service auth pattern library (bearer/header/basic/session/`unifi_dual`/query) | ✅ 6 patterns + UniFi dual fallback | ⚠️ token only | ⚠️ token only | ⚠️ HTTP only | ✅ many TCP |
 | SIGHUP + HTTP hot-reload of `services.toml` with atomic swap + rollback-to-empty guard | ✅ | ❌ | ❌ | ❌ | partial |
 | TPM sealing (hardware-bound keystore) | ✅ `--features tpm` | ❌ | ❌ | ❌ | ❌ |
-| Built-in credential audit (weak/reused, HIBP k-anonymity pass-2) | ✅ in-process + engine-sidecar workflow | ❌ | ❌ | ❌ | ❌ |
-| Playwright + LLM-vision browser rotation (`POST /browser/rotate`) | ✅ `--features browser` (gated, sanitised) | ❌ | ❌ | ❌ | ❌ |
+| Built-in credential audit (weak/reused detection via HMAC-SHA256 fingerprints — all local, no password hashes ever leave your LAN; HIBP explicitly out of scope by design) | ✅ in-process + engine-sidecar workflow | ❌ | ❌ | ❌ | ❌ |
+| Playwright + LLM-vision browser rotation (`POST /browser/rotate`) | 🚧 partial — browser-vision (experimental, off by default) + UniFi key-bootstrap; generic *arr API rotation not supported (`--features browser`, gated, sanitised) | ❌ | ❌ | ❌ | ❌ |
 | Per-caller rate buckets via `X-Caller-Id` / `VAULT_PROXY_CALLER_ID` | ✅ | ❌ | per-channel via Ed25519 | ⚠️ policy match | ❌ |
 | Dual integration modes (`/proxy` for smart servers + `--launch` for dumb ones) | ✅ | ⚠️ proxy only | proxy only | proxy only | proxy only |
-| SSRF defence-in-depth across 9 vectors at registry load + path-traversal rejection | ✅ | ⚠️ rule-based | ⚠️ | ⚠️ | ⚠️ |
+| SSRF defence-in-depth — blocks loopback, link-local, and cloud-metadata endpoints (IPv4 + IPv6) at registry-load time + path-traversal rejection | ✅ | ⚠️ rule-based | ⚠️ | ⚠️ | ⚠️ |
 | Vault-folder scope guard (cross-folder metadata leak prevention) | ✅ iter-99/100/103 | n/a | n/a | n/a | n/a |
 | Audit log with sensitive-field masking + 1000-entry cap | ✅ | ✅ request log | ✅ hash-chained | ⚠️ | ⚠️ |
 | Self-signed TLS (`insecure_tls`) for homelab services (with startup warning) | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -63,7 +63,7 @@ vault-proxy sits in **A**, with a **Vaultwarden-specific** backend (the others u
 **Unique selling propositions:**
 1. **Only broker built around Vaultwarden** — every other tool assumes HashiCorp Vault, Infisical, Conjur, or a custom vault. Homelab + selfhosted operators already running Vaultwarden have zero-friction adoption.
 2. **Only broker shipping browser-vision credential rotation** — closes the loop from "detect weak password" → "automatically change it on the upstream site."
-3. **Native HMAC+HIBP audit** — agent-vault/OneCLI/wirken all rely on the user noticing weak credentials externally.
+3. **Native local HMAC audit (weak/reused detection — no password hashes ever leave your LAN; HIBP is explicitly out of scope by design)** — agent-vault/OneCLI/wirken all rely on the user noticing weak credentials externally.
 4. **`unifi_dual` and other homelab-specific auth patterns** — opinionated for the *arr / Home Assistant / OPNsense / UniFi audience.
 
 ---
@@ -90,8 +90,8 @@ vault-proxy sits in **A**, with a **Vaultwarden-specific** backend (the others u
 | G9 | **No examples folder** for the "smart MCP server" pattern. README says `VAULT_PROXY_URL` is the detection mechanism but there is no minimal example MCP server to clone. | Add `examples/smart-mcp-server/` with a 50-line Python or TS MCP server that calls `/proxy`. |
 | G10 | **Browser rotation depends on local LiteLLM + vision model.** Sets a high bar. | Stub out a `mock` rotation strategy for tutorials; document a `gpt-4o`-via-OpenAI path for users without MLbox. |
 | G11 | **Audit log is JSON file only** (no syslog, no stdout option, no SIEM push). wirken has Datadog/Splunk/Sentinel/OTLP. | Add `--audit-sink=stdout` and `--audit-sink=syslog`; OTLP is v1.2 material. |
-| G12 | **HIBP scan caps at 1000 items.** Operators with >1000 vault items need to split folders — friction. | Pagination or chunked async scan in v1.1. |
-| G13 | **No "rotate" implementations beyond `sonarr`/`radarr` stubs (501 today).** README candidly admits this. | Either ship 1-2 working rotation strategies (`vaultwarden_password`, `bearer_regenerate_via_admin_api`) or remove `/rotate` from v1.0 surface and reintroduce in v1.1. **Calling 501 endpoints in public docs hurts perceived polish.** |
+| G12 | **Credential audit scan caps at 1000 items.** Operators with >1000 vault items need to split folders — friction. | Pagination or chunked async scan in v1.1. |
+| G13 | **No generic API rotation for *arr-style services.** `POST /rotate` returns a typed `unsupported` result for them (they need config-file access, not an API call). Working strategies today: browser-vision (experimental) and UniFi key-bootstrap. | Ship more first-class rotation strategies over time; keep generic *arr API rotation out of scope until a workable path exists. |
 | G14 | **No multi-tenant story.** Single Vaultwarden folder per process. | Document a "one container per agent" pattern. Don't expand scope. |
 | G15 | **No Windows binary** in releases (Cargo builds, but no published artefact). wirken ships Win11 binaries. | Add Windows job to CI matrix; low effort. |
 
@@ -110,7 +110,7 @@ vault-proxy sits in **A**, with a **Vaultwarden-specific** backend (the others u
 
 ## 5. Differentiation pitch (suggested launch copy)
 
-> `vaultproxy` is the credential broker for self-hosted MCP setups. Unlike agent-vault, wirken, or OneCLI — which assume Infisical, their own vault, or HashiCorp Vault — `vaultproxy` plugs straight into the Vaultwarden you're already running. It speaks every weird homelab auth pattern (API key, Bearer, Basic, session-cookie, UniFi dual-mode, query-param), hot-reloads its config on SIGHUP, optionally binds the keystore to your TPM, and — uniquely — runs a Playwright/vision-LLM agent that can actually rotate weak credentials on the upstream site, not just flag them.
+> `vaultproxy` is the credential broker for self-hosted MCP setups. Unlike agent-vault, wirken, or OneCLI — which assume Infisical, their own vault, or HashiCorp Vault — `vaultproxy` plugs straight into the Vaultwarden you're already running. It speaks every weird homelab auth pattern (API key, Bearer, Basic, session-cookie, UniFi dual-mode, query-param), hot-reloads its config on SIGHUP, optionally binds the keystore to your TPM, and — uniquely — ships an experimental (off-by-default) Playwright/vision-LLM agent that can rotate some weak credentials on the upstream site, not just flag them.
 
 ---
 
@@ -119,7 +119,7 @@ vault-proxy sits in **A**, with a **Vaultwarden-specific** backend (the others u
 Order of operations before posting to /r/selfhosted, /r/homelab, Hacker News, MCP community:
 
 1. **G5** — tag v1.0.3, let GHCR publish run, switch README to `image:` line. Hard blocker.
-2. **G13** — either ship one working rotate strategy or remove `/rotate` from public docs. The 501s read as unfinished.
+2. **G13** — `/rotate` now returns a typed `unsupported` for generic *arr services; keep public docs honest that working strategies today are browser-vision (experimental) + UniFi key-bootstrap.
 3. **G16** — restructure README. First impression matters most for AI-community discoverability.
 4. **G17** — record asciinema demo.
 5. **G18** — add comparison table from §2 of this doc.

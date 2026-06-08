@@ -52,8 +52,12 @@ impl HttpClient {
             .await;
         match result {
             Ok(resp) => Ok(resp),
-            Err(e) if e.is_connect() || e.is_timeout() => {
-                tracing::warn!(error = ?e, "first attempt failed, retrying once");
+            // Retry ONLY on connection errors (the cold-start race this guard
+            // exists for). A timeout means the request may already have reached
+            // and been executed by the upstream; retrying a non-idempotent
+            // `tools/call` (rotate/create/delete) would double the side effect.
+            Err(e) if e.is_connect() => {
+                tracing::warn!(error = ?e, "connect failed, retrying once");
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 self.http
                     .post(&self.upstream)
@@ -139,6 +143,15 @@ fn truncate(s: &str, n: usize) -> String {
     if s.len() <= n {
         s.to_string()
     } else {
-        format!("{}…", &s[..n])
+        // Find the largest char boundary <= n. `str::floor_char_boundary` is
+        // still unstable on our MSRV, so do it by hand. Slicing at a raw byte
+        // index (`&s[..n]`) panics when n lands mid-codepoint, and the body is
+        // attacker-controlled — that panic unwinds out of the bridge's single
+        // request loop and exits the whole process.
+        let mut end = n;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
     }
 }

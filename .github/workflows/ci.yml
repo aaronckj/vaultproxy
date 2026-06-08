@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The shipped default (no transparent) and the opt-in transparent path
+        # are separate compile configs; test both.
+        features:
+          - "test-utils"
+          - "test-utils,transparent"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.features }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --features ${{ matrix.features }} --locked -- -D warnings
+
+      - name: Build
+        run: cargo build --release --bins --features ${{ matrix.features }} --locked
+
+      # The transparent E2E smoke tests each bind a listener; run single-threaded
+      # so concurrent instances don't race on ports.
+      - name: Test
+        run: cargo test --release --features ${{ matrix.features }} --locked -- --test-threads=1

@@ -17,6 +17,12 @@ use crate::proxy::registry::ServiceEntry;
 use crate::proxy::transparent::cert_factory::{CertFactory, LeafCert};
 use crate::proxy::transparent::connect::ConnectTarget;
 
+/// Hard cap on a single transparent request/response body held in memory.
+/// The agent fully controls the request `Content-Length`, and a hostile
+/// upstream controls the response length; without a cap either can OOM the
+/// proxy. 256 MiB is far above any real API payload.
+const MAX_TRANSPARENT_BODY_BYTES: usize = 256 * 1024 * 1024;
+
 /// Minimal HTTP/1.1 request: method, path, headers, optional body.
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -382,6 +388,14 @@ async fn read_http_request<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unp
             headers.push((key, val));
         }
     }
+    // SEC/DoS: the agent fully controls Content-Length. Cap it before the
+    // eager allocation so a bogus `Content-Length: 99999999999` can't OOM the
+    // proxy. 256 MiB is far above any real API request body.
+    if content_length > MAX_TRANSPARENT_BODY_BYTES {
+        return Err(anyhow::anyhow!(
+            "request body too large: {content_length} bytes (max {MAX_TRANSPARENT_BODY_BYTES})"
+        ));
+    }
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body).await?;
@@ -440,7 +454,16 @@ async fn forward_tls(target: &ConnectTarget, req: HttpRequest) -> Result<Bytes> 
     let buf = serialize_request(&req, &target.host);
     tls.write_all(&buf).await?;
     let mut response = Vec::new();
-    tls.read_to_end(&mut response).await?;
+    // SEC/DoS: bound the response held in memory from a hostile upstream. Read
+    // one byte past the cap so an over-cap response is rejected (fail closed)
+    // rather than silently truncated — matching the request and h2 caps.
+    (&mut tls)
+        .take(MAX_TRANSPARENT_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut response)
+        .await?;
+    if response.len() > MAX_TRANSPARENT_BODY_BYTES {
+        bail!("upstream response exceeded {MAX_TRANSPARENT_BODY_BYTES} bytes");
+    }
     Ok(Bytes::from(response))
 }
 
@@ -449,7 +472,16 @@ async fn forward_plaintext(target: &ConnectTarget, req: HttpRequest) -> Result<B
     let buf = serialize_request(&req, &target.host);
     tcp.write_all(&buf).await?;
     let mut response = Vec::new();
-    tcp.read_to_end(&mut response).await?;
+    // SEC/DoS: bound the response held in memory from a hostile upstream. Read
+    // one byte past the cap so an over-cap response is rejected (fail closed)
+    // rather than silently truncated — matching the request and h2 caps.
+    (&mut tcp)
+        .take(MAX_TRANSPARENT_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut response)
+        .await?;
+    if response.len() > MAX_TRANSPARENT_BODY_BYTES {
+        bail!("upstream response exceeded {MAX_TRANSPARENT_BODY_BYTES} bytes");
+    }
     Ok(Bytes::from(response))
 }
 
@@ -464,6 +496,11 @@ fn serialize_request(req: &HttpRequest, target_host: &str) -> Vec<u8> {
         if k.eq_ignore_ascii_case("content-length")
             || k.eq_ignore_ascii_case("connection")
             || k.eq_ignore_ascii_case("proxy-connection")
+            // SEC: strip Transfer-Encoding too. We re-frame the body with our
+            // own Content-Length below; forwarding a caller's TE alongside a
+            // fresh CL creates CL.TE request-smuggling ambiguity on the
+            // upstream. This matches the h2 paths, which already drop it.
+            || k.eq_ignore_ascii_case("transfer-encoding")
         {
             continue;
         }
