@@ -35,6 +35,9 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots ships the Mozilla CA bundle under CDLA-Permissive-2.0
+    # (Community Data License Agreement — Permissive). Permissive, data-license.
+    "CDLA-Permissive-2.0",
 ]
 # 0.8 is the cargo-deny default; high enough to avoid false matches on
 # slightly-reworded license text without rejecting valid permissive licenses.
