@@ -16,10 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         # The shipped default (no transparent) and the opt-in transparent path
-        # are separate compile configs; test both.
-        features:
-          - "test-utils"
-          - "test-utils,transparent"
+        # are separate compile configs; test both. `name` is comma-free for use
+        # in the cache key (Actions cache keys cannot contain commas).
+        include:
+          - name: default
+            features: "test-utils"
+          - name: transparent
+            features: "test-utils,transparent"
     steps:
       - uses: actions/checkout@v4
 
@@ -35,9 +38,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.features }}-
+            ${{ runner.os }}-cargo-${{ matrix.name }}-
             ${{ runner.os }}-cargo-
 
       - name: Format check
